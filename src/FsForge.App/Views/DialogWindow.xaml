@@ -1,0 +1,89 @@
+<ui:FluentWindow
+    x:Class="FsForge.App.Views.DialogWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    Title="{Binding Title}"
+    Width="520"
+    MinWidth="380"
+    ExtendsContentIntoTitleBar="True"
+    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+    ResizeMode="NoResize"
+    ShowInTaskbar="False"
+    SizeToContent="Height"
+    WindowBackdropType="Mica"
+    WindowCornerPreference="Round"
+    WindowStartupLocation="CenterOwner">
+
+    <ui:FluentWindow.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/FsForge;component/Views/DialogTemplates.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </ui:FluentWindow.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar
+            Title="{Binding Title}"
+            Grid.Row="0"
+            ShowMaximize="False"
+            ShowMinimize="False" />
+
+        <!--  The body is chosen by the type of the view model (see DialogTemplates.xaml).  -->
+        <ScrollViewer
+            Grid.Row="1"
+            Focusable="False"
+            HorizontalScrollBarVisibility="Disabled"
+            VerticalScrollBarVisibility="Auto">
+            <ContentControl
+                x:Name="Body"
+                Margin="20,8,20,8"
+                Content="{Binding}"
+                Focusable="False"
+                IsTabStop="False" />
+        </ScrollViewer>
+
+        <Border
+            Grid.Row="2"
+            Padding="20,12"
+            BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+            BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock
+                    Grid.Column="0"
+                    Margin="0,0,12,0"
+                    VerticalAlignment="Center"
+                    Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                    Text="{Binding Error}"
+                    TextWrapping="Wrap"
+                    Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <ui:Button
+                        x:Name="AcceptButton"
+                        MinWidth="110"
+                        Appearance="Primary"
+                        Click="OnAccept"
+                        Content="{Binding AcceptText}"
+                        IsDefault="True" />
+                    <ui:Button
+                        x:Name="CancelButton"
+                        MinWidth="90"
+                        Margin="8,0,0,0"
+                        Content="Отмена"
+                        IsCancel="True" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</ui:FluentWindow>

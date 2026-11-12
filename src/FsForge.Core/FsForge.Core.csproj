@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>FsForge.Core</RootNamespace>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Zstandard support comes from the managed ZstdSharp port (pure C#). -->
+  <ItemGroup Condition="'$(ZstdSharpSource)' == ''">
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.5" />
+  </ItemGroup>
+
+  <!-- Offline builds: compile ZstdSharp from a source checkout instead of the NuGet package. -->
+  <PropertyGroup Condition="'$(ZstdSharpSource)' != ''">
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625;CS0649;CS0169;CS0414</NoWarn>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ZstdSharpSource)' != ''">
+    <Compile Include="$(ZstdSharpSource)/**/*.cs" Exclude="$(ZstdSharpSource)/obj/**;$(ZstdSharpSource)/bin/**" LinkBase="ZstdSharp" />
+  </ItemGroup>
+
+</Project>

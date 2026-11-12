@@ -1,0 +1,1167 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    xmlns:vm="clr-namespace:FsForge.Presentation.ViewModels;assembly=FsForge.Presentation">
+
+    <!--  ============================ shared pieces ============================  -->
+
+    <!--  A labelled row: text on the left, the control on the right.  -->
+    <Style x:Key="Row" TargetType="{x:Type HeaderedContentControl}">
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="IsTabStop" Value="False" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type HeaderedContentControl}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock
+                            Grid.Column="0"
+                            Margin="0,0,12,0"
+                            VerticalAlignment="Center"
+                            Text="{Binding Header, RelativeSource={RelativeSource TemplatedParent}}"
+                            TextWrapping="Wrap" />
+                        <ContentPresenter Grid.Column="1" VerticalAlignment="Center" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="Card" TargetType="{x:Type Border}">
+        <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Padding" Value="14,12,14,4" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+    </Style>
+
+    <Style x:Key="Hint" TargetType="{x:Type TextBlock}">
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
+    <Style x:Key="Section" TargetType="{x:Type TextBlock}">
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Margin" Value="2,14,0,6" />
+    </Style>
+
+    <!--  ============================ single line of text ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:PromptViewModel}">
+        <StackPanel Margin="0,4,0,8">
+            <TextBlock Margin="0,0,0,6" Text="{Binding Label}" />
+            <ui:TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBlock
+                Margin="0,6,0,0"
+                Style="{StaticResource Hint}"
+                Text="{Binding Hint}"
+                Visibility="{Binding Hint, Converter={StaticResource TextToVisibility}}" />
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ new object ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:NewItemViewModel}">
+        <StackPanel Margin="0,4,0,4">
+            <HeaderedContentControl Header="Что создать" Style="{StaticResource Row}">
+                <ComboBox
+                    Width="270"
+                    DisplayMemberPath="Title"
+                    ItemsSource="{Binding Kinds}"
+                    SelectedValue="{Binding Kind}"
+                    SelectedValuePath="Value" />
+            </HeaderedContentControl>
+            <HeaderedContentControl Header="Имя" Style="{StaticResource Row}">
+                <ui:TextBox Width="270" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+            </HeaderedContentControl>
+            <HeaderedContentControl
+                Header="Указывает на"
+                Style="{StaticResource Row}"
+                Visibility="{Binding IsSymlink, Converter={StaticResource BoolToVisibility}}">
+                <ui:TextBox
+                    Width="270"
+                    PlaceholderText="/путь или относительный путь"
+                    Text="{Binding Target, UpdateSourceTrigger=PropertyChanged}" />
+            </HeaderedContentControl>
+            <HeaderedContentControl
+                Header="Права (восьмеричные)"
+                Style="{StaticResource Row}"
+                Visibility="{Binding HasMode, Converter={StaticResource BoolToVisibility}}">
+                <ui:TextBox
+                    Width="120"
+                    FontFamily="Consolas"
+                    Text="{Binding Mode, UpdateSourceTrigger=PropertyChanged}" />
+            </HeaderedContentControl>
+            <HeaderedContentControl
+                Header="Номера устройства: старший, младший"
+                Style="{StaticResource Row}"
+                Visibility="{Binding IsDevice, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <ui:TextBox Width="100" Text="{Binding Major, UpdateSourceTrigger=PropertyChanged}" />
+                    <ui:TextBox
+                        Width="100"
+                        Margin="8,0,0,0"
+                        Text="{Binding Minor, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+            </HeaderedContentControl>
+            <TextBlock Style="{StaticResource Hint}" Text="Владелец берётся от папки или из настроек добавления; изменить его и остальные атрибуты можно позже в свойствах." />
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ properties and permissions ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:PropertiesViewModel}">
+        <StackPanel Margin="0,0,0,4">
+            <Border Style="{StaticResource Card}">
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock
+                        Grid.Row="0"
+                        Grid.Column="0"
+                        Style="{StaticResource Hint}"
+                        Text="Расположение" />
+                    <TextBlock
+                        Grid.Row="0"
+                        Grid.Column="1"
+                        Text="{Binding PathText}"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        Grid.Row="1"
+                        Grid.Column="0"
+                        Margin="0,4,0,0"
+                        Style="{StaticResource Hint}"
+                        Text="Тип" />
+                    <TextBlock
+                        Grid.Row="1"
+                        Grid.Column="1"
+                        Margin="0,4,0,0"
+                        Text="{Binding TypeText}" />
+                    <TextBlock
+                        Grid.Row="2"
+                        Grid.Column="0"
+                        Margin="0,4,0,0"
+                        Style="{StaticResource Hint}"
+                        Text="Размер" />
+                    <TextBlock
+                        Grid.Row="2"
+                        Grid.Column="1"
+                        Margin="0,4,0,0"
+                        Text="{Binding SizeText}"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        Grid.Row="3"
+                        Grid.Column="0"
+                        Margin="0,4,0,0"
+                        Style="{StaticResource Hint}"
+                        Text="Имён (ссылок)"
+                        Visibility="{Binding HasLinks, Converter={StaticResource BoolToVisibility}}" />
+                    <TextBlock
+                        Grid.Row="3"
+                        Grid.Column="1"
+                        Margin="0,4,0,0"
+                        Text="{Binding LinksText}"
+                        Visibility="{Binding HasLinks, Converter={StaticResource BoolToVisibility}}" />
+                </Grid>
+            </Border>
+
+            <HeaderedContentControl
+                Margin="0,10,0,8"
+                Header="Имя"
+                Style="{StaticResource Row}"
+                Visibility="{Binding CanRename, Converter={StaticResource BoolToVisibility}}">
+                <ui:TextBox Width="340" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+            </HeaderedContentControl>
+            <HeaderedContentControl
+                Header="Указывает на"
+                Style="{StaticResource Row}"
+                Visibility="{Binding IsSymlink, Converter={StaticResource BoolToVisibility}}">
+                <ui:TextBox Width="340" Text="{Binding Target, UpdateSourceTrigger=PropertyChanged}" />
+            </HeaderedContentControl>
+            <HeaderedContentControl
+                Header="Номера устройства: старший, младший"
+                Style="{StaticResource Row}"
+                Visibility="{Binding IsDevice, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Orientation="Horizontal">
+                    <ui:TextBox Width="100" Text="{Binding Major, UpdateSourceTrigger=PropertyChanged}" />
+                    <ui:TextBox
+                        Width="100"
+                        Margin="8,0,0,0"
+                        Text="{Binding Minor, UpdateSourceTrigger=PropertyChanged}" />
+                </StackPanel>
+            </HeaderedContentControl>
+
+            <!--  Permissions  -->
+            <TextBlock Style="{StaticResource Section}" Text="Права доступа" />
+            <Border IsEnabled="{Binding CanEditMode}" Style="{StaticResource Card}">
+                <StackPanel>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="110" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock
+                            Grid.Row="0"
+                            Grid.Column="1"
+                            Style="{StaticResource Hint}"
+                            Text="чтение" />
+                        <TextBlock
+                            Grid.Row="0"
+                            Grid.Column="2"
+                            Style="{StaticResource Hint}"
+                            Text="запись" />
+                        <TextBlock
+                            Grid.Row="0"
+                            Grid.Column="3"
+                            Style="{StaticResource Hint}"
+                            Text="выполнение / вход" />
+
+                        <TextBlock
+                            Grid.Row="1"
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            Text="Владелец" />
+                        <CheckBox
+                            Grid.Row="1"
+                            Grid.Column="1"
+                            Content="r"
+                            IsChecked="{Binding OwnerRead}" />
+                        <CheckBox
+                            Grid.Row="1"
+                            Grid.Column="2"
+                            Content="w"
+                            IsChecked="{Binding OwnerWrite}" />
+                        <CheckBox
+                            Grid.Row="1"
+                            Grid.Column="3"
+                            Content="x"
+                            IsChecked="{Binding OwnerExec}" />
+
+                        <TextBlock
+                            Grid.Row="2"
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            Text="Группа" />
+                        <CheckBox
+                            Grid.Row="2"
+                            Grid.Column="1"
+                            Content="r"
+                            IsChecked="{Binding GroupRead}" />
+                        <CheckBox
+                            Grid.Row="2"
+                            Grid.Column="2"
+                            Content="w"
+                            IsChecked="{Binding GroupWrite}" />
+                        <CheckBox
+                            Grid.Row="2"
+                            Grid.Column="3"
+                            Content="x"
+                            IsChecked="{Binding GroupExec}" />
+
+                        <TextBlock
+                            Grid.Row="3"
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            Text="Остальные" />
+                        <CheckBox
+                            Grid.Row="3"
+                            Grid.Column="1"
+                            Content="r"
+                            IsChecked="{Binding OtherRead}" />
+                        <CheckBox
+                            Grid.Row="3"
+                            Grid.Column="2"
+                            Content="w"
+                            IsChecked="{Binding OtherWrite}" />
+                        <CheckBox
+                            Grid.Row="3"
+                            Grid.Column="3"
+                            Content="x"
+                            IsChecked="{Binding OtherExec}" />
+
+                        <TextBlock
+                            Grid.Row="4"
+                            Grid.Column="0"
+                            VerticalAlignment="Center"
+                            Text="Особые" />
+                        <CheckBox
+                            Grid.Row="4"
+                            Grid.Column="1"
+                            Content="setuid"
+                            IsChecked="{Binding SetUid}" />
+                        <CheckBox
+                            Grid.Row="4"
+                            Grid.Column="2"
+                            Content="setgid"
+                            IsChecked="{Binding SetGid}" />
+                        <CheckBox
+                            Grid.Row="4"
+                            Grid.Column="3"
+                            Content="sticky"
+                            IsChecked="{Binding Sticky}" />
+                    </Grid>
+                    <HeaderedContentControl Header="Восьмеричная запись (как в chmod)" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock
+                                Margin="0,0,12,0"
+                                VerticalAlignment="Center"
+                                FontFamily="Consolas"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="{Binding Symbolic}" />
+                            <ui:TextBox
+                                Width="100"
+                                FontFamily="Consolas"
+                                Text="{Binding Octal, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <!--  Owner and time  -->
+            <TextBlock Style="{StaticResource Section}" Text="Владелец и время" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Владелец (UID)" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock
+                                Margin="0,0,12,0"
+                                VerticalAlignment="Center"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="{Binding UserHint}" />
+                            <ui:TextBox Width="130" Text="{Binding Uid, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Группа (GID)" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock
+                                Margin="0,0,12,0"
+                                VerticalAlignment="Center"
+                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                Text="{Binding GroupHint}" />
+                            <ui:TextBox Width="130" Text="{Binding Gid, UpdateSourceTrigger=PropertyChanged}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Изменён" Style="{StaticResource Row}">
+                        <ui:TextBox
+                            Width="200"
+                            Text="{Binding Time, UpdateSourceTrigger=PropertyChanged}"
+                            ToolTip="{Binding TimeHint}" />
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="{Binding TimeHint}" />
+                </StackPanel>
+            </Border>
+
+            <!--  Recursion  -->
+            <Border
+                Margin="0,10,0,0"
+                Style="{StaticResource Card}"
+                Visibility="{Binding HasDirectories, Converter={StaticResource BoolToVisibility}}">
+                <StackPanel Margin="0,0,0,8">
+                    <CheckBox Content="Применить права, владельца и время ко всему содержимому папок" IsChecked="{Binding Recursive}" />
+                    <ComboBox
+                        Margin="28,6,0,0"
+                        HorizontalAlignment="Left"
+                        DisplayMemberPath="Title"
+                        IsEnabled="{Binding Recursive}"
+                        ItemsSource="{Binding RecursiveChoices}"
+                        SelectedValue="{Binding RecursiveTargets}"
+                        SelectedValuePath="Value" />
+                </StackPanel>
+            </Border>
+
+            <!--  Extended attributes  -->
+            <StackPanel Visibility="{Binding CanEditXattrs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="Расширенные атрибуты" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel Margin="0,0,0,8">
+                        <ItemsControl ItemsSource="{Binding Xattrs}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="210" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <ui:TextBox
+                                            Grid.Column="0"
+                                            FontFamily="Consolas"
+                                            PlaceholderText="user.name"
+                                            Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+                                        <ui:TextBox
+                                            Grid.Column="1"
+                                            Margin="6,0,6,0"
+                                            FontFamily="Consolas"
+                                            PlaceholderText="текст или 0x…"
+                                            Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
+                                        <ui:Button
+                                            Grid.Column="2"
+                                            Appearance="Transparent"
+                                            Command="{Binding DataContext.RemoveXattrCommand, RelativeSource={RelativeSource AncestorType={x:Type ItemsControl}}}"
+                                            CommandParameter="{Binding}"
+                                            Icon="{ui:SymbolIcon Delete24}"
+                                            ToolTip="Удалить атрибут" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <ui:Button
+                            HorizontalAlignment="Left"
+                            Command="{Binding AddXattrCommand}"
+                            Content="Добавить атрибут"
+                            Icon="{ui:SymbolIcon Add24}" />
+                        <TextBlock
+                            Margin="0,8,0,0"
+                            Style="{StaticResource Hint}"
+                            Text="Имя начинается с пространства имён: security. (SELinux, capabilities), user., trusted., system. Значение — текст или шестнадцатеричные байты после 0x; \0 в конце текста означает нулевой байт." />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ save parameters ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:SaveOptionsViewModel}">
+        <StackPanel Margin="0,0,0,4">
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Формат" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="290"
+                            DisplayMemberPath="Title"
+                            IsEnabled="{Binding FormatEditable}"
+                            ItemsSource="{Binding Formats}"
+                            SelectedValue="{Binding Format}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <TextBlock Style="{StaticResource Hint}" Text="{Binding FormatNote}" />
+                    <TextBlock
+                        Margin="0,4,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="{Binding ContentSummary}" />
+                </StackPanel>
+            </Border>
+
+            <!--  SquashFS  -->
+            <StackPanel Visibility="{Binding IsSquash, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="SquashFS" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="Сжатие" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="290"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding SquashCompressions}"
+                                SelectedValue="{Binding SquashCompression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Размер блока (больше — плотнее, но медленнее чтение)" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="140"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding SquashBlockSizes}"
+                                SelectedValue="{Binding SquashBlockSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Фильтр исполняемого кода (BCJ) — по архитектуре устройства"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowBcj, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="170"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding BcjFilters}"
+                                SelectedValue="{Binding BcjFilter}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Собирать хвосты файлов во фрагменты" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Fragments}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Хранить одинаковые файлы один раз" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Deduplicate}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Таблица экспорта (нужна для NFS и overlayfs)" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Exportable}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Дополнить файл до границы 4 КБ" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Pad4K}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  ext2 / ext3 / ext4  -->
+            <StackPanel Visibility="{Binding IsExt, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="ext2 / ext3 / ext4" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="Размер образа" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="300"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding SizeModes}"
+                                SelectedValue="{Binding SizeMode}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Размер, МиБ"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding IsFixedSize, Converter={StaticResource BoolToVisibility}}">
+                            <ui:TextBox Width="140" Text="{Binding SizeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Запас свободного места, МиБ"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding IsMinimalSize, Converter={StaticResource BoolToVisibility}}">
+                            <ui:TextBox Width="140" Text="{Binding ExtraFreeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Размер блока"
+                            IsEnabled="{Binding CanChangeGeometry}"
+                            Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="200"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ExtBlockSizes}"
+                                SelectedValue="{Binding ExtBlockSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Размер инода"
+                            IsEnabled="{Binding CanChangeGeometry}"
+                            Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="300"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ExtInodeSizes}"
+                                SelectedValue="{Binding ExtInodeSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Журнал (в ext3 есть всегда)"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding HasJournalOption, Converter={StaticResource BoolToVisibility}}">
+                            <ui:ToggleSwitch IsChecked="{Binding Journal}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Метка тома" Style="{StaticResource Row}">
+                            <ui:TextBox Width="200" Text="{Binding Label, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Резерв блоков для root, %" Style="{StaticResource Row}">
+                            <ui:TextBox Width="100" Text="{Binding ReservedPercent, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="Сохранить UUID исходного образа"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding CanKeepUuid, Converter={StaticResource BoolToVisibility}}">
+                            <ui:ToggleSwitch IsChecked="{Binding KeepUuid}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  tar  -->
+            <StackPanel Visibility="{Binding IsTar, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="Архив tar" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="Сжатие" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="230"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding TarCompressions}"
+                                SelectedValue="{Binding TarCompression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Формат заголовков" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="340"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding TarDialects}"
+                                SelectedValue="{Binding TarDialect}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Префикс имён" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="280"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding TarPrefixes}"
+                                SelectedValue="{Binding TarPrefix}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="Запись для самой корневой папки" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding TarRootEntry}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  Compression strength: shown for whichever codec is selected  -->
+            <Border Margin="0,10,0,4" Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl
+                        Header="Усердие xz"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding ShowXz, Converter={StaticResource BoolToVisibility}}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding XzEfforts}"
+                            SelectedValue="{Binding XzEffort}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl
+                        Header="Уровень gzip"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding ShowGzip, Converter={StaticResource BoolToVisibility}}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding GzipLevels}"
+                            SelectedValue="{Binding GzipLevel}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl
+                        Header="Уровень zstd"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding ShowZstd, Converter={StaticResource BoolToVisibility}}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ZstdLevels}"
+                            SelectedValue="{Binding ZstdLevel}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Сохранять расширенные атрибуты" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding StoreXattrs}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Сделать владельцем всех объектов root (0:0)" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding AllRoot}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl
+                        Header="После записи проверить"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding FormatEditable, Converter={StaticResource BoolToVisibility}}">
+                        <ComboBox
+                            Width="340"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding VerifyLevels}"
+                            SelectedValue="{Binding Verify}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl
+                        Header="Оставить прежний файл как .bak"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding FormatEditable, Converter={StaticResource BoolToVisibility}}">
+                        <ui:ToggleSwitch IsChecked="{Binding KeepBackup}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ image information ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:ImageInfoViewModel}">
+        <StackPanel Margin="0,0,0,4">
+            <Border Style="{StaticResource Card}">
+                <ItemsControl Margin="0,0,0,8" ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="170" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock
+                                    Grid.Column="0"
+                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                    Text="{Binding Label}" />
+                                <TextBox
+                                    Grid.Column="1"
+                                    Padding="0"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    IsReadOnly="True"
+                                    IsTabStop="False"
+                                    Text="{Binding Value, Mode=OneWay}"
+                                    TextWrapping="Wrap" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </Border>
+            <StackPanel Visibility="{Binding HasWarnings, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="Предупреждения при открытии" />
+                <Border Style="{StaticResource Card}">
+                    <ItemsControl Margin="0,0,0,8" ItemsSource="{Binding Warnings}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock
+                                    Margin="0,0,0,4"
+                                    Text="{Binding}"
+                                    TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+            </StackPanel>
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ list of messages ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:MessagesViewModel}">
+        <StackPanel Margin="0,0,0,4">
+            <TextBlock
+                Margin="0,0,0,8"
+                Style="{StaticResource Hint}"
+                Text="{Binding Summary}" />
+            <TextBox
+                Height="320"
+                AcceptsReturn="True"
+                FontFamily="Consolas"
+                HorizontalScrollBarVisibility="Auto"
+                IsReadOnly="True"
+                Text="{Binding AllText, Mode=OneWay}"
+                TextWrapping="NoWrap"
+                VerticalScrollBarVisibility="Auto" />
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ settings ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+        <StackPanel Margin="0,0,0,4">
+
+            <TextBlock
+                Margin="2,0,0,6"
+                Style="{StaticResource Section}"
+                Text="Внешний вид" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Тема" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding Themes}"
+                            SelectedValue="{Binding Settings.Theme}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Фон окна" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding Backdrops}"
+                            SelectedValue="{Binding Settings.Backdrop}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Размеры файлов" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding SizeDisplays}"
+                            SelectedValue="{Binding Settings.Sizes}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Папки в начале списка" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.FoldersFirst}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Показывать имена владельцев из /etc/passwd и /etc/group образа" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.ShowOwnerNames}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Время в UTC, а не местное" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.UtcTimes}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Запоминать размер и положение окна" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.RememberWindow}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="Поведение" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Двойной щелчок по файлу" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="300"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding FileOpenActions}"
+                            SelectedValue="{Binding Settings.DoubleClickFile}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Редактор для файлов без расширения и конфигураций" Style="{StaticResource Row}">
+                        <ui:TextBox
+                            Width="300"
+                            PlaceholderText="пусто — программа по умолчанию"
+                            Text="{Binding Settings.TextEditor}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Спрашивать перед удалением" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.ConfirmDelete}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Предлагать сохранить изменения при закрытии" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.ConfirmDiscardChanges}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Искать SquashFS внутри прошивок, если файл не образ" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SearchEmbedded}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Показывать предупреждения после открытия" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.ShowWarningsAfterOpen}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Сколько недавних файлов помнить" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:Button
+                                Margin="0,0,8,0"
+                                Command="{Binding ClearRecentCommand}"
+                                Content="Очистить список" />
+                            <ui:TextBox Width="80" Text="{Binding Settings.RecentLimit}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Папка для временных файлов" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:TextBox
+                                Width="300"
+                                PlaceholderText="пусто — системная временная папка"
+                                Text="{Binding Settings.TempDirectory}" />
+                            <ui:Button
+                                Margin="8,0,0,0"
+                                Command="{Binding BrowseTempCommand}"
+                                Content="Обзор…" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="Сюда распаковываются сжатые архивы tar при открытии и файлы, открытые во внешней программе. Нужен запас места под размер распакованного архива." />
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="Сохранение" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="После записи проверить" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="340"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding VerifyLevels}"
+                            SelectedValue="{Binding Settings.Verify}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="При перезаписи оставлять прежний файл как .bak" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.KeepBackup}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Всегда показывать параметры при «Сохранить»" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.AlwaysAskSaveOptions}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Потоков сжатия" Style="{StaticResource Row}">
+                        <ui:TextBox Width="80" Text="{Binding Settings.Threads}" />
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="{Binding ThreadsHint}" />
+                    <HeaderedContentControl Header="Формат нового образа" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding NewFormats}"
+                            SelectedValue="{Binding Settings.NewImageFormat}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="Образ, сохраняемый в своём же формате, сохраняет исходные параметры (сжатие, размер блока, размер ext). Значения ниже применяются к новым образам и при смене формата." />
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="SquashFS по умолчанию" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Сжатие" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="290"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding SquashCompressions}"
+                            SelectedValue="{Binding Settings.SquashFs.Compression}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Размер блока" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="140"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding SquashBlockSizes}"
+                            SelectedValue="{Binding Settings.SquashFs.BlockSize}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Усердие xz" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding XzEfforts}"
+                            SelectedValue="{Binding Settings.SquashFs.XzEffort}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Фильтр BCJ для xz" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="170"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding BcjFilters}"
+                            SelectedValue="{Binding DefaultBcjFilter}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Уровень gzip" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding GzipLevels}"
+                            SelectedValue="{Binding Settings.SquashFs.GzipLevel}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Уровень zstd" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ZstdLevels}"
+                            SelectedValue="{Binding Settings.SquashFs.ZstdLevel}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Фрагменты" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding DefaultFragments}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Хранить одинаковые файлы один раз" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SquashFs.Deduplicate}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Таблица экспорта (NFS, overlayfs)" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SquashFs.Exportable}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Дополнять файл до границы 4 КБ" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SquashFs.Pad4K}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="ext2 / ext3 / ext4 по умолчанию" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Разновидность" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="140"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ExtKinds}"
+                            SelectedValue="{Binding Settings.Ext.Kind}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Размер блока" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="200"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ExtBlockSizes}"
+                            SelectedValue="{Binding Settings.Ext.BlockSize}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Размер инода" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="300"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ExtInodeSizes}"
+                            SelectedValue="{Binding Settings.Ext.InodeSize}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Журнал (ext3, ext4)" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.Ext.Journal}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Запас свободного места при автоматическом размере, МиБ" Style="{StaticResource Row}">
+                        <ui:TextBox Width="100" Text="{Binding Settings.ExtExtraFreeMiB}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Резерв блоков для root, %" Style="{StaticResource Row}">
+                        <ui:TextBox Width="100" Text="{Binding Settings.Ext.ReservedPercent}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="Архивы tar по умолчанию" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Сжатие" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="230"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding TarCompressions}"
+                            SelectedValue="{Binding Settings.Tar.Compression}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Уровень gzip" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding GzipLevels}"
+                            SelectedValue="{Binding Settings.Tar.GzipLevel}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Формат заголовков" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="340"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding TarDialects}"
+                            SelectedValue="{Binding Settings.Tar.Dialect}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Префикс имён" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="280"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding TarPrefixes}"
+                            SelectedValue="{Binding Settings.Tar.PathPrefix}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Запись для самой корневой папки" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.Tar.IncludeRootEntry}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="Извлечение в папку Windows" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Записывать файл метаданных .fsforge-meta.json" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.WriteManifest}" />
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="В нём сохраняются права, владельцы, ссылки, устройства и настоящие имена. С ним распакованную папку можно собрать обратно в образ без потерь, даже после правки файлов в Проводнике." />
+                    <HeaderedContentControl Header="Символические ссылки" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="380"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding SymlinkModes}"
+                            SelectedValue="{Binding Settings.Symlinks}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Пустые файлы-заглушки для устройств, FIFO и сокетов" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SpecialPlaceholders}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Ставить файлам время из образа" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.RestoreTimestamps}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Заменять существующие файлы" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.OverwriteOnExtract}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Открывать папку после извлечения" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.OpenFolderAfterExtract}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="Добавление файлов в образ" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="Восстанавливать атрибуты из .fsforge-meta.json" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.UseManifest}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Права новых файлов / папок / исполняемых файлов" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:TextBox
+                                Width="80"
+                                FontFamily="Consolas"
+                                Text="{Binding Settings.DefaultFileMode}" />
+                            <ui:TextBox
+                                Width="80"
+                                Margin="6,0,0,0"
+                                FontFamily="Consolas"
+                                Text="{Binding Settings.DefaultDirectoryMode}" />
+                            <ui:TextBox
+                                Width="80"
+                                Margin="6,0,0,0"
+                                FontFamily="Consolas"
+                                Text="{Binding Settings.ExecutableMode}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Считать исполняемыми файлы ELF и сценарии с «#!»" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.DetectExecutables}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Владелец — как у папки, в которую добавляют" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.InheritOwner}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Иначе владелец UID / GID" Style="{StaticResource Row}">
+                        <StackPanel Orientation="Horizontal">
+                            <ui:TextBox Width="100" Text="{Binding Settings.DefaultUid}" />
+                            <ui:TextBox
+                                Width="100"
+                                Margin="6,0,0,0"
+                                Text="{Binding Settings.DefaultGid}" />
+                        </StackPanel>
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Время изменения — как у файла на диске" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.UseHostTimestamps}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Если объект с таким именем уже есть" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="280"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ConflictModes}"
+                            SelectedValue="{Binding Settings.Conflicts}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Пропускать скрытые и системные файлы Windows" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SkipHiddenAndSystem}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="Сразу копировать добавляемые файлы во временную папку" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.SnapshotAddedFiles}" />
+                    </HeaderedContentControl>
+                    <TextBlock
+                        Margin="0,0,0,8"
+                        Style="{StaticResource Hint}"
+                        Text="Без копирования образ до сохранения ссылается на исходные файлы: их нельзя удалять или менять, иначе сохранение сообщит об ошибке (сам образ при этом не пострадает)." />
+                </StackPanel>
+            </Border>
+
+            <Grid Margin="0,14,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock
+                    Grid.Column="0"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource Hint}"
+                    Text="{Binding SettingsPath}" />
+                <ui:Button
+                    Grid.Column="1"
+                    Command="{Binding ResetCommand}"
+                    Content="Вернуть значения по умолчанию"
+                    Icon="{ui:SymbolIcon ArrowUndo24}" />
+            </Grid>
+        </StackPanel>
+    </DataTemplate>
+
+</ResourceDictionary>

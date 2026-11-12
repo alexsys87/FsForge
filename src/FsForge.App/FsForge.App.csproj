@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>FsForge</AssemblyName>
+    <RootNamespace>FsForge.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Lets the project be compiled (not run) on a non-Windows machine. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <!-- Fluent controls and theming: https://github.com/lepoco/wpfui -->
+  <ItemGroup Condition="'$(WpfUiReferenceDir)' == ''">
+    <PackageReference Include="WPF-UI" Version="4.*" />
+  </ItemGroup>
+
+  <!-- Offline builds: reference already built WPF-UI assemblies instead of the NuGet package. -->
+  <ItemGroup Condition="'$(WpfUiReferenceDir)' != ''">
+    <Reference Include="$(WpfUiReferenceDir)/Wpf.Ui.dll" />
+    <Reference Include="$(WpfUiReferenceDir)/Wpf.Ui.Abstractions.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FsForge.Core\FsForge.Core.csproj" />
+    <ProjectReference Include="..\FsForge.Presentation\FsForge.Presentation.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.png" />
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+</Project>

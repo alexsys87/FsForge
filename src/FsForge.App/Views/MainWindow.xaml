@@ -1,0 +1,778 @@
+<ui:FluentWindow
+    x:Class="FsForge.App.Views.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    Title="{Binding Title}"
+    Width="1180"
+    Height="740"
+    MinWidth="760"
+    MinHeight="480"
+    AllowDrop="True"
+    DragOver="OnDragOver"
+    Drop="OnDrop"
+    ExtendsContentIntoTitleBar="True"
+    Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+    WindowBackdropType="Mica"
+    WindowCornerPreference="Round"
+    WindowStartupLocation="CenterScreen">
+
+    <ui:FluentWindow.InputBindings>
+        <KeyBinding Key="N" Command="{Binding NewCommand}" Modifiers="Control" />
+        <KeyBinding Key="O" Command="{Binding OpenCommand}" Modifiers="Control" />
+        <KeyBinding Key="S" Command="{Binding SaveCommand}" Modifiers="Control" />
+        <KeyBinding Key="S" Command="{Binding SaveAsCommand}" Modifiers="Control+Shift" />
+        <KeyBinding Key="W" Command="{Binding CloseCommand}" Modifiers="Control" />
+        <KeyBinding Key="I" Command="{Binding ImageInfoCommand}" Modifiers="Control" />
+        <KeyBinding Key="E" Command="{Binding ExtractCommand}" Modifiers="Control" />
+        <KeyBinding Key="F5" Command="{Binding RefreshCommand}" />
+        <KeyBinding Key="Left" Command="{Binding BackCommand}" Modifiers="Alt" />
+        <KeyBinding Key="Right" Command="{Binding ForwardCommand}" Modifiers="Alt" />
+        <KeyBinding Key="Up" Command="{Binding UpCommand}" Modifiers="Alt" />
+        <KeyBinding Key="OemComma" Command="{Binding SettingsCommand}" Modifiers="Control" />
+    </ui:FluentWindow.InputBindings>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!--  Title bar  -->
+        <ui:TitleBar Title="{Binding Title}" Grid.Row="0">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/app.png" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
+
+        <!--  Menu  -->
+        <Menu
+            Grid.Row="1"
+            Margin="4,0"
+            Background="Transparent"
+            IsEnabled="{Binding IsIdle}">
+            <MenuItem Header="_Файл">
+                <MenuItem
+                    Command="{Binding NewCommand}"
+                    Header="_Новый образ"
+                    Icon="{ui:SymbolIcon DocumentAdd24}"
+                    InputGestureText="Ctrl+N" />
+                <MenuItem
+                    Command="{Binding NewFromFolderCommand}"
+                    Header="Новый образ из _папки…"
+                    Icon="{ui:SymbolIcon FolderArrowUp24}" />
+                <MenuItem
+                    Command="{Binding OpenCommand}"
+                    Header="_Открыть…"
+                    Icon="{ui:SymbolIcon FolderOpen24}"
+                    InputGestureText="Ctrl+O" />
+                <MenuItem
+                    x:Name="RecentMenu"
+                    Click="OnRecentClick"
+                    DisplayMemberPath="MenuText"
+                    Header="_Недавние"
+                    IsEnabled="{Binding HasRecentFiles}"
+                    ItemsSource="{Binding RecentFiles}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding SaveCommand}"
+                    Header="_Сохранить"
+                    Icon="{ui:SymbolIcon Save24}"
+                    InputGestureText="Ctrl+S" />
+                <MenuItem
+                    Command="{Binding SaveAsCommand}"
+                    Header="Сохранить _как… (смена формата и параметров)"
+                    Icon="{ui:SymbolIcon SaveEdit24}"
+                    InputGestureText="Ctrl+Shift+S" />
+                <MenuItem
+                    Command="{Binding CloseCommand}"
+                    Header="_Закрыть образ"
+                    InputGestureText="Ctrl+W" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding ImageInfoCommand}"
+                    Header="Сведения об о_бразе"
+                    Icon="{ui:SymbolIcon Info24}"
+                    InputGestureText="Ctrl+I" />
+                <Separator />
+                <MenuItem
+                    Click="OnExitClick"
+                    Header="В_ыход"
+                    InputGestureText="Alt+F4" />
+            </MenuItem>
+            <MenuItem Header="_Правка">
+                <MenuItem
+                    Command="{Binding CutCommand}"
+                    Header="_Вырезать"
+                    Icon="{ui:SymbolIcon Cut24}"
+                    InputGestureText="Ctrl+X" />
+                <MenuItem
+                    Command="{Binding CopyCommand}"
+                    Header="_Копировать"
+                    Icon="{ui:SymbolIcon Copy24}"
+                    InputGestureText="Ctrl+C" />
+                <MenuItem
+                    Command="{Binding PasteCommand}"
+                    Header="Вст_авить"
+                    Icon="{ui:SymbolIcon ClipboardPaste24}"
+                    InputGestureText="Ctrl+V" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding RenameCommand}"
+                    Header="_Переименовать…"
+                    Icon="{ui:SymbolIcon Rename24}"
+                    InputGestureText="F2" />
+                <MenuItem
+                    Command="{Binding DeleteCommand}"
+                    Header="_Удалить"
+                    Icon="{ui:SymbolIcon Delete24}"
+                    InputGestureText="Del" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding PropertiesCommand}"
+                    Header="_Свойства и права доступа…"
+                    Icon="{ui:SymbolIcon ShieldKeyhole24}"
+                    InputGestureText="Alt+Enter" />
+                <MenuItem Command="{Binding CopyPathCommand}" Header="Копировать пу_ть" />
+            </MenuItem>
+            <MenuItem Header="_Образ">
+                <MenuItem
+                    Command="{Binding AddFilesCommand}"
+                    Header="Добавить _файлы…"
+                    Icon="{ui:SymbolIcon DocumentAdd24}" />
+                <MenuItem
+                    Command="{Binding AddFolderCommand}"
+                    Header="Добавить _папку…"
+                    Icon="{ui:SymbolIcon FolderAdd24}" />
+                <MenuItem
+                    Command="{Binding ImportArchiveCommand}"
+                    Header="_Импорт архива или образа в текущую папку…"
+                    Icon="{ui:SymbolIcon ArrowImport24}" />
+                <Separator />
+                <MenuItem Header="_Создать" Icon="{ui:SymbolIcon Add24}">
+                    <MenuItem
+                        Command="{Binding NewFolderCommand}"
+                        Header="_Папку…"
+                        InputGestureText="Ctrl+Shift+N" />
+                    <MenuItem Command="{Binding NewFileCommand}" Header="Пустой _файл…" />
+                    <MenuItem Command="{Binding NewSymlinkCommand}" Header="_Символическую ссылку…" />
+                    <MenuItem Command="{Binding NewSpecialCommand}" Header="_Устройство, FIFO или сокет…" />
+                </MenuItem>
+                <MenuItem
+                    Command="{Binding OpenExternallyCommand}"
+                    Header="Открыть во _внешней программе"
+                    Icon="{ui:SymbolIcon Open24}" />
+                <MenuItem Command="{Binding ReplaceContentCommand}" Header="_Заменить содержимое файла…" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding ExtractCommand}"
+                    Header="Извлечь в_ыбранное…"
+                    Icon="{ui:SymbolIcon ArrowDownload24}"
+                    InputGestureText="Ctrl+E" />
+                <MenuItem Command="{Binding ExtractAllCommand}" Header="Распаковать весь _образ в папку…" />
+                <MenuItem
+                    Command="{Binding ExportArchiveCommand}"
+                    Header="_Экспорт папки в архив tar (rootfs.tar.gz)…"
+                    Icon="{ui:SymbolIcon ArrowExport24}" />
+            </MenuItem>
+            <MenuItem Header="_Вид">
+                <MenuItem
+                    Header="_Дерево папок"
+                    IsCheckable="True"
+                    IsChecked="{Binding ShowTreePane, Mode=TwoWay}" />
+                <MenuItem
+                    Header="Искать во _вложенных папках"
+                    IsCheckable="True"
+                    IsChecked="{Binding SearchEverywhere, Mode=TwoWay}" />
+                <Separator />
+                <MenuItem
+                    Command="{Binding RefreshCommand}"
+                    Header="_Обновить"
+                    Icon="{ui:SymbolIcon ArrowClockwise24}"
+                    InputGestureText="F5" />
+            </MenuItem>
+            <MenuItem Header="_Сервис">
+                <MenuItem
+                    Command="{Binding SettingsCommand}"
+                    Header="_Настройки…"
+                    Icon="{ui:SymbolIcon Settings24}"
+                    InputGestureText="Ctrl+," />
+                <MenuItem Command="{Binding AboutCommand}" Header="_О программе" />
+            </MenuItem>
+        </Menu>
+
+        <!--  Toolbar  -->
+        <StackPanel
+            Grid.Row="2"
+            Margin="8,4,8,0"
+            IsEnabled="{Binding IsIdle}"
+            Orientation="Horizontal">
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding OpenCommand}"
+                Content="Открыть"
+                Icon="{ui:SymbolIcon FolderOpen24}"
+                ToolTip="Открыть образ или архив (Ctrl+O)" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding SaveCommand}"
+                Content="Сохранить"
+                Icon="{ui:SymbolIcon Save24}"
+                ToolTip="Сохранить образ (Ctrl+S)" />
+            <ui:Button
+                Margin="0,0,12,0"
+                Appearance="Transparent"
+                Command="{Binding SaveAsCommand}"
+                Content="Сохранить как…"
+                Icon="{ui:SymbolIcon SaveEdit24}"
+                ToolTip="Сохранить в другом формате или с другими параметрами (Ctrl+Shift+S)" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding AddFilesCommand}"
+                Content="Добавить файлы"
+                Icon="{ui:SymbolIcon DocumentAdd24}"
+                ToolTip="Добавить файлы в текущую папку образа" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding AddFolderCommand}"
+                Content="Добавить папку"
+                Icon="{ui:SymbolIcon FolderAdd24}"
+                ToolTip="Добавить папку с содержимым в текущую папку образа" />
+            <ui:Button
+                Margin="0,0,12,0"
+                Appearance="Transparent"
+                Command="{Binding NewFolderCommand}"
+                Content="Новая папка"
+                Icon="{ui:SymbolIcon Add24}"
+                ToolTip="Создать папку в образе" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding ExtractCommand}"
+                Content="Извлечь"
+                Icon="{ui:SymbolIcon ArrowDownload24}"
+                ToolTip="Извлечь выбранное в папку на диске (Ctrl+E)" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding DeleteCommand}"
+                Content="Удалить"
+                Icon="{ui:SymbolIcon Delete24}"
+                ToolTip="Удалить выбранное из образа (Del)" />
+            <ui:Button
+                Margin="0,0,4,0"
+                Appearance="Transparent"
+                Command="{Binding PropertiesCommand}"
+                Content="Свойства"
+                Icon="{ui:SymbolIcon ShieldKeyhole24}"
+                ToolTip="Свойства, права доступа и владелец (Alt+Enter)" />
+        </StackPanel>
+
+        <!--  Navigation: history, address, search  -->
+        <Grid
+            Grid.Row="3"
+            Margin="8,6,8,6"
+            IsEnabled="{Binding IsIdle}"
+            Visibility="{Binding HasDocument, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Horizontal">
+                <ui:Button
+                    Appearance="Transparent"
+                    Command="{Binding BackCommand}"
+                    Icon="{ui:SymbolIcon ArrowLeft24}"
+                    ToolTip="Назад (Alt+←)" />
+                <ui:Button
+                    Appearance="Transparent"
+                    Command="{Binding ForwardCommand}"
+                    Icon="{ui:SymbolIcon ArrowRight24}"
+                    ToolTip="Вперёд (Alt+→)" />
+                <ui:Button
+                    Appearance="Transparent"
+                    Command="{Binding UpCommand}"
+                    Icon="{ui:SymbolIcon ArrowUp24}"
+                    ToolTip="На уровень вверх (Alt+↑)" />
+                <ui:Button
+                    Margin="0,0,8,0"
+                    Appearance="Transparent"
+                    Command="{Binding RefreshCommand}"
+                    Icon="{ui:SymbolIcon ArrowClockwise24}"
+                    ToolTip="Обновить (F5)" />
+            </StackPanel>
+
+            <!--  The breadcrumb is shown normally; a click on the free area or Ctrl+L swaps in the text box.  -->
+            <Border
+                x:Name="AddressArea"
+                Grid.Column="1"
+                Padding="8,0"
+                Background="{DynamicResource ControlFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="4"
+                MouseLeftButtonDown="OnAddressAreaClick"
+                ToolTip="Щелчок по свободному месту или Ctrl+L — ввести путь вручную">
+                <Grid>
+                    <ui:BreadcrumbBar
+                        x:Name="Breadcrumb"
+                        VerticalAlignment="Center"
+                        Command="{Binding NavigateCommand}"
+                        FontSize="14"
+                        ItemsSource="{Binding Breadcrumbs}">
+                        <ui:BreadcrumbBar.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}" />
+                            </DataTemplate>
+                        </ui:BreadcrumbBar.ItemTemplate>
+                    </ui:BreadcrumbBar>
+                    <TextBox
+                        x:Name="PathBox"
+                        VerticalAlignment="Center"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        KeyDown="OnPathBoxKeyDown"
+                        LostKeyboardFocus="OnPathBoxLostFocus"
+                        Visibility="Collapsed" />
+                </Grid>
+            </Border>
+
+            <ui:TextBox
+                x:Name="SearchBox"
+                Grid.Column="2"
+                Width="250"
+                Margin="8,0,0,0"
+                ClearButtonEnabled="True"
+                Icon="{ui:SymbolIcon Search24}"
+                PlaceholderText="Поиск: имя или маска *.conf (Ctrl+F)"
+                Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=250}" />
+        </Grid>
+
+        <!--  Warnings of the last operation  -->
+        <Grid Grid.Row="4" Margin="8,0,8,6">
+            <ui:InfoBar
+                Title="{Binding InfoTitle}"
+                IsClosable="True"
+                IsOpen="{Binding IsInfoOpen, Mode=TwoWay}"
+                Message="{Binding InfoMessage}"
+                Severity="{Binding InfoKind, Converter={StaticResource KindToSeverity}}" />
+            <ui:Button
+                Margin="0,0,48,0"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Appearance="Secondary"
+                Command="{Binding ShowWarningsCommand}"
+                Content="Подробнее…"
+                Visibility="{Binding IsInfoOpen, Converter={StaticResource BoolToVisibility}}" />
+        </Grid>
+
+        <!--  Folder tree and file list  -->
+        <Grid
+            Grid.Row="5"
+            Margin="8,0,8,0"
+            Visibility="{Binding HasDocument, Converter={StaticResource BoolToVisibility}}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition
+                    x:Name="TreeColumn"
+                    Width="270"
+                    MinWidth="0" />
+                <ColumnDefinition x:Name="SplitterColumn" Width="6" />
+                <ColumnDefinition Width="*" MinWidth="260" />
+            </Grid.ColumnDefinitions>
+
+            <Border
+                Grid.Column="0"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="6">
+                <TreeView
+                    x:Name="FolderTree"
+                    Margin="2"
+                    AllowDrop="True"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    ItemsSource="{Binding TreeRoots}"
+                    SelectedItemChanged="OnTreeSelectionChanged"
+                    VirtualizingPanel.IsVirtualizing="True"
+                    VirtualizingPanel.VirtualizationMode="Standard">
+                    <TreeView.ItemContainerStyle>
+                        <Style BasedOn="{StaticResource {x:Type TreeViewItem}}" TargetType="{x:Type TreeViewItem}">
+                            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+                            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                        </Style>
+                    </TreeView.ItemContainerStyle>
+                    <TreeView.ItemTemplate>
+                        <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                            <StackPanel Orientation="Horizontal">
+                                <ui:SymbolIcon
+                                    Margin="0,0,6,0"
+                                    FontSize="16"
+                                    Symbol="Folder20" />
+                                <TextBlock VerticalAlignment="Center" Text="{Binding Name}" />
+                            </StackPanel>
+                        </HierarchicalDataTemplate>
+                    </TreeView.ItemTemplate>
+                </TreeView>
+            </Border>
+
+            <GridSplitter
+                Grid.Column="1"
+                Width="6"
+                HorizontalAlignment="Stretch"
+                Background="Transparent"
+                ResizeBehavior="PreviousAndNext" />
+
+            <Border
+                Grid.Column="2"
+                Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="6">
+                <ui:ListView
+                    x:Name="FileList"
+                    Margin="2"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    GridViewColumnHeader.Click="OnHeaderClick"
+                    ItemsSource="{Binding Items}"
+                    MouseDoubleClick="OnListDoubleClick"
+                    PreviewMouseLeftButtonDown="OnListMouseDown"
+                    PreviewMouseMove="OnListMouseMove"
+                    SelectionChanged="OnListSelectionChanged"
+                    SelectionMode="Extended">
+                    <ui:ListView.InputBindings>
+                        <KeyBinding Key="Return" Command="{Binding OpenItemCommand}" />
+                        <KeyBinding Key="Back" Command="{Binding UpCommand}" />
+                        <KeyBinding Key="Delete" Command="{Binding DeleteCommand}" />
+                        <KeyBinding Key="F2" Command="{Binding RenameCommand}" />
+                        <KeyBinding Key="Return" Command="{Binding PropertiesCommand}" Modifiers="Alt" />
+                        <KeyBinding Key="C" Command="{Binding CopyCommand}" Modifiers="Control" />
+                        <KeyBinding Key="X" Command="{Binding CutCommand}" Modifiers="Control" />
+                        <KeyBinding Key="V" Command="{Binding PasteCommand}" Modifiers="Control" />
+                        <KeyBinding Key="N" Command="{Binding NewFolderCommand}" Modifiers="Control+Shift" />
+                    </ui:ListView.InputBindings>
+                    <ui:ListView.ContextMenu>
+                        <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                            <MenuItem Command="{Binding OpenItemCommand}" Header="Открыть" />
+                            <MenuItem
+                                Command="{Binding OpenExternallyCommand}"
+                                Header="Открыть во внешней программе"
+                                Icon="{ui:SymbolIcon Open24}" />
+                            <MenuItem
+                                Command="{Binding ExtractCommand}"
+                                Header="Извлечь…"
+                                Icon="{ui:SymbolIcon ArrowDownload24}" />
+                            <MenuItem Command="{Binding ReplaceContentCommand}" Header="Заменить содержимое…" />
+                            <Separator />
+                            <MenuItem
+                                Command="{Binding CutCommand}"
+                                Header="Вырезать"
+                                Icon="{ui:SymbolIcon Cut24}" />
+                            <MenuItem
+                                Command="{Binding CopyCommand}"
+                                Header="Копировать"
+                                Icon="{ui:SymbolIcon Copy24}" />
+                            <MenuItem
+                                Command="{Binding PasteCommand}"
+                                Header="Вставить"
+                                Icon="{ui:SymbolIcon ClipboardPaste24}" />
+                            <Separator />
+                            <MenuItem Header="Создать" Icon="{ui:SymbolIcon Add24}">
+                                <MenuItem Command="{Binding NewFolderCommand}" Header="Папку…" />
+                                <MenuItem Command="{Binding NewFileCommand}" Header="Пустой файл…" />
+                                <MenuItem Command="{Binding NewSymlinkCommand}" Header="Символическую ссылку…" />
+                                <MenuItem Command="{Binding NewSpecialCommand}" Header="Устройство, FIFO или сокет…" />
+                            </MenuItem>
+                            <MenuItem
+                                Command="{Binding AddFilesCommand}"
+                                Header="Добавить файлы…"
+                                Icon="{ui:SymbolIcon DocumentAdd24}" />
+                            <MenuItem
+                                Command="{Binding AddFolderCommand}"
+                                Header="Добавить папку…"
+                                Icon="{ui:SymbolIcon FolderAdd24}" />
+                            <Separator />
+                            <MenuItem
+                                Command="{Binding RenameCommand}"
+                                Header="Переименовать…"
+                                Icon="{ui:SymbolIcon Rename24}" />
+                            <MenuItem
+                                Command="{Binding DeleteCommand}"
+                                Header="Удалить"
+                                Icon="{ui:SymbolIcon Delete24}" />
+                            <MenuItem Command="{Binding CopyPathCommand}" Header="Копировать путь" />
+                            <Separator />
+                            <MenuItem
+                                Command="{Binding PropertiesCommand}"
+                                Header="Свойства и права доступа…"
+                                Icon="{ui:SymbolIcon ShieldKeyhole24}" />
+                        </ContextMenu>
+                    </ui:ListView.ContextMenu>
+                    <ui:ListView.View>
+                        <ui:GridView AllowsColumnReorder="False">
+                            <ui:GridViewColumn
+                                x:Name="ColName"
+                                Width="300"
+                                MinWidth="120"
+                                Header="Имя">
+                                <ui:GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:SymbolIcon
+                                                Margin="0,0,8,0"
+                                                FontSize="16"
+                                                Symbol="{Binding Icon, Converter={StaticResource NodeIcon}}" />
+                                            <TextBlock
+                                                VerticalAlignment="Center"
+                                                FontWeight="{Binding IsDirectory, Converter={StaticResource FolderEmphasis}}"
+                                                Text="{Binding Name}"
+                                                TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ui:GridViewColumn.CellTemplate>
+                            </ui:GridViewColumn>
+                            <ui:GridViewColumn
+                                x:Name="ColLocation"
+                                Width="0"
+                                DisplayMemberBinding="{Binding Location}"
+                                Header="Папка" />
+                            <ui:GridViewColumn
+                                x:Name="ColSize"
+                                Width="95"
+                                MinWidth="60"
+                                DisplayMemberBinding="{Binding SizeText}"
+                                Header="Размер" />
+                            <ui:GridViewColumn
+                                x:Name="ColMode"
+                                Width="150"
+                                MinWidth="60">
+                                <ui:GridViewColumn.Header>Права</ui:GridViewColumn.Header>
+                                <ui:GridViewColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock FontFamily="Consolas" Text="{Binding Mode}" />
+                                            <TextBlock
+                                                Margin="8,0,0,0"
+                                                FontFamily="Consolas"
+                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                Text="{Binding Octal}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ui:GridViewColumn.CellTemplate>
+                            </ui:GridViewColumn>
+                            <ui:GridViewColumn
+                                x:Name="ColOwner"
+                                Width="150"
+                                MinWidth="60"
+                                DisplayMemberBinding="{Binding Owner}"
+                                Header="Владелец : группа" />
+                            <ui:GridViewColumn
+                                x:Name="ColModified"
+                                Width="150"
+                                MinWidth="60"
+                                DisplayMemberBinding="{Binding Modified}"
+                                Header="Изменён" />
+                            <ui:GridViewColumn
+                                x:Name="ColType"
+                                Width="160"
+                                MinWidth="60"
+                                DisplayMemberBinding="{Binding TypeText}"
+                                Header="Тип" />
+                            <ui:GridViewColumn
+                                x:Name="ColDetails"
+                                Width="220"
+                                MinWidth="60"
+                                DisplayMemberBinding="{Binding Details}"
+                                Header="Ссылка / примечание" />
+                        </ui:GridView>
+                    </ui:ListView.View>
+                </ui:ListView>
+            </Border>
+        </Grid>
+
+        <!--  Start screen  -->
+        <Grid
+            Grid.Row="3"
+            Grid.RowSpan="3"
+            Visibility="{Binding NoDocument, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel
+                MaxWidth="640"
+                Margin="24"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center">
+                <Image
+                    Width="64"
+                    Height="64"
+                    Margin="0,0,0,12"
+                    Source="pack://application:,,,/Assets/app.png" />
+                <ui:TextBlock
+                    HorizontalAlignment="Center"
+                    FontTypography="Title"
+                    Text="FsForge" />
+                <ui:TextBlock
+                    Margin="0,4,0,20"
+                    HorizontalAlignment="Center"
+                    Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                    Text="Редактор образов SquashFS, ext2 / ext3 / ext4 и архивов rootfs.tar.gz"
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+                <StackPanel
+                    HorizontalAlignment="Center"
+                    IsEnabled="{Binding IsIdle}"
+                    Orientation="Horizontal">
+                    <ui:Button
+                        Margin="0,0,8,0"
+                        Appearance="Primary"
+                        Command="{Binding OpenCommand}"
+                        Content="Открыть образ…"
+                        Icon="{ui:SymbolIcon FolderOpen24}" />
+                    <ui:Button
+                        Margin="0,0,8,0"
+                        Command="{Binding NewFromFolderCommand}"
+                        Content="Собрать из папки…"
+                        Icon="{ui:SymbolIcon FolderArrowUp24}" />
+                    <ui:Button
+                        Command="{Binding NewCommand}"
+                        Content="Пустой образ"
+                        Icon="{ui:SymbolIcon DocumentAdd24}" />
+                </StackPanel>
+                <Border
+                    Margin="0,20,0,0"
+                    Padding="16,12"
+                    BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <ui:TextBlock
+                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                        Text="Перетащите в окно файл образа или архив, чтобы открыть его, либо папку, чтобы собрать из неё новый образ. В открытый образ файлы и папки добавляются тем же перетаскиванием."
+                        TextAlignment="Center"
+                        TextWrapping="Wrap" />
+                </Border>
+                <StackPanel Margin="0,20,0,0" Visibility="{Binding HasRecentFiles, Converter={StaticResource BoolToVisibility}}">
+                    <ui:TextBlock
+                        Margin="0,0,0,6"
+                        FontTypography="BodyStrong"
+                        Text="Недавние" />
+                    <ItemsControl
+                        MaxHeight="220"
+                        IsEnabled="{Binding IsIdle}"
+                        ItemsSource="{Binding RecentFiles}">
+                        <ItemsControl.Template>
+                            <ControlTemplate TargetType="{x:Type ItemsControl}">
+                                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                    <ItemsPresenter />
+                                </ScrollViewer>
+                            </ControlTemplate>
+                        </ItemsControl.Template>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <ui:Button
+                                    Margin="0,0,0,4"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Appearance="Transparent"
+                                    Click="OnRecentButtonClick"
+                                    ToolTip="{Binding Path}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <ui:SymbolIcon Margin="0,0,8,0" Symbol="HardDrive20" />
+                                        <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                                        <TextBlock
+                                            Margin="10,0,0,0"
+                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                            Text="{Binding Folder}"
+                                            TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+                                </ui:Button>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+
+        <!--  Status bar  -->
+        <Grid Grid.Row="6" Margin="14,6,14,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock
+                Grid.Column="0"
+                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                Text="{Binding StatusText}"
+                TextTrimming="CharacterEllipsis" />
+            <TextBlock
+                Grid.Column="1"
+                Margin="16,0,0,0"
+                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                Text="{Binding DocumentInfo}" />
+        </Grid>
+
+        <!--  Notifications  -->
+        <ui:SnackbarPresenter
+            x:Name="SnackbarPresenter"
+            Grid.Row="5"
+            Grid.RowSpan="2"
+            VerticalAlignment="Bottom" />
+
+        <!--  Progress of a long operation  -->
+        <Grid
+            Grid.Row="1"
+            Grid.RowSpan="6"
+            Background="{DynamicResource SmokeFillColorDefaultBrush}"
+            Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}">
+            <Border
+                Width="460"
+                Padding="24"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
+                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <ui:ProgressRing
+                            Width="28"
+                            Height="28"
+                            Margin="0,0,12,0"
+                            IsIndeterminate="True" />
+                        <ui:TextBlock
+                            MaxWidth="360"
+                            VerticalAlignment="Center"
+                            FontTypography="BodyStrong"
+                            Text="{Binding BusyTitle}"
+                            TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <ProgressBar
+                        Height="4"
+                        Margin="0,16,0,8"
+                        IsIndeterminate="{Binding BusyIndeterminate}"
+                        Maximum="100"
+                        Value="{Binding BusyPercent, Mode=OneWay}" />
+                    <TextBlock
+                        MinHeight="36"
+                        Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                        Text="{Binding BusyDetail}"
+                        TextWrapping="Wrap" />
+                    <ui:Button
+                        Margin="0,12,0,0"
+                        HorizontalAlignment="Right"
+                        Command="{Binding CancelCommand}"
+                        Content="Отмена" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</ui:FluentWindow>

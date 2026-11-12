@@ -1,0 +1,588 @@
+using System.Text;
+using FsForge.Core;
+using FsForge.Core.Images;
+using FsForge.Core.SquashFs;
+using FsForge.Core.Tar;
+using FsForge.Presentation.Services;
+using FsForge.Presentation.Settings;
+using FsForge.Presentation.ViewModels;
+
+namespace FsForge.Presentation.Tests;
+
+/// <summary>Scripted stand-in for the user: answers questions and fills in dialogs.</summary>
+internal sealed class FakeDialogs : IDialogService
+{
+    public readonly Queue<string?> OpenPicks = new(), FolderPicks = new(), SavePicks = new();
+    public readonly Queue<IReadOnlyList<string>> FilePicks = new();
+    public readonly Queue<DialogAnswer> Answers = new();
+    public readonly List<string> Asked = new(), Messages = new(), Notifications = new();
+    public Func<object, bool> OnDialog = _ => false;
+
+    public string? PickImageToOpen(string? initialDirectory) => OpenPicks.Dequeue();
+    public IReadOnlyList<string> PickFilesToAdd(string? initialDirectory) => FilePicks.Dequeue();
+    public string? PickFolder(string title, string? initialDirectory) => FolderPicks.Dequeue();
+    public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory)
+    {
+        LastSuggestedName = suggestedName;
+        return SavePicks.Dequeue();
+    }
+
+    public string LastSuggestedName = "";
+    public bool ShowDialog(object viewModel) => OnDialog(viewModel);
+
+    public Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string cancel = "Отмена")
+    {
+        Asked.Add(title);
+        return Task.FromResult(Answers.Count > 0 ? Answers.Dequeue() : throw new InvalidOperationException("Unexpected question: " + title + " / " + message));
+    }
+
+    public Task ShowMessageAsync(string title, string message, MessageKind kind = MessageKind.Info)
+    {
+        Messages.Add($"{kind}: {title}: {message}");
+        return Task.CompletedTask;
+    }
+
+    public void Notify(string title, string message, MessageKind kind = MessageKind.Info) => Notifications.Add($"{kind}: {title}: {message}");
+}
+
+internal sealed class FakeShell : IShellService
+{
+    public readonly List<string> Folders = new(), Files = new();
+    public string Clipboard = "";
+    public void OpenFolder(string path) => Folders.Add(path);
+    public void OpenFile(string path, string? program) => Files.Add(path);
+    public void SetClipboardText(string text) => Clipboard = text;
+}
+
+internal static class Program
+{
+    private static int _passed, _failed;
+    private static string _dir = "";
+
+    private static void Check(bool condition, string message)
+    {
+        if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private static async Task Test(string name, Func<Task> body)
+    {
+        try
+        {
+            await body();
+            _passed++;
+            Console.WriteLine("  ok    " + name);
+        }
+        catch (Exception ex)
+        {
+            _failed++;
+            Console.WriteLine($"  FAIL  {name}: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    private static string MakeImage(string name)
+    {
+        using var t = new FsTree(0x1ED, 1700000000);
+        FsNode etc = t.CreateDirectory(t.Root, "etc", 0x1ED, 0, 0, 1700000001);
+        FsNode bin = t.CreateDirectory(t.Root, "bin", 0x1ED, 0, 0, 1700000002);
+        FsNode usr = t.CreateDirectory(t.Root, "usr", 0x1ED, 0, 0, 1700000003);
+        FsNode lib = t.CreateDirectory(usr, "lib", 0x1ED, 0, 0, 1700000004);
+        t.CreateFile(etc, "passwd", new MemoryFileData(Encoding.ASCII.GetBytes("root:x:0:0:root:/root:/bin/sh\nwww:x:33:33::/var/www:/bin/false\n")), 0x1A4, 0, 0, 1700000010);
+        t.CreateFile(etc, "group", new MemoryFileData(Encoding.ASCII.GetBytes("root:x:0:\nwww-data:x:33:\n")), 0x1A4, 0, 0, 1700000010);
+        t.CreateFile(etc, "hostname", new MemoryFileData(Encoding.ASCII.GetBytes("board\n")), 0x1A4, 33, 33, 1700000011);
+        t.CreateFile(etc, "Banner", new MemoryFileData(Encoding.ASCII.GetBytes("hello\n")), 0x1A4, 0, 0, 1700000012);
+        FsNode sh = t.CreateFile(bin, "busybox", new MemoryFileData(new byte[50000]), 0x1ED, 0, 0, 1700000020);
+        t.CreateSymlink(bin, "sh", "busybox");
+        t.CreateSymlink(t.Root, "lib", "usr/lib");
+        t.CreateHardLink(bin, "ash", sh);
+        for (int i = 0; i < 30; i++) t.CreateFile(lib, $"lib{i:00}.so", new MemoryFileData(new byte[1000 + i]), 0x1A4, 0, 0, 1700000100 + i);
+        t.CreateSpecial(t.CreateDirectory(t.Root, "dev"), "null", FsNodeType.CharDevice, 1, 3, 0x1B6);
+        string path = Path.Combine(_dir, name);
+        using var fs = new FileStream(path, FileMode.Create);
+        ImageDocument.WriteTo(t, fs, new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Gzip } });
+        return path;
+    }
+
+    private static (MainViewModel Vm, FakeDialogs Dialogs, FakeShell Shell, SettingsStore Store) NewVm()
+    {
+        var dialogs = new FakeDialogs();
+        var shell = new FakeShell();
+        var store = new SettingsStore(Path.Combine(_dir, "settings-" + Guid.NewGuid().ToString("N")[..6] + ".json"));
+        var settings = new AppSettings { TempDirectory = _dir, OpenFolderAfterExtract = true, KeepBackup = false, Verify = VerifyLevel.Content };
+        var vm = new MainViewModel(dialogs, shell, new ImmediateDispatcher(), store, settings);
+        // The view normally applies requested selections; do the same here.
+        vm.SelectionRequested += items => vm.SetSelection(items);
+        return (vm, dialogs, shell, store);
+    }
+
+    private static NodeItem Item(MainViewModel vm, string name) => vm.Items.FirstOrDefault(i => i.Name == name) ?? throw new InvalidOperationException($"'{name}' is not in the list: {string.Join(", ", vm.Items.Select(i => i.Name))}");
+
+    private static void Select(MainViewModel vm, params string[] names) => vm.SetSelection(names.Select(n => Item(vm, n)));
+
+    /// <summary>
+    /// Prints "Type|Property|PropertyType" for every public property of the view models and the
+    /// model classes they expose. tests/check-bindings.py compares the XAML bindings with this list.
+    /// </summary>
+    private static int DumpProperties()
+    {
+        var seen = new HashSet<Type>();
+        var queue = new Queue<Type>();
+        foreach (Type t in typeof(MainViewModel).Assembly.GetExportedTypes()) queue.Enqueue(t);
+        foreach (Type t in typeof(FsNode).Assembly.GetExportedTypes()) queue.Enqueue(t);
+        while (queue.Count > 0)
+        {
+            Type t = queue.Dequeue();
+            if (!seen.Add(t) || t.IsGenericTypeDefinition) continue;
+            foreach (var p in t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                if (p.GetIndexParameters().Length > 0) continue;
+                Type pt = p.PropertyType;
+                Console.WriteLine($"{Name(t)}|{p.Name}|{Name(pt)}");
+                // Follow collections to their element type so that item templates can be checked too.
+                foreach (Type i in pt.GetInterfaces().Append(pt))
+                    if (i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                    {
+                        Console.WriteLine($"{Name(t)}|{p.Name}[]|{Name(i.GetGenericArguments()[0])}");
+                        queue.Enqueue(i.GetGenericArguments()[0]);
+                    }
+                if (pt.Assembly == typeof(MainViewModel).Assembly || pt.Assembly == typeof(FsNode).Assembly) queue.Enqueue(pt);
+            }
+        }
+        return 0;
+
+        static string Name(Type t) => t.IsGenericType
+            ? t.Name[..t.Name.IndexOf('`')] + "<" + string.Join(",", t.GetGenericArguments().Select(Name)) + ">"
+            : t.IsNested ? t.DeclaringType!.Name + "." + t.Name : t.Name;
+    }
+
+    private static async Task<int> Main(string[] args)
+    {
+        if (args.Length > 0 && args[0] == "--dump-properties") return DumpProperties();
+        _dir = args.Length > 0 ? args[0] : Path.Combine(Path.GetTempPath(), "fsforge-uitest-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(_dir);
+
+        await Test("open, list, sort, navigate", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            Check(vm.NoDocument && !vm.SaveCommand.CanExecute(null) && vm.OpenCommand.CanExecute(null), "initial command state");
+            Check(await vm.OpenPathAsync(MakeImage("a.sqfs")), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.HasDocument && vm.CurrentPath == "/" && !vm.IsModified, "document state after open");
+            Check(vm.Title.StartsWith("a.sqfs — "), "title: " + vm.Title);
+            Check(string.Join(",", vm.Items.Select(i => i.Name)) == "bin,dev,etc,usr,lib", "folders first, then by name: " + string.Join(",", vm.Items.Select(i => i.Name)));
+            Check(vm.TreeRoots.Count == 1 && string.Join(",", vm.TreeRoots[0].Children.Select(c => c.Name)) == "bin,dev,etc,usr", "folder tree");
+            Check(vm.Settings.RecentFiles.Count == 1 && vm.RecentFiles.Count == 1, "recent files");
+
+            await vm.OpenItemCommand.ExecuteAsync(Item(vm, "etc"));
+            Check(vm.CurrentPath == "/etc" && vm.Breadcrumbs.Count == 2 && vm.Items.Count == 4, "navigation into /etc");
+            Check(vm.Items[0].Name == "Banner" && Item(vm, "hostname").Owner == "www (33) : www-data (33)", "name order and owner names: " + Item(vm, "hostname").Owner);
+            vm.SortBy("Size");
+            Check(vm.Items[0].Name == "Banner" && vm.Items[^1].Name == "passwd", "sort by size");
+            vm.SortBy("Size");
+            Check(vm.Items[0].Name == "passwd", "sort descending");
+            vm.SortBy("Name");
+
+            vm.UpCommand.Execute(null);
+            Check(vm.CurrentPath == "/" && vm.Selection.Count == 1 && vm.Selection[0].Name == "etc", "up selects the folder we came from");
+            vm.BackCommand.Execute(null);
+            Check(vm.CurrentPath == "/etc", "back");
+            vm.BackCommand.Execute(null);
+            vm.ForwardCommand.Execute(null);
+            Check(vm.CurrentPath == "/etc", "forward");
+            vm.CurrentPath = "/usr/lib";
+            Check(vm.CurrentPath == "/usr/lib" && vm.Items.Count == 30, "typed path");
+            vm.CurrentPath = "/nope";
+            Check(vm.CurrentPath == "/usr/lib" && d.Notifications.Any(n => n.Contains("Путь не найден")), "bad path keeps the folder");
+
+            // A symlink to a directory opens the directory.
+            vm.CurrentPath = "/";
+            await vm.OpenItemCommand.ExecuteAsync(Item(vm, "lib"));
+            Check(vm.CurrentPath == "/usr/lib", "symlink to a directory: " + vm.CurrentPath);
+
+            vm.CurrentPath = "/";
+            vm.SearchEverywhere = true;
+            vm.SearchText = "lib1?.so";
+            Check(vm.Items.Count == 10 && vm.Items[0].Location == "/usr/lib" && vm.ShowLocationColumn, "wildcard search everywhere: " + vm.Items.Count);
+            vm.SearchText = "BUSY";
+            Check(vm.Items.Count == 1 && vm.Items[0].Name == "busybox", "case-insensitive search");
+            vm.SearchText = "";
+            Check(vm.Items.Count == 5, "search cleared");
+            vm.Dispose();
+        });
+
+        await Test("create, rename, delete, clipboard, properties", async () =>
+        {
+            var (vm, d, shell, _) = NewVm();
+            await vm.OpenPathAsync(MakeImage("b.sqfs"));
+            d.OnDialog = o =>
+            {
+                if (o is not NewItemViewModel n) return false;
+                n.Name = "etc";
+                Check(!n.Accept() && n.HasError, "a duplicate name must be rejected");
+                n.Name = "opt";
+                n.Mode = "0750";
+                return n.Accept();
+            };
+            vm.NewFolderCommand.Execute(null);
+            Check(vm.IsModified && Item(vm, "opt").Octal == "0750" && vm.Selection.Single().Name == "opt", "new folder");
+            Check(vm.TreeRoots[0].Children.Any(c => c.Name == "opt"), "new folder appears in the tree");
+            Check(vm.Title.Contains('•'), "modified marker in the title");
+
+            d.OnDialog = o =>
+            {
+                var n = (NewItemViewModel)o;
+                n.Kind = NewItemKind.Symlink;
+                n.Name = "tmp";
+                Check(!n.Accept(), "a link without a target must be rejected");
+                n.Target = "/var/tmp";
+                return n.Accept();
+            };
+            vm.NewSymlinkCommand.Execute(null);
+            Check(Item(vm, "tmp").Details == "→ /var/tmp", "new symlink");
+
+            d.OnDialog = o =>
+            {
+                var p = (PromptViewModel)o;
+                p.Text = "a/b";
+                Check(!p.Accept(), "a name with a slash must be rejected");
+                p.Text = "option";
+                return p.Accept();
+            };
+            Select(vm, "opt");
+            vm.RenameCommand.Execute(null);
+            Check(vm.Items.Any(i => i.Name == "option") && vm.Items.All(i => i.Name != "opt"), "rename");
+
+            // Copy /etc into /option, then cut one file out of the copy.
+            Select(vm, "etc");
+            vm.CopyCommand.Execute(null);
+            await vm.OpenItemCommand.ExecuteAsync(Item(vm, "option"));
+            await vm.PasteCommand.ExecuteAsync();
+            Check(vm.Items.Single().Name == "etc" && vm.Document!.Tree.Resolve("/option/etc/passwd") is not null, "paste copy");
+            await vm.PasteCommand.ExecuteAsync();
+            Check(vm.Items.Count == 2 && vm.Items.Any(i => i.Name == "etc (2)"), "second paste gets a new name");
+            await vm.OpenItemCommand.ExecuteAsync(Item(vm, "etc"));
+            Select(vm, "passwd", "group");
+            vm.CutCommand.Execute(null);
+            vm.CurrentPath = "/option";
+            await vm.PasteCommand.ExecuteAsync();
+            Check(vm.Document!.Tree.Resolve("/option/passwd") is not null && vm.Document.Tree.Resolve("/option/etc/passwd") is null, "cut and paste moves");
+            Check(!vm.PasteCommand.CanExecute(null), "the clipboard is empty after a move");
+
+            // Copying a folder into itself is refused.
+            vm.CurrentPath = "/";
+            Select(vm, "option");
+            vm.CopyCommand.Execute(null);
+            vm.CurrentPath = "/option/etc";
+            await vm.PasteCommand.ExecuteAsync();
+            Check(d.Messages.Any(m => m.Contains("внутрь самой себя")), "copy into itself must be reported");
+
+            // Recursive chmod/chown through the properties dialog.
+            vm.CurrentPath = "/";
+            Select(vm, "option");
+            d.OnDialog = o =>
+            {
+                var p = (PropertiesViewModel)o;
+                Check(p.Octal == "0750" && p.OwnerExec && !p.OtherRead && p.Symbolic == "rwxr-x---", "properties show the mode: " + p.Symbolic);
+                p.OtherRead = true;
+                Check(p.Octal == "0754", "check box updates the octal text: " + p.Octal);
+                p.Octal = "0700";
+                Check(!p.GroupRead && !p.OtherRead, "octal text updates the check boxes");
+                p.Uid = "1000";
+                p.Gid = "abc";
+                Check(!p.Accept() && p.Error!.Contains("GID"), "a bad GID must be rejected");
+                p.Gid = "1000";
+                p.Recursive = true;
+                p.RecursiveTargets = FsTree.Targets.Files;
+                p.Time = "2024-01-02 03:04:05";
+                return p.Accept();
+            };
+            vm.PropertiesCommand.Execute(null);
+            FsTree tree = vm.Document!.Tree;
+            Check(tree.Resolve("/option/passwd")!.Inode is { Mode: 0x1C0, Uid: 1000, Gid: 1000 }, "recursive chmod on files");
+            Check(tree.Resolve("/option")!.Inode is { Mode: 0x1E8, Uid: 1000 }, "folders keep their mode when only files are targeted, but get the owner");
+
+            // Extended attributes and a symlink target.
+            vm.CurrentPath = "/bin";
+            Select(vm, "busybox");
+            d.OnDialog = o =>
+            {
+                var p = (PropertiesViewModel)o;
+                Check(p.LinksText.StartsWith("2"), "hard link count is shown");
+                p.AddXattrCommand.Execute(null);
+                p.Xattrs[^1].Name = "security.capability";
+                p.Xattrs[^1].Value = "0x0100000200200000";
+                p.AddXattrCommand.Execute(null);
+                p.Xattrs[^1].Name = "nonamespace";
+                Check(!p.Accept(), "an attribute without a namespace must be rejected");
+                p.Xattrs[^1].Name = "user.note";
+                p.Xattrs[^1].Value = "hello\\0";
+                return p.Accept();
+            };
+            vm.PropertiesCommand.Execute(null);
+            FsInode bb = tree.Resolve("/bin/busybox")!.Inode;
+            Check(bb.XAttrs!["security.capability"].Length == 8 && bb.XAttrs["user.note"].AsSpan().SequenceEqual("hello\0"u8), "extended attributes were stored");
+
+            Select(vm, "sh");
+            d.OnDialog = o =>
+            {
+                var p = (PropertiesViewModel)o;
+                Check(p.IsSymlink && p.Target == "busybox" && !p.CanEditMode, "symlink properties");
+                p.Target = "/bin/ash";
+                return p.Accept();
+            };
+            vm.PropertiesCommand.Execute(null);
+            Check(Item(vm, "sh").Details == "→ /bin/ash", "link target changed");
+
+            vm.CopyPathCommand.Execute(null);
+            Check(shell.Clipboard == "/bin/sh", "copy path: " + shell.Clipboard);
+
+            // Delete with confirmation, including the folder being shown elsewhere in history.
+            vm.CurrentPath = "/";
+            Select(vm, "option", "tmp");
+            d.Answers.Enqueue(DialogAnswer.Cancel);
+            await vm.DeleteCommand.ExecuteAsync();
+            Check(tree.Resolve("/option") is not null, "a cancelled delete must keep the objects");
+            Select(vm, "option", "tmp");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            Check(tree.Resolve("/option") is null && tree.Resolve("/tmp") is null && vm.TreeRoots[0].Children.All(c => c.Name != "option"), "delete");
+            vm.BackCommand.Execute(null);
+            Check(vm.CurrentPath == "/bin", "back skips folders that no longer exist: " + vm.CurrentPath);
+            vm.Dispose();
+        });
+
+        await Test("add files by drop, conflicts, extract", async () =>
+        {
+            var (vm, d, shell, _) = NewVm();
+            string host = Path.Combine(_dir, "host");
+            Directory.CreateDirectory(Path.Combine(host, "www", "cgi"));
+            File.WriteAllText(Path.Combine(host, "hostname"), "newboard\n");
+            File.WriteAllText(Path.Combine(host, "www", "index.html"), "<html/>");
+            File.WriteAllText(Path.Combine(host, "www", "cgi", "run.sh"), "#!/bin/sh\n");
+
+            // A folder dropped on the empty window becomes a new image.
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.HandleDropAsync(new[] { Path.Combine(host, "www") });
+            Check(vm.HasDocument && vm.Document!.FilePath is null && vm.Items.Count == 2, "new image from a dropped folder");
+            Check(Item(vm, "cgi").IsDirectory && vm.Document!.Tree.Resolve("/cgi/run.sh")!.Inode.Mode == 0x1ED, "scripts become executable");
+            // An image dropped on an opened image: the user chooses to open it and to drop the unsaved new image.
+            string img = MakeImage("c.sqfs");
+            d.Answers.Enqueue(DialogAnswer.Primary);            // "open" rather than "add as a file"
+            d.Answers.Enqueue(DialogAnswer.Secondary);          // do not save the new image
+            await vm.HandleDropAsync(new[] { img });
+            Check(vm.Document!.FilePath == img, "an image dropped on an opened image can replace it");
+            FsTree tree0 = vm.Document.Tree;
+
+            vm.CurrentPath = "/etc";
+            d.Answers.Enqueue(DialogAnswer.Primary);            // replace the existing hostname
+            await vm.HandleDropAsync(new[] { Path.Combine(host, "hostname"), Path.Combine(host, "www") });
+            FsTree tree = tree0;
+            Check(tree.Resolve("/etc/hostname")!.Inode.Size == 9 && tree.Resolve("/etc/www/cgi/run.sh") is not null, "dropped files were added");
+            Check(vm.Selection.Count == 2 && vm.IsModified, "added objects are selected");
+            Check(d.Asked.Contains("Объекты с такими именами уже существуют"), "the conflict question was asked");
+
+            d.Answers.Enqueue(DialogAnswer.Secondary);          // keep both
+            await vm.HandleDropAsync(new[] { Path.Combine(host, "hostname") });
+            Check(tree.Resolve("/etc/hostname (2)") is not null, "keep both adds a renamed copy");
+            d.Answers.Enqueue(DialogAnswer.Cancel);
+            await vm.HandleDropAsync(new[] { Path.Combine(host, "hostname") });
+            Check(vm.Items.Count(i => i.Name.StartsWith("hostname")) == 2, "cancel adds nothing");
+
+            // Extraction of a selection and of the whole image.
+            string outDir = Path.Combine(_dir, "out-sel");
+            Select(vm, "www", "passwd");
+            d.FolderPicks.Enqueue(outDir);
+            await vm.ExtractCommand.ExecuteAsync();
+            Check(File.Exists(Path.Combine(outDir, "www", "index.html")) && File.Exists(Path.Combine(outDir, "passwd")), "extract selection");
+            Check(File.Exists(Path.Combine(outDir, ".fsforge-meta.json")) && shell.Folders.Contains(outDir), "manifest written and folder opened");
+            string outAll = Path.Combine(_dir, "out-all");
+            d.FolderPicks.Enqueue(outAll);
+            await vm.ExtractAllCommand.ExecuteAsync();
+            Check(File.Exists(Path.Combine(outAll, "bin", "busybox")) && File.ReadAllText(Path.Combine(outAll, "bin", "sh")) == "busybox", "extract all");
+
+            IReadOnlyList<string> dragged = vm.ExtractForDrag(new[] { tree.Resolve("/etc/passwd")!, tree.Resolve("/usr")! });
+            Check(dragged.Count == 2 && dragged.All(p => File.Exists(p) || Directory.Exists(p)), "drag-out extraction");
+            vm.Dispose();
+            Check(!dragged.Any(p => File.Exists(p) || Directory.Exists(p)), "temporary files are removed on exit");
+        });
+
+        await Test("save in place, save as other formats, archives", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string img = MakeImage("d.sqfs");
+            await vm.OpenPathAsync(img);
+            vm.CurrentPath = "/usr/lib";
+            Select(vm, "lib00.so", "lib01.so");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            vm.TreeRoots[0].Children.First(c => c.Name == "usr").IsExpanded = true;
+            Check(vm.SaveCommand.CanExecute(null), "save must be enabled after a change");
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(!vm.IsModified && vm.CurrentPath == "/usr/lib" && vm.Items.Count == 28, "the view is restored after saving: " + vm.CurrentPath);
+            Check(vm.TreeRoots[0].Children.First(c => c.Name == "usr").IsExpanded, "expanded folders are restored");
+            Check(!vm.SaveCommand.CanExecute(null) && d.Notifications.Any(n => n.Contains("Образ сохранён")), "state after saving");
+            Check(vm.Document!.SquashFs!.Compression == SquashCompression.Gzip, "the compression of the source is kept");
+            Check(!File.Exists(img + ".fsforge-tmp") && !File.Exists(img + ".bak"), "no leftovers");
+
+            // Save as ext4 of a fixed size.
+            string ext = Path.Combine(_dir, "d.ext4");
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsSquash && s.SquashCompression == SquashCompression.Gzip, "dialog starts with the source format");
+                s.Format = SaveFormat.Ext4;
+                Check(s.IsExt && !s.CanKeepSize && s.SizeMode == ExtSizeMode.Minimal && s.Extension == ".ext4", "ext defaults");
+                s.SizeMode = ExtSizeMode.Fixed;
+                s.SizeMiB = "x";
+                Check(!s.Accept(), "a bad size must be rejected");
+                s.SizeMiB = "16";
+                s.Label = "rootfs";
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(ext);
+            Check(await vm.SaveAsAsync(), "save as ext4 failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "d.ext4", "suggested name: " + d.LastSuggestedName);
+            Check(vm.Document!.Format == ImageFormat.Ext && vm.Document.Ext!.SizeBytes == 16 << 20 && vm.Document.Ext.Label == "rootfs", "ext4 image");
+            Check(vm.Document.FilePath == ext && vm.CurrentPath == "/usr/lib" && vm.Title.StartsWith("d.ext4"), "document switched to the new file");
+
+            // Saving the ext image again keeps its geometry.
+            vm.CurrentPath = "/etc";
+            Select(vm, "Banner");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            Guid uuid = vm.Document.Ext!.Uuid;
+            Check(await vm.SaveAsync(), "second save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Ext!.SizeBytes == 16 << 20 && vm.Document.Ext.Uuid == uuid && vm.Document.Tree.Resolve("/etc/Banner") is null, "geometry and UUID are kept");
+
+            // Export /etc as tar.xz without touching the document, then import it elsewhere.
+            string tar = Path.Combine(_dir, "etc.tar.xz");
+            vm.CurrentPath = "/";
+            Select(vm, "etc");
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.FormatLocked && s.IsTar, "export dialog is fixed to tar");
+                s.TarCompression = ArchiveCompression.Xz;
+                s.XzEffort = 0;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(tar);
+            await vm.ExportArchiveCommand.ExecuteAsync();
+            Check(File.Exists(tar) && d.LastSuggestedName == "etc.tar.xz" && !vm.IsModified && vm.Document.FilePath == ext, "export leaves the document alone");
+
+            vm.CurrentPath = "/usr";
+            d.OpenPicks.Enqueue(tar);
+            await vm.ImportArchiveCommand.ExecuteAsync();
+            Check(vm.Document.Tree.Resolve("/usr/passwd") is not null && vm.Document.Tree.Resolve("/usr/hostname")!.Inode.Uid == 33 && vm.IsModified, "archive imported into /usr");
+
+            // Convert to rootfs.tar.gz.
+            string tgz = Path.Combine(_dir, "rootfs.tar.gz");
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.Tar;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(tgz);
+            Check(await vm.SaveAsAsync(), "save as tar.gz failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.Tar && vm.Document.Tar!.Compression == ArchiveCompression.Gzip && vm.Document.Tree.Resolve("/usr/passwd") is not null, "tar.gz document");
+            Check(vm.Document.Tree.Resolve("/lost+found") is not null, "content of the ext image, including lost+found, is carried over");
+
+            // Unsaved changes: closing asks, "cancel" keeps the document.
+            vm.CurrentPath = "/";
+            Select(vm, "dev");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            d.Answers.Enqueue(DialogAnswer.Cancel);
+            await vm.CloseCommand.ExecuteAsync();
+            Check(vm.HasDocument, "cancel keeps the document open");
+            d.Answers.Enqueue(DialogAnswer.Primary);            // save, then close
+            await vm.CloseCommand.ExecuteAsync();
+            Check(vm.NoDocument && vm.Items.Count == 0 && vm.Title == "FsForge", "closed after saving");
+            using ImageDocument check = ImageDocument.Open(tgz, _dir);
+            Check(check.Tree.Resolve("/dev") is null, "the save made on close reached the file");
+            vm.Dispose();
+        });
+
+        await Test("external editor round trip, replace content, errors", async () =>
+        {
+            var (vm, d, shell, store) = NewVm();
+            await vm.OpenPathAsync(MakeImage("e.sqfs"));
+            vm.CurrentPath = "/etc";
+            await vm.OpenItemCommand.ExecuteAsync(Item(vm, "hostname"));
+            Check(shell.Files.Count == 1 && File.ReadAllText(shell.Files[0]) == "board\n", "the file was extracted and opened");
+            await vm.CheckExternalEditsAsync();
+            Check(d.Asked.Count == 0, "an unchanged file must not trigger a question");
+            File.WriteAllText(shell.Files[0], "edited-board\n");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.CheckExternalEditsAsync();
+            FsInode inode = vm.Document!.Tree.Resolve("/etc/hostname")!.Inode;
+            using (var r = new StreamReader(inode.Data!.OpenRead())) Check(r.ReadToEnd() == "edited-board\n", "edited content is in the image");
+            Check(vm.IsModified && inode is { Uid: 33, Mode: 0x1A4 }, "attributes survive an edit");
+            await vm.CheckExternalEditsAsync();
+            Check(d.Asked.Count == 1, "the same edit is offered only once");
+            File.Delete(shell.Files[0]);                         // the image must not depend on the temporary file
+
+            string repl = Path.Combine(_dir, "banner.txt");
+            File.WriteAllText(repl, "replaced banner\n");
+            Select(vm, "Banner");
+            d.FilePicks.Enqueue(new[] { repl });
+            await vm.ReplaceContentCommand.ExecuteAsync();
+            Check(vm.Document.Tree.Resolve("/etc/Banner")!.Inode.Size == 16, "content replaced");
+
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            using (var r = new StreamReader(vm.Document!.Tree.Resolve("/etc/hostname")!.Inode.Data!.OpenRead())) Check(r.ReadToEnd() == "edited-board\n", "edit persisted");
+
+            // A host file that changes after it was added is reported at save time, and nothing is lost.
+            File.WriteAllText(repl, "v1");
+            vm.CurrentPath = "/";
+            await vm.HandleDropAsync(new[] { repl });
+            File.WriteAllText(repl, "version two is longer");
+            long before = new FileInfo(vm.Document.FilePath!).Length;
+            Check(!await vm.SaveAsync() && d.Messages.Any(m => m.Contains("has changed since")), "a changed source file must fail the save: " + string.Join("; ", d.Messages));
+            Check(vm.HasDocument && vm.IsModified && new FileInfo(vm.Document.FilePath!).Length == before, "a failed save keeps the document and the old file");
+
+            // Opening garbage reports an error and keeps the current document.
+            string junk = Path.Combine(_dir, "junk.bin");
+            File.WriteAllBytes(junk, new byte[5000]);
+            d.Answers.Enqueue(DialogAnswer.Secondary);          // discard changes
+            Check(!await vm.OpenPathAsync(junk) && vm.HasDocument, "garbage must not replace the document");
+
+            // Settings survive a round trip through the file and repair bad values.
+            AppSettings s = vm.Settings.Clone();
+            s.Theme = AppTheme.Dark;
+            s.SquashFs.Compression = SquashCompression.Zstd;
+            s.DefaultFileMode = "bad";
+            bool appearance = false;
+            vm.AppearanceChanged += () => appearance = true;
+            vm.ApplySettings(SettingsStore.Sanitize(s));
+            AppSettings loaded = store.Load();
+            Check(appearance && loaded.Theme == AppTheme.Dark && loaded.SquashFs.Compression == SquashCompression.Zstd && loaded.DefaultFileMode == "0644", "settings round trip");
+            Check(loaded.RecentFiles.Count == 1, "recent files are persisted");
+            File.WriteAllText(store.FilePath, "{ not json");
+            Check(store.Load().Theme == AppTheme.System, "a damaged settings file gives the defaults");
+
+            d.OnDialog = o =>
+            {
+                var sv = (SettingsViewModel)o;
+                sv.Settings.DefaultFileMode = "99";
+                Check(!sv.Accept(), "bad default mode must be rejected");
+                sv.ResetCommand.Execute(null);
+                Check(sv.Settings.Theme == AppTheme.System && sv.Settings.RecentFiles.Count == 1, "reset keeps the history");
+                sv.Settings.ConfirmDelete = false;
+                return sv.Accept();
+            };
+            vm.SettingsCommand.Execute(null);
+            Check(!vm.Settings.ConfirmDelete && store.Load().ConfirmDelete == false, "settings dialog result is applied and saved");
+
+            d.OnDialog = o => o is ImageInfoViewModel i && i.Rows.Count > 5;
+            vm.ImageInfoCommand.Execute(null);
+            vm.Dispose();
+        });
+
+        Console.WriteLine($"{_passed} passed, {_failed} failed");
+        if (args.Length == 0)
+        {
+            try { Directory.Delete(_dir, true); } catch (IOException) { }
+        }
+        return _failed == 0 ? 0 : 1;
+    }
+}
