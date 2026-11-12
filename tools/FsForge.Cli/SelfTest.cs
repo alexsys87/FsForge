@@ -14,7 +14,7 @@ namespace FsForge.Cli;
 /// Built-in regression tests of the core. They need no external tools and run on Windows and
 /// Linux alike: every format is written, read back and compared entry by entry.
 /// </summary>
-internal static class SelfTest
+internal static partial class SelfTest
 {
     private static int _passed, _failed;
     private static string _dir = "";
@@ -84,6 +84,7 @@ internal static class SelfTest
             Test("extract to a folder and pack it again", () => HostRoundTrip(tree, reference));
             Test("edited folder is packed with the edits", () => HostEdits(tree));
             Test("images wrapped in gzip, xz and zstd open transparently", () => CompressedImages(tree, reference));
+            DiskTests(tree, reference);
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -355,11 +356,25 @@ internal static class SelfTest
             using (var fs = new FileStream(path, FileMode.Create))
             using (Stream z = ArchiveCodec.OpenCompressor(fs, new TarOptions { Compression = c, XzEffort = 0, ZstdLevel = 3 }))
                 z.Write(image);
-            Check(ImageDocument.Detect(path) is null, "a compressed image must not be mistaken for a tar archive");
-            using (ImageDocument doc = ImageDocument.Open(path, _dir))
+            Check(ImageDocument.Detect(path) == ImageFormat.Ext, "a compressed image must be recognised as an image, not as a tar archive");
+            ImageDocument doc = ImageDocument.Open(path, _dir);
+            try
             {
-                Check(doc.Format == ImageFormat.Ext && doc.OuterCompression == c && doc.IsWrapped, $"{c}: wrong detection");
+                Check(doc.Format == ImageFormat.Ext && doc.OuterCompression == c && !doc.SavesFilesystemOnly && doc.Container is null, $"{c}: wrong detection");
                 Same(Normalize(reference, ext), Normalize(Program.DumpToString(doc.Tree), ext), "wrapped " + c);
+
+                // Saved under its own name the image stays compressed the same way.
+                doc.Tree.CreateFile(doc.Tree.Resolve("/etc")!, "wrapped.conf", new MemoryFileData(Encoding.ASCII.GetBytes("1\n")), 0x1A4, 0, 0, 1700000600);
+                string expected = Program.DumpToString(doc.Tree);
+                SaveOptions o = doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir });
+                o.Tar.XzEffort = 0;
+                doc = doc.Save(path, o).Document;
+                Check(doc.Format == ImageFormat.Ext && doc.OuterCompression == c, $"{c}: the image saved in place is not compressed any more");
+                Same(expected, Program.DumpToString(doc.Tree), "wrapped " + c + " after saving in place");
+            }
+            finally
+            {
+                doc.Dispose();
             }
             File.Delete(path);
         }

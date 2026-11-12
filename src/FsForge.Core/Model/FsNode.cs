@@ -588,6 +588,9 @@ public class FsException : Exception
 /// </summary>
 public sealed class FsUnexpectedException(string message, Exception inner) : FsException(message, inner);
 
+/// <summary>The content does not fit into an image of the requested size.</summary>
+public sealed class FsNoSpaceException(string message) : FsException(message);
+
 /// <summary>An object with the requested name already exists in the directory.</summary>
 public sealed class FsConflictException(string message) : FsException(message);
 

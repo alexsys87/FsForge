@@ -568,6 +568,60 @@ public sealed class PropertiesViewModel : DialogViewModel
     }
 }
 
+/// <summary>Asks which partition of a disk image to open when several hold an editable filesystem.</summary>
+public sealed class PartitionChoiceViewModel : DialogViewModel
+{
+    public sealed record Row(PartitionInfo Partition, string Name, string Content, string Details, bool IsEditable);
+
+    private Row? _selected;
+
+    public PartitionChoiceViewModel(string fileName, PartitionTable table)
+    {
+        Title = "Выбор раздела";
+        AcceptText = "Открыть";
+        Summary = $"«{fileName}» — образ диска с таблицей разделов {Fmt.PartitionScheme(table)}. " +
+                  "Файловые системы, которые можно редактировать, есть в нескольких разделах. Какой из них открыть?";
+        foreach (PartitionInfo p in table.Partitions)
+        {
+            string details = $"{Fmt.Size(p.Length)} · {p.TypeName} · смещение 0x{p.Offset:X}" + (p.Bootable ? " · загрузочный" : "");
+            Rows.Add(new Row(p, $"Раздел {p.Number}", Fmt.PartitionContent(p), details, p.IsEditable));
+        }
+        PartitionInfo? preferred = table.PickDefault();
+        _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Partition, preferred));
+    }
+
+    public string Summary { get; }
+    public ObservableCollection<Row> Rows { get; } = new();
+
+    public Row? Selected
+    {
+        get => _selected;
+        set
+        {
+            if (SetProperty(ref _selected, value)) Error = null;
+        }
+    }
+
+    /// <summary>The partition to open; set by <see cref="Accept"/>.</summary>
+    public PartitionInfo? Result { get; private set; }
+
+    public override bool Accept()
+    {
+        if (_selected is null)
+        {
+            Error = "Выберите раздел.";
+            return false;
+        }
+        if (!_selected.IsEditable)
+        {
+            Error = "В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.";
+            return false;
+        }
+        Result = _selected.Partition;
+        return true;
+    }
+}
+
 /// <summary>Read-only facts about the opened image.</summary>
 public sealed class ImageInfoViewModel : DialogViewModel
 {
@@ -613,9 +667,21 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add("Расширения", string.Join(", ", new[] { t.HasPaxHeaders ? "pax" : null, t.HasGnuExtensions ? "GNU" : null }.Where(x => x is not null).DefaultIfEmpty("нет")));
             Add("Префикс путей", t.PathPrefix.Length > 0 ? t.PathPrefix : "(нет)");
         }
-        if (doc.EmbeddedOffset > 0) Add("Смещение ФС в файле", $"0x{doc.EmbeddedOffset:X}");
+        if (doc.Container is { } disk)
+        {
+            Add("Образ диска", $"{Fmt.SizeWithBytes(disk.DiskLength)}, таблица разделов {Fmt.PartitionScheme(disk.Table)}");
+            foreach (PartitionInfo p in disk.Table.Partitions)
+            {
+                string text = $"{Fmt.PartitionContent(p)}, {Fmt.Size(p.Length)}, {p.TypeName}, смещение 0x{p.Offset:X}";
+                if (p.StoredLength < p.Length) text += $", в файле {Fmt.Size(p.StoredLength)}";
+                Add(ReferenceEquals(p, disk.Partition) ? $"▸ Раздел {p.Number} (открыт)" : $"Раздел {p.Number}", text);
+            }
+            Add("Сохранение", "образ диска целиком: заменяется только открытый раздел, таблица разделов и остальные разделы не меняются");
+        }
+        else if (doc.EmbeddedOffset > 0) Add("Смещение ФС в файле", $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add("Контейнер", "Android sparse image");
-        if (doc.OuterCompression is { } outer) Add("Файл сжат", outer.ToString().ToLowerInvariant() + " (образ распакован во временный файл)");
+        if (doc.OuterCompression is { } outer)
+            Add("Файл сжат", outer.ToString().ToLowerInvariant() + " (распакован во временный файл; при сохранении под тем же именем сжимается снова)");
 
         TreeStats st = doc.Tree.GetStats();
         Add("Содержимое", $"{Fmt.Plural(st.Files, "файл", "файла", "файлов")}, {Fmt.Plural(st.Directories, "папка", "папки", "папок")}, " +

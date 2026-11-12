@@ -154,6 +154,68 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Minimal, "минимальный по содержимому"));
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, "заданный, МиБ"));
         SizeModes = sizeModes;
+
+        if (doc.Container is { } disk)
+        {
+            PartitionInfo p = disk.Partition;
+            ContainerSummary = $"{Path.GetFileName(doc.FilePath)} — образ диска ({Fmt.PartitionScheme(disk.Table)}, разделов: {disk.Table.Partitions.Count}). " +
+                               $"Открыт раздел {p.Number}: {Fmt.PartitionContent(p)}, {Fmt.Size(p.Length)}.";
+        }
+    }
+
+    // ---- disk image the filesystem was opened from
+    /// <summary>The document came from a partition of a disk image.</summary>
+    public bool HasContainer => _doc.Container is not null;
+
+    /// <summary>The choice between the disk image and the filesystem alone is offered (not when exporting an archive).</summary>
+    public bool ShowContainerOptions => HasContainer && !FormatLocked;
+
+    public string ContainerSummary { get; } = "";
+
+    /// <summary>Write the whole disk image again (true) or the filesystem alone (false).</summary>
+    public bool KeepContainer
+    {
+        get => _o.KeepContainer;
+        set
+        {
+            if (_o.KeepContainer == value) return;
+            _o.KeepContainer = value;
+            Error = null;
+            OnPropertyChanged();
+            RaiseContainer();
+        }
+    }
+
+    /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
+    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar;
+
+    public string ContainerNote
+    {
+        get
+        {
+            if (_doc.Container is not { } disk) return "";
+            PartitionInfo p = disk.Partition;
+            if (IsTar) return "Архив tar сохраняется отдельным файлом; образ диска при этом не меняется.";
+            if (!_o.KeepContainer)
+                return "Будет записана только файловая система — без таблицы разделов и остальных разделов. Такой файл не загрузится с карты памяти; он годится для sysupgrade или записи в раздел вручную.";
+            string grow = disk.CanGrow
+                ? $"Если файловая система перестанет помещаться в раздел {p.Number}, раздел будет увеличен (он последний)."
+                : $"Файловая система должна поместиться в раздел {p.Number} ({Fmt.Size(p.Length)}).";
+            return $"Таблица разделов, загрузчик и остальные разделы копируются без изменений, заменяется только раздел {p.Number}. {grow} " +
+                   "Имя файла с окончанием .gz, .xz или .zst означает сжатый образ.";
+        }
+    }
+
+    /// <summary>How the ext size choices are read when the filesystem goes into a partition.</summary>
+    public string ExtSizeNote => WritesDisk && _doc.Container is { } disk
+        ? $"В образе диска «минимальный» означает размер раздела ({Fmt.Size(disk.Partition.Length)}): файловая система занимает раздел целиком."
+        : "";
+
+    public bool HasExtSizeNote => ExtSizeNote.Length > 0;
+
+    private void RaiseContainer()
+    {
+        foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote) }) OnPropertyChanged(p);
     }
 
     public bool FormatLocked { get; }
@@ -187,6 +249,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             Error = null;
             foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
+            RaiseContainer();
         }
     }
 
@@ -328,8 +391,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     /// <summary>The validated options; set by <see cref="Accept"/>.</summary>
     public SaveOptions? Result { get; private set; }
 
-    /// <summary>File extension that fits the chosen format (".squashfs", ".ext4", ".tar.gz"...).</summary>
-    public string Extension => _format switch
+    /// <summary>File extension that fits the chosen format (".squashfs", ".ext4", ".tar.gz"...); for a disk image, the one it had.</summary>
+    public string Extension => WritesDisk ? DiskExtension(_doc.FilePath) : _format switch
     {
         SaveFormat.SquashFs => ".squashfs",
         SaveFormat.Ext4 => ".ext4",
@@ -337,6 +400,19 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext2 => ".ext2",
         _ => ArchiveCodec.DefaultExtension(_o.Tar.Compression),
     };
+
+    /// <summary>".img.gz" for "openwrt-sdcard.img.gz", ".img" when the name has no usable extension.</summary>
+    public static string DiskExtension(string? path)
+    {
+        string name = Path.GetFileName(path ?? "");
+        string outer = Path.GetExtension(name).ToLowerInvariant();
+        if (outer is ".gz" or ".xz" or ".zst" or ".zstd")
+        {
+            string inner = Path.GetExtension(name[..^outer.Length]).ToLowerInvariant();
+            return (inner.Length is > 1 and <= 6 ? inner : ".img") + outer;
+        }
+        return outer.Length is > 1 and <= 6 ? outer : ".img";
+    }
 
     public override bool Accept()
     {
@@ -373,6 +449,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ExtSizeMode.Fixed:
                     if (!long.TryParse(_sizeMiB.Trim(), out long mib) || mib < 1 || mib > 16L << 20)
                         return Fail("Размер образа — целое число мегабайт (МиБ), не меньше 1.");
+                    if (WritesDisk && _doc.Container is { CanGrow: false } disk && mib << 20 > disk.Partition.Length)
+                        return Fail($"Раздел {disk.Partition.Number} вмещает {Fmt.Size(disk.Partition.Length)} и не может быть увеличен — укажите размер не больше этого.");
                     o.Ext.SizeBytes = mib << 20;
                     o.Ext.ExtraFreeBytes = 0;
                     o.Ext.InodeCount = 0;

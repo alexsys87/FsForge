@@ -162,6 +162,19 @@ public static class ArchiveCodec
         return null;
     }
 
+    /// <summary>
+    /// Compression a raw image gets when it is saved under this name: "sdcard.img.gz" is gzip,
+    /// "sdcard.img" is not compressed.
+    /// </summary>
+    public static ArchiveCompression ImageCompressionFromFileName(string path)
+    {
+        string name = Path.GetFileName(path).ToLowerInvariant();
+        if (name.EndsWith(".gz")) return ArchiveCompression.Gzip;
+        if (name.EndsWith(".xz")) return ArchiveCompression.Xz;
+        if (name.EndsWith(".zst") || name.EndsWith(".zstd")) return ArchiveCompression.Zstd;
+        return ArchiveCompression.None;
+    }
+
     private sealed class PassThroughStream(Stream inner) : Stream
     {
         public override bool CanRead => false;

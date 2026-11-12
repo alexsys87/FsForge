@@ -130,7 +130,7 @@ public sealed class ExtWriter
             }
             catch (NoSpaceException)
             {
-                throw new FsException(
+                throw new FsNoSpaceException(
                     $"The content does not fit into an image of {options.SizeBytes / 1048576.0:F1} MiB. " +
                     "Increase the image size or let it be chosen automatically.");
             }

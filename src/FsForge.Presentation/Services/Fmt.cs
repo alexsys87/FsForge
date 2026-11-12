@@ -1,5 +1,6 @@
 using System.Globalization;
 using FsForge.Core;
+using FsForge.Core.Images;
 
 namespace FsForge.Presentation.Services;
 
@@ -28,6 +29,25 @@ public static class Fmt
     public static string Bytes(long bytes) => bytes.ToString("#,0", Ru);
 
     public static string SizeWithBytes(long bytes) => bytes < 1024 ? Size(bytes) : $"{Size(bytes)} ({Bytes(bytes)} байт)";
+
+    /// <summary>What a partition holds: "SquashFS", "FAT32 «BOOT»", "неизвестное содержимое".</summary>
+    public static string PartitionContent(PartitionInfo p)
+    {
+        string kind = p.Content switch
+        {
+            Core.Images.PartitionContent.Unknown => "неизвестное содержимое",
+            Core.Images.PartitionContent.Empty => "пусто",
+            Core.Images.PartitionContent.OutsideFile => "за пределами файла",
+            _ => p.ContentName,
+        };
+        string label = p.Label.Length > 0 ? p.Label : p.Name;
+        return label.Length > 0 ? $"{kind} «{label}»" : kind;
+    }
+
+    /// <summary>"Раздел 2 — SquashFS, 104 МБ".</summary>
+    public static string Partition(PartitionInfo p) => $"Раздел {p.Number} — {PartitionContent(p)}, {Size(p.Length)}";
+
+    public static string PartitionScheme(PartitionTable t) => t.Scheme == Core.Images.PartitionScheme.Gpt ? "GPT" : "MBR";
 
     public const string DateFormat = "yyyy-MM-dd HH:mm:ss";
 

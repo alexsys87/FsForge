@@ -33,6 +33,13 @@ public sealed class SaveOptions
     public TarOptions Tar { get; set; } = new();
     public VerifyLevel Verify { get; set; } = VerifyLevel.Structure;
 
+    /// <summary>
+    /// When the filesystem was opened from a partition of a disk image, write the whole disk image
+    /// again - partition table and all other partitions untouched - instead of the filesystem alone.
+    /// Has no effect on other documents and on tar archives.
+    /// </summary>
+    public bool KeepContainer { get; set; } = true;
+
     /// <summary>Keep the previous version of an overwritten file as "name.bak".</summary>
     public bool KeepBackup { get; set; }
 
@@ -46,6 +53,7 @@ public sealed class SaveOptions
         Ext = Ext.Clone(),
         Tar = Tar.Clone(),
         Verify = Verify,
+        KeepContainer = KeepContainer,
         KeepBackup = KeepBackup,
         TempDirectory = TempDirectory,
     };
@@ -77,20 +85,33 @@ public sealed class ImageDocument : IDisposable
     public ExtInfo? Ext { get; private init; }
     public TarInfo? Tar { get; private init; }
 
-    /// <summary>Offset of the filesystem inside the file (firmware containers); 0 for plain images.</summary>
+    /// <summary>
+    /// Offset of the filesystem inside the (unpacked) file: the start of its partition, or the place
+    /// where it was found in a firmware container. 0 for plain images.
+    /// </summary>
     public long EmbeddedOffset { get; private init; }
 
-    /// <summary>Compression the image file was wrapped in (image.ext4.gz); null for a plain image.</summary>
-    public ArchiveCompression? OuterCompression { get; private init; }
+    /// <summary>
+    /// The disk image and the partition the filesystem was opened from; null when the file is not a
+    /// partitioned disk image. Such a document is saved as the whole disk again.
+    /// </summary>
+    public DiskContainer? Container { get; private init; }
 
     /// <summary>
-    /// The file holds more than the filesystem (a firmware container, a sparse or compressed wrapper),
-    /// so saving must go to a new file instead of overwriting it.
+    /// Compression the image file is wrapped in (sdcard.img.gz, rootfs.ext4.xz); null for a plain file.
+    /// Saving under a name with the same extension compresses the image again.
     /// </summary>
-    public bool IsWrapped => EmbeddedOffset > 0 || AndroidSparse || OuterCompression is not null;
+    public ArchiveCompression? OuterCompression { get; private init; }
 
     /// <summary>The file is an Android sparse image (simg).</summary>
     public bool AndroidSparse { get; private init; }
+
+    /// <summary>
+    /// The file holds more than the filesystem and cannot be rebuilt around a changed one (a firmware
+    /// container with its own headers and checksums, an Android sparse image). Saving writes the
+    /// filesystem alone, so it must go to a new file.
+    /// </summary>
+    public bool SavesFilesystemOnly => AndroidSparse || (EmbeddedOffset > 0 && Container is null);
 
     public long FileSize { get; private init; }
 
@@ -123,16 +144,91 @@ public sealed class ImageDocument : IDisposable
 
     // ----------------------------------------------------------------- open
 
-    /// <summary>Recognises the format of a file without reading its content. Null when it is unknown.</summary>
+    /// <summary>How much of a compressed file <see cref="Detect"/> unpacks at most to look inside.</summary>
+    private const int SniffLimit = 96 << 20;
+
+    /// <summary>
+    /// Recognises the format of a file without reading its content. For a disk image this is the
+    /// format of the partition that <see cref="Open"/> picks by default; for a compressed disk image
+    /// whose partitions start beyond the first megabytes it is a guess. Null when the file is not
+    /// something <see cref="Open"/> is likely to accept.
+    /// </summary>
     public static ImageFormat? Detect(string path)
     {
         using var file = new FileBlockSource(path, FileShare.ReadWrite | FileShare.Delete);
         IBlockSource src = file;
         if (IsAndroidSparse(file)) src = new AndroidSparseSource(file);
-        if (SquashFsReader.IsSquashFs(src)) return ImageFormat.SquashFs;
-        if (ExtReader.IsExt(src)) return ImageFormat.Ext;
+        if (FilesystemAt(src) is { } direct) return direct;
         if (ReferenceEquals(src, file) && TarReader.IsTar(src, out _)) return ImageFormat.Tar;
-        return null;
+        if (PartitionTable.Read(src)?.PickDefault() is { } part) return FormatOf(part);
+        if (!ReferenceEquals(src, file)) return null;
+
+        byte[] magic = new byte[8];
+        int n = file.Read(0, magic);
+        if (ArchiveCodec.DetectCompression(magic.AsSpan(0, n)) is not { } packed) return null;
+        try
+        {
+            return SniffCompressed(file, packed);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException or FsException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static ImageFormat? FilesystemAt(IBlockSource src) =>
+        SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs : ExtReader.IsExt(src) ? ImageFormat.Ext : null;
+
+    private static ImageFormat FormatOf(PartitionInfo part) =>
+        part.Content == PartitionContent.SquashFs ? ImageFormat.SquashFs : ImageFormat.Ext;
+
+    /// <summary>Unpacks only as much of a compressed image as it takes to see what it is.</summary>
+    private static ImageFormat? SniffCompressed(FileBlockSource file, ArchiveCompression compression)
+    {
+        using Stream input = ArchiveCodec.OpenDecompressor(new BlockSourceStream(file, 0, file.Length), compression);
+        var head = new MemoryStream();
+        byte[] buffer = new byte[1 << 16];
+
+        bool Fill(long target)
+        {
+            while (head.Length < target)
+            {
+                int n = input.Read(buffer, 0, buffer.Length);
+                if (n <= 0) return false;
+                head.Write(buffer, 0, n);
+            }
+            return true;
+        }
+
+        Fill(1 << 20);
+        var first = new DiskHead(head.ToArray());
+        if (FilesystemAt(first) is { } direct) return direct;
+        if (PartitionTable.Read(first) is not { } table) return null;
+        // Unpack up to the beginning of the last partition that is within reach.
+        Fill(table.Partitions.Where(p => p.Offset < SniffLimit).Select(p => p.Offset + 4096).DefaultIfEmpty(0).Max());
+        if (PartitionTable.Read(new DiskHead(head.ToArray()))?.PickDefault() is { } part) return FormatOf(part);
+        // A root filesystem that starts further on (behind a large boot partition) is out of reach here.
+        // Such a disk is still most likely an image to open; ext4 is the usual content.
+        return table.Partitions.Any(p => p.Offset >= SniffLimit) ? ImageFormat.Ext : null;
+    }
+
+    /// <summary>The beginning of a disk standing in for the whole of it: everything further on reads as zeros.</summary>
+    private sealed class DiskHead(byte[] data) : IBlockSource
+    {
+        public long Length => 1L << 46;
+
+        public int Read(long offset, Span<byte> buffer)
+        {
+            if (offset < 0 || offset >= Length) return 0;
+            int n = (int)Math.Min(buffer.Length, Length - offset);
+            buffer = buffer[..n];
+            buffer.Clear();
+            if (offset < data.Length)
+                data.AsSpan((int)offset, (int)Math.Min(n, data.Length - offset)).CopyTo(buffer);
+            return n;
+        }
+
+        public void Dispose() { }
     }
 
     private static bool IsAndroidSparse(IBlockSource s)
@@ -145,8 +241,14 @@ public sealed class ImageDocument : IDisposable
 
     /// <summary>Opens an image or archive and reads its directory tree. File contents are read on demand.</summary>
     /// <param name="searchEmbedded">Look for a SquashFS inside a firmware container when the file itself is not an image.</param>
+    /// <param name="partition">Number of the partition to open in a disk image; 0 lets the image or <paramref name="choosePartition"/> decide.</param>
+    /// <param name="choosePartition">
+    /// Called when a disk image has several partitions with an editable filesystem. Returning null cancels the
+    /// operation. Without it the largest such partition is opened.
+    /// </param>
     public static ImageDocument Open(string path, string? tempDirectory = null, bool searchEmbedded = true,
-        IProgress<ProgressInfo>? progress = null, CancellationToken ct = default)
+        IProgress<ProgressInfo>? progress = null, CancellationToken ct = default,
+        int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null)
     {
         path = Path.GetFullPath(path);
         FileBlockSource file;
@@ -159,11 +261,12 @@ public sealed class ImageDocument : IDisposable
             throw new FsException($"The file cannot be opened: {ex.Message}", ex);
         }
 
+        // "src" is the whole (unpacked) file and is what gets closed on failure; "fs" is the filesystem in it.
         IBlockSource src = file;
         try
         {
             // A compressed file that is not a tar archive is taken for a compressed image
-            // (rootfs.ext4.gz, image.squashfs.xz): unpack it to a temporary file and go on with that.
+            // (sdcard.img.gz, rootfs.ext4.gz): unpack it to a temporary file and go on with that.
             ArchiveCompression? outer = null;
             byte[] magic = new byte[8];
             int magicLength = file.Read(0, magic);
@@ -176,8 +279,11 @@ public sealed class ImageDocument : IDisposable
             bool sparse = IsAndroidSparse(src);
             if (sparse) src = new AndroidSparseSource(src);
             long offset = 0;
+            IBlockSource fs = src;
+            DiskContainer? container = null;
+            PartitionTable? table = null;
 
-            if (!SquashFsReader.IsSquashFs(src) && !ExtReader.IsExt(src))
+            if (FilesystemAt(src) is null)
             {
                 if (!sparse && outer is null && TarReader.IsTar(src, out _))
                 {
@@ -186,53 +292,63 @@ public sealed class ImageDocument : IDisposable
                     tarDoc._warnings.AddRange(res.Warnings);
                     return tarDoc;
                 }
-                long found = searchEmbedded ? SquashFsReader.FindEmbedded(src, 0, 256L << 20, ct) : -1;
-                if (found <= 0)
+
+                table = PartitionTable.Read(src);
+                PartitionInfo? chosen = table is null ? null : ChoosePartition(table, partition, choosePartition);
+                if (chosen is not null)
                 {
-                    byte[] head = new byte[8];
-                    int n = src.Read(0, head);
-                    string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
-                    if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-                    throw new FsException("The file is not a SquashFS, ext2/3/4 image or tar archive." + hint);
+                    offset = chosen.Offset;
+                    fs = new SubBlockSource(src, offset, chosen.StoredLength, ownsInner: false);
+                    // An Android sparse file cannot be written back, so there it is just an offset.
+                    if (!sparse) container = new DiskContainer(src, table!, chosen);
                 }
-                offset = found;
-                src = new SubBlockSource(src, offset, src.Length - offset);
+                else
+                {
+                    if (partition > 0) throw new FsException($"The file has no partition table, so there is no partition {partition} to open.");
+                    long found = searchEmbedded ? SquashFsReader.FindEmbedded(src, 0, 256L << 20, ct) : -1;
+                    if (found <= 0) throw new FsException(DescribeUnknown(src, outer, table));
+                    offset = found;
+                    fs = new SubBlockSource(src, offset, src.Length - offset, ownsInner: false);
+                }
             }
 
-            if (SquashFsReader.IsSquashFs(src))
+            ImageDocument doc;
+            if (SquashFsReader.IsSquashFs(fs))
             {
-                SquashFsReader r = SquashFsReader.Open(src);
+                SquashFsReader r = SquashFsReader.Open(fs);
                 FsTree tree = r.ReadTree(progress, ct);
                 tree.AttachResource(r);
-                var doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
+                doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
                 {
-                    SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length, OuterCompression = outer,
+                    SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container,
                 };
                 doc._warnings.AddRange(r.Warnings);
-                doc.NoteOuterCompression();
                 if (r.Info.Compression is SquashCompression.Lzo or SquashCompression.Lzma)
                     doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
                                       $"Saving uses {SquashFsOptions.FromInfo(r.Info).Compression.ToString().ToLowerInvariant()} unless another method is chosen.");
-                if (offset > 0)
-                    doc._warnings.Add($"The SquashFS filesystem was found inside the file at offset 0x{offset:X}. " +
-                                      "Saving writes the filesystem alone, without the surrounding container.");
-                return doc;
             }
             else
             {
-                ExtReader r = ExtReader.Open(src);
+                ExtReader r = ExtReader.Open(fs);
                 FsTree tree = r.ReadTree(progress, ct);
                 tree.AttachResource(r);
-                var doc = new ImageDocument(tree, ImageFormat.Ext, path)
+                doc = new ImageDocument(tree, ImageFormat.Ext, path)
                 {
-                    Ext = r.Info, AndroidSparse = sparse, FileSize = file.Length, OuterCompression = outer,
+                    Ext = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container,
                 };
                 doc._warnings.AddRange(r.Warnings);
-                doc.NoteOuterCompression();
-                if (sparse)
-                    doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image.");
-                return doc;
             }
+            // The readers look through a window that does not own the file: the tree keeps it open.
+            if (!ReferenceEquals(fs, src)) doc.Tree.AttachResource(src);
+
+            if (sparse)
+                doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image of the filesystem.");
+            else if (offset > 0 && container is null)
+                doc._warnings.Add($"The {doc.FormatName} filesystem was found inside the file at offset 0x{offset:X}, and the file has no " +
+                                  "partition table that would tell how to rebuild it. Saving writes the filesystem alone, without the surrounding container.");
+            return doc;
         }
         catch (Exception ex)
         {
@@ -246,19 +362,45 @@ public sealed class ImageDocument : IDisposable
         }
     }
 
-    private void NoteOuterCompression()
+    /// <summary>Selects the partition of a disk image to open; null when none of them can be edited.</summary>
+    private static PartitionInfo? ChoosePartition(PartitionTable table, int wanted, Func<PartitionTable, PartitionInfo?>? ask)
     {
-        if (OuterCompression is { } c)
-            _warnings.Add($"The image was unpacked from a {c.ToString().ToLowerInvariant()} file. Saving writes the image itself, uncompressed.");
+        if (wanted > 0)
+        {
+            PartitionInfo p = table.Find(wanted)
+                ?? throw new FsException($"The disk image has no partition {wanted}. Its partitions: {ListPartitions(table)}.");
+            if (!p.IsEditable)
+                throw new FsException($"Partition {wanted} holds {(p.ContentName.Length > 0 ? p.ContentName : "an unknown format")}, " +
+                                      "not SquashFS or ext2/3/4, and cannot be edited.");
+            return p;
+        }
+        IReadOnlyList<PartitionInfo> editable = table.Editable;
+        if (editable.Count == 0) return null;
+        if (editable.Count == 1 || ask is null) return table.PickDefault();
+        PartitionInfo? answer = ask(table) ?? throw new OperationCanceledException();
+        if (!answer.IsEditable || !table.Partitions.Contains(answer))
+            throw new FsException("The selected partition does not hold SquashFS or ext2/3/4.");
+        return answer;
+    }
+
+    private static string ListPartitions(PartitionTable table) => string.Join("; ", table.Partitions.Select(p => p.ToString()));
+
+    private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
+    {
+        if (table is not null)
+            return "None of the partitions of this disk image holds SquashFS or ext2/3/4. Its partitions: " + ListPartitions(table) + ".";
+        byte[] head = new byte[8];
+        int n = src.Read(0, head);
+        string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
+        if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
+        return "The file is not a SquashFS, ext2/3/4 image, disk image with such a partition, or tar archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
     private static IBlockSource Unpack(FileBlockSource file, ArchiveCompression compression, string? tempDirectory,
         IProgress<ProgressInfo>? progress, CancellationToken ct)
     {
-        string dir = tempDirectory ?? Path.GetTempPath();
-        Directory.CreateDirectory(dir);
-        string tmp = Path.Combine(dir, "fsforge-" + Guid.NewGuid().ToString("N") + ".img");
+        string tmp = NewTempFile(tempDirectory);
         try
         {
             var raw = new BlockSourceStream(file, 0, file.Length);
@@ -285,6 +427,13 @@ public sealed class ImageDocument : IDisposable
                 throw new FsException($"The {compression.ToString().ToLowerInvariant()} data is damaged: {ex.Message}", ex);
             throw;
         }
+    }
+
+    private static string NewTempFile(string? tempDirectory)
+    {
+        string dir = tempDirectory ?? Path.GetTempPath();
+        Directory.CreateDirectory(dir);
+        return Path.Combine(dir, "fsforge-" + Guid.NewGuid().ToString("N") + ".img");
     }
 
     /// <summary>A temporary file that disappears together with the source reading it.</summary>
@@ -325,6 +474,10 @@ public sealed class ImageDocument : IDisposable
         return o;
     }
 
+    /// <summary>True when saving with these options writes the whole disk image and not the filesystem alone.</summary>
+    public bool WritesContainer(SaveOptions options) =>
+        Container is not null && options.KeepContainer && options.Format != ImageFormat.Tar;
+
     /// <summary>Writes a tree to a stream in the selected format; returns the writer's warnings.</summary>
     public static IReadOnlyList<string> WriteTo(FsTree tree, Stream output, SaveOptions options,
         IProgress<ProgressInfo>? progress = null, CancellationToken ct = default) => options.Format switch
@@ -341,12 +494,16 @@ public sealed class ImageDocument : IDisposable
     /// Writes the image to <paramref name="path"/> and reopens it. The data goes to a temporary file
     /// first and is verified there, so a failure never damages an existing file. On success this
     /// document is disposed and the returned one takes its place.
+    /// <para>
+    /// A filesystem opened from a partition of a disk image is written back as the whole disk image
+    /// (see <see cref="SaveOptions.KeepContainer"/>). A name ending in .gz, .xz or .zst makes the
+    /// image compressed.
+    /// </para>
     /// </summary>
     public SaveResult Save(string path, SaveOptions options, IProgress<ProgressInfo>? progress = null, CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         path = Path.GetFullPath(path);
-        string tmp = path + ".fsforge-tmp";
         var warnings = new List<string>();
         bool samePath = FilePath is not null && string.Equals(FilePath, path,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
@@ -360,20 +517,31 @@ public sealed class ImageDocument : IDisposable
             if (!samePath) EnsureNotLocked(path);
         }
 
+        DiskContainer? container = WritesContainer(options) ? Container : null;
+        int partition = container?.Partition.Number ?? 0;
+        // A tar archive carries its compression in its own options; an image gets it from the file name.
+        ArchiveCompression outer = options.Format == ImageFormat.Tar ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
+
+        // "tmp" becomes the target file. A compressed image is first written raw to "raw" and verified there.
+        string tmp = path + ".fsforge-tmp";
+        string raw = tmp;
         try
         {
-            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
+            if (outer != ArchiveCompression.None) raw = NewTempFile(options.TempDirectory);
+            using (var fs = new FileStream(raw, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
             {
-                warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
+                if (container is null) warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
+                else WriteDisk(fs, container, options, warnings, progress, ct);
                 fs.Flush(flushToDisk: true);
             }
 
             if (options.Verify != VerifyLevel.None)
             {
                 ct.ThrowIfCancellationRequested();
-                using ImageDocument check = Open(tmp, options.TempDirectory, searchEmbedded: false, null, ct);
+                using ImageDocument check = Open(raw, options.TempDirectory, searchEmbedded: false, null, ct, partition);
                 List<string> problems = TreeComparer.Compare(Tree, check.Tree, TreeComparer.RulesFor(options),
                     options.Verify == VerifyLevel.Content, progress, ct);
+                if (container is not null) problems.AddRange(CompareSurroundings(container, check.Container, ct));
                 if (problems.Count > 0)
                 {
                     string list = string.Join(Environment.NewLine, problems.Take(10));
@@ -382,6 +550,9 @@ public sealed class ImageDocument : IDisposable
                         Environment.NewLine + list + (problems.Count > 10 ? Environment.NewLine + $"... and {problems.Count - 10} more." : ""));
                 }
             }
+
+            if (outer != ArchiveCompression.None)
+                Compress(raw, tmp, outer, options, progress, ct);
         }
         catch (Exception ex)
         {
@@ -389,6 +560,10 @@ public sealed class ImageDocument : IDisposable
             if (ex is IOException or UnauthorizedAccessException)
                 throw new FsException($"The image could not be written: {ex.Message}", ex);
             throw;
+        }
+        finally
+        {
+            if (raw != tmp) TryDelete(raw);
         }
 
         long written = new FileInfo(tmp).Length;
@@ -422,8 +597,281 @@ public sealed class ImageDocument : IDisposable
             Dispose();
         }
 
-        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None);
+        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition);
         return new SaveResult(reopened, warnings, written);
+    }
+
+    // ------------------------------------------------------ disk container
+
+    /// <summary>libfstools puts the writable overlay of an OpenWrt image at the next 64 KiB boundary after the SquashFS.</summary>
+    private const long OverlayAlign = 0x10000;
+
+    private const long Mebibyte = 1L << 20;
+
+    private static long AlignUp(long value, long step) => (value + step - 1) / step * step;
+
+    /// <summary>
+    /// Writes the disk image with a new filesystem in the partition the document was opened from.
+    /// Everything outside that partition is copied as it is.
+    /// </summary>
+    private void WriteDisk(FileStream fs, DiskContainer c, SaveOptions options, List<string> warnings,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        PartitionInfo part = c.Partition;
+        IBlockSource disk = c.Disk;
+        long slot = part.Length;                    // room according to the partition table
+        long stored = part.StoredLength;            // how much of it the file actually had
+        bool canGrow = c.CanGrow;
+        bool squash = options.Format == ImageFormat.SquashFs;
+        string partName = $"partition {part.Number}";
+
+        // Everything in front of the partition: the partition table, the boot loader, the boot partition.
+        CopyRange(disk, 0, part.Offset, fs, progress, ct);
+
+        SaveOptions o = options;
+        if (!squash)
+        {
+            o = options.Clone();
+            long bs = o.Ext.BlockSize;
+            if (o.Ext.SizeBytes == 0) o.Ext.SizeBytes = slot / bs * bs;         // "automatic" means: fill the partition
+            else if (o.Ext.SizeBytes > slot && !canGrow)
+                throw new FsException($"The requested filesystem size of {DiskText.Size(o.Ext.SizeBytes)} exceeds {partName} " +
+                                      $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
+        }
+
+        fs.Position = part.Offset;
+        try
+        {
+            warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
+        }
+        catch (FsNoSpaceException) when (!squash && canGrow)
+        {
+            // Let the writer find the size the content needs; the partition follows below.
+            o.Ext.SizeBytes = 0;
+            o.Ext.InodeCount = 0;
+            o.Ext.ExtraFreeBytes = Math.Max(o.Ext.ExtraFreeBytes, slot / 10);
+            fs.SetLength(part.Offset);
+            fs.Position = part.Offset;
+            warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
+        }
+        catch (FsNoSpaceException)
+        {
+            throw new FsException($"The content does not fit into {partName} ({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}. " +
+                                  "Remove some files or save the filesystem alone.");
+        }
+        long fsLength = fs.Length - part.Offset;
+
+        // Where the overlay of an OpenWrt system starts, before and after.
+        long oldOverlay = Format == ImageFormat.SquashFs ? AlignUp(SquashFs!.BytesUsed, OverlayAlign) : -1;
+        long newOverlay = AlignUp(fsLength, OverlayAlign);
+
+        long newSlot = slot;
+        if (fsLength > slot)
+        {
+            if (!canGrow)
+                throw new FsException($"The filesystem takes {DiskText.Size(fsLength)}, but {partName} holds only {DiskText.Size(slot)} " +
+                                      $"and cannot be enlarged{WhyNoGrow(c)}. Remove some files, choose a stronger compression " +
+                                      "or save the filesystem alone.");
+            // Keep as much room behind the filesystem as there was (the overlay lives there).
+            long room = squash && oldOverlay >= 0 ? Math.Max(0, slot - oldOverlay) : 0;
+            newSlot = AlignUp((squash ? newOverlay : fsLength) + room, Mebibyte);
+            long sectors = newSlot / c.Table.SectorSize;
+            if (part.Offset / c.Table.SectorSize + sectors > uint.MaxValue)
+                throw new FsException($"The filesystem takes {DiskText.Size(fsLength)}; {partName} cannot be made that large in an MBR partition table.");
+            Span<byte> field = stackalloc byte[4];
+            Le.W32(field, 0, (uint)sectors);
+            fs.Position = part.SizeFieldOffset;
+            fs.Write(field);
+            warnings.Add($"The filesystem no longer fits into {partName} ({DiskText.Size(slot)}): the partition was enlarged to " +
+                         $"{DiskText.Size(newSlot)}. The card must hold at least {DiskText.Size(part.Offset + newSlot)}.");
+        }
+
+        // What follows the filesystem inside the partition.
+        long end = Math.Max(fsLength, stored);      // the file never gets shorter: stale data on a card would show through
+        if (squash)
+        {
+            bool overlayStays = oldOverlay == newOverlay && newSlot == slot;
+            if (overlayStays)
+            {
+                if (stored > newOverlay) CopyRange(disk, part.Offset + newOverlay, stored - newOverlay, fs, progress, ct);
+            }
+            else
+            {
+                if (oldOverlay >= 0 && oldOverlay < stored && HoldsData(disk, part.Offset + oldOverlay, stored - oldOverlay))
+                    warnings.Add("The data that followed the old filesystem in the partition (the writable overlay of the system) " +
+                                 "was cleared, because the size of the filesystem changed. The device creates a new, empty overlay on first boot.");
+                // Zeros where the overlay starts now make the device format it instead of trusting leftovers on the card.
+                end = Math.Max(end, Math.Min(newSlot, newOverlay + OverlayAlign));
+            }
+            if (oldOverlay >= 0 && slot - oldOverlay >= Mebibyte && newSlot - newOverlay < Mebibyte)
+                warnings.Add($"Less than 1 MiB is left in {partName} behind the filesystem. An OpenWrt system keeps its settings there; " +
+                             "without that room it runs with a temporary overlay in memory.");
+        }
+
+        // An image that covered the whole partition keeps doing so after the partition has grown.
+        if (newSlot != slot && stored == slot) end = newSlot;
+
+        // Everything behind the partition: further partitions, a backup GPT.
+        long after = part.Offset + slot;
+        if (disk.Length > after) CopyRange(disk, after, disk.Length - after, fs, progress, ct);
+        long total = Math.Max(part.Offset + end, newSlot == slot ? disk.Length : 0);
+        if (fs.Length < total) fs.SetLength(total);
+    }
+
+    private static string WhyNoGrow(DiskContainer c)
+    {
+        PartitionInfo p = c.Partition;
+        if (!p.IsLast) return " because other partitions follow it";
+        if (c.Table.Scheme == PartitionScheme.Gpt) return " in a GPT disk image";
+        if (p.SizeFieldOffset < 0) return " because it is a logical partition";
+        return " because other data follows it in the file";
+    }
+
+    /// <summary>True when a region of the disk holds anything but zeros (only its first megabyte is examined).</summary>
+    private static bool HoldsData(IBlockSource disk, long offset, long length)
+    {
+        byte[] buffer = new byte[1 << 16];
+        long left = Math.Min(length, Mebibyte);
+        while (left > 0)
+        {
+            int n = disk.Read(offset, buffer.AsSpan(0, (int)Math.Min(buffer.Length, left)));
+            if (n <= 0) break;
+            if (buffer.AsSpan(0, n).IndexOfAnyExcept((byte)0) >= 0) return true;
+            offset += n;
+            left -= n;
+        }
+        return false;
+    }
+
+    /// <summary>Copies a range of the disk to the same position of the output. Runs of zeros are skipped, which keeps the file sparse.</summary>
+    private static void CopyRange(IBlockSource disk, long offset, long length, FileStream output,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        byte[] buffer = new byte[1 << 20];
+        long end = offset + length, total = length;
+        while (offset < end)
+        {
+            ct.ThrowIfCancellationRequested();
+            int n = disk.Read(offset, buffer.AsSpan(0, (int)Math.Min(buffer.Length, end - offset)));
+            if (n <= 0) throw new FsException("The disk image is truncated: its end cannot be read.");
+            if (buffer.AsSpan(0, n).IndexOfAnyExcept((byte)0) >= 0)
+            {
+                output.Position = offset;
+                output.Write(buffer, 0, n);
+            }
+            offset += n;
+            progress?.Report(new ProgressInfo("copy", total - (end - offset), total));
+        }
+        if (output.Length < end) output.SetLength(end);
+    }
+
+    /// <summary>Checks that nothing outside the rewritten partition differs from the source disk.</summary>
+    private static List<string> CompareSurroundings(DiskContainer source, DiskContainer? written, CancellationToken ct)
+    {
+        var problems = new List<string>();
+        if (written is null)
+        {
+            problems.Add("The written file is not a disk image with a partition table.");
+            return problems;
+        }
+        PartitionInfo a = source.Partition, b = written.Partition;
+        if (a.Offset != b.Offset) problems.Add($"Partition {a.Number} moved from offset {a.Offset} to {b.Offset}.");
+        if (written.Table.Partitions.Count != source.Table.Partitions.Count)
+            problems.Add("The number of partitions changed.");
+        bool grown = b.Length != a.Length;
+
+        byte[] x = new byte[1 << 20], y = new byte[1 << 20];
+        void Range(long offset, long length, string what)
+        {
+            long end = offset + length;
+            while (offset < end)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(x.Length, end - offset);
+                source.Disk.ReadExactly(offset, x.AsSpan(0, n));
+                written.Disk.ReadExactly(offset, y.AsSpan(0, n));
+                // The size of an enlarged partition is the one field of the table that may change.
+                if (grown && a.SizeFieldOffset >= offset && a.SizeFieldOffset + 4 <= offset + n)
+                    x.AsSpan((int)(a.SizeFieldOffset - offset), 4).CopyTo(y.AsSpan((int)(a.SizeFieldOffset - offset), 4));
+                if (!x.AsSpan(0, n).SequenceEqual(y.AsSpan(0, n)))
+                {
+                    problems.Add($"The data {what} partition {a.Number} differs from the source disk image.");
+                    return;
+                }
+                offset += n;
+            }
+        }
+
+        try
+        {
+            Range(0, a.Offset, "in front of");
+            long after = a.Offset + a.Length;
+            if (source.Disk.Length > after) Range(after, source.Disk.Length - after, "behind");
+        }
+        catch (FsException ex)
+        {
+            problems.Add("The written disk image is shorter than expected: " + ex.Message);
+        }
+        return problems;
+    }
+
+    /// <summary>Compresses a verified raw image into the file that replaces the target, then reads it back.</summary>
+    private static void Compress(string raw, string target, ArchiveCompression compression, SaveOptions options,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        TarOptions codec = options.Tar.Clone();
+        codec.Compression = compression;
+        byte[] buffer = new byte[1 << 20];
+        byte[] expected;
+        long length;
+
+        using (var input = new FileStream(raw, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
+        using (var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20))
+        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            length = input.Length;
+            using (Stream packer = ArchiveCodec.OpenCompressor(output, codec))
+            {
+                int n;
+                long done = 0;
+                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    sha.AppendData(buffer, 0, n);
+                    packer.Write(buffer, 0, n);
+                    done += n;
+                    progress?.Report(new ProgressInfo("compress", done, length));
+                }
+            }
+            output.Flush(flushToDisk: true);
+            expected = sha.GetHashAndReset();
+        }
+        if (options.Verify == VerifyLevel.None) return;
+
+        // The compressors are our own code paths too: make sure the file unpacks to exactly what went in.
+        using (var packed = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
+        using (Stream unpacker = ArchiveCodec.OpenDecompressor(packed, compression))
+        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            long done = 0;
+            int n;
+            try
+            {
+                while ((n = unpacker.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    sha.AppendData(buffer, 0, n);
+                    done += n;
+                    progress?.Report(new ProgressInfo("verify", done, length));
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
+            {
+                throw new FsException($"The compressed image cannot be unpacked again ({ex.Message}) and was discarded; the original file is untouched.");
+            }
+            if (done != length || !sha.GetHashAndReset().AsSpan().SequenceEqual(expected))
+                throw new FsException("The compressed image does not unpack to the data that was written and was discarded; the original file is untouched.");
+        }
     }
 
     private static void Swap(string tmp, string path, bool keepBackup)

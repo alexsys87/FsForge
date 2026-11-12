@@ -353,6 +353,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "import" => "Добавление",
             "scan" => "Подготовка",
             "unpack" => "Распаковка сжатого образа",
+            "copy" => "Копирование остальных разделов",
+            "compress" => "Сжатие образа",
             "done" => "Завершение",
             _ => p.Stage,
         };
@@ -360,7 +362,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             BusyIndeterminate = false;
             BusyPercent = 100.0 * p.Fraction;
-            string amount = p.Stage is "data" or "verify" or "extract" ? $"{Fmt.Size(p.Done)} из {Fmt.Size(p.Total)}" : $"{p.Done} из {p.Total}";
+            string amount = p.Stage is "data" or "verify" or "extract" or "unpack" or "copy" or "compress" ? $"{Fmt.Size(p.Done)} из {Fmt.Size(p.Total)}" : $"{p.Done} из {p.Total}";
             BusyDetail = $"{stage}: {amount}" + (string.IsNullOrEmpty(p.Item) ? "" : "  ·  " + Shorten(p.Item!));
         }
         else
@@ -454,6 +456,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc.SquashFs is { } s) info += $" · {s.Compression.ToString().ToLowerInvariant()} · блок {Fmt.Size(s.BlockSize)}";
         if (_doc.Ext is { } e) info += $" · {Fmt.Size(e.SizeBytes)} · свободно {Fmt.Size(e.FreeBlocks * e.BlockSize)}";
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
+        if (_doc.Container is { } disk)
+            info = $"образ диска {Fmt.PartitionScheme(disk.Table)} · раздел {disk.Partition.Number} из {disk.Table.Partitions.Count} · " + info;
         DocumentInfo = info;
     }
 
@@ -555,7 +559,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         ImageDocument? doc = null;
         bool ok = await RunBusyAsync("Открытие " + Path.GetFileName(path), (p, ct) =>
-            doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct));
+            doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
+                choosePartition: table => AskPartition(path, table)));
         if (!ok || doc is null) return false;
 
         SetDocument(doc);
@@ -566,6 +571,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (doc.Warnings.Count > 0 && _settings.ShowWarningsAfterOpen)
             ShowInfo($"Образ открыт с предупреждениями: {doc.Warnings.Count}", doc.Warnings[0], MessageKind.Warning, doc.Warnings, "Предупреждения при открытии");
         return true;
+    }
+
+    /// <summary>
+    /// Lets the user pick a partition of a disk image. Called on the worker thread that is opening the
+    /// image; the dialog itself runs on the interface thread. Null means "cancel".
+    /// </summary>
+    private PartitionInfo? AskPartition(string path, PartitionTable table)
+    {
+        var done = new TaskCompletionSource<PartitionInfo?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() =>
+        {
+            try
+            {
+                var vm = new PartitionChoiceViewModel(Path.GetFileName(path), table);
+                done.SetResult(_dialogs.ShowDialog(vm) ? vm.Result : null);
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task.GetAwaiter().GetResult();
     }
 
     private async Task NewImageAsync()
@@ -614,8 +641,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public async Task<bool> SaveAsync()
     {
         if (_doc is null || IsBusy) return false;
-        // A filesystem taken out of a container is never written back over the container.
-        if (_doc.FilePath is null || _settings.AlwaysAskSaveOptions || _doc.IsWrapped)
+        // A filesystem taken out of a firmware container is never written back over the container.
+        // (A partition of a disk image is: the disk is rebuilt around it.)
+        if (_doc.FilePath is null || _settings.AlwaysAskSaveOptions || _doc.SavesFilesystemOnly)
             return await SaveAsAsync();
         return await SaveCoreAsync(_doc.FilePath, _settings.DefaultSaveOptions(_doc));
     }
@@ -627,11 +655,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!_dialogs.ShowDialog(vm) || vm.Result is null) return false;
 
         string baseName = _doc.FilePath is null ? "rootfs" : StripExtensions(Path.GetFileName(_doc.FilePath));
-        bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.IsWrapped
+        // The file keeps its name when it stays what it was: the same disk image, or the same kind of plain image.
+        bool disk = _doc.WritesContainer(vm.Result);
+        bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.SavesFilesystemOnly && _doc.Container is null
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
-        string suggested = sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
+        string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string? path = _dialogs.PickSaveFile("Сохранить образ", suggested, vm.Result.Format, vm.Extension, dir);
+        string? path = _dialogs.PickSaveFile(disk ? "Сохранить образ диска" : "Сохранить образ", suggested, vm.Result.Format, vm.Extension, dir, disk);
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
     }
@@ -1070,7 +1100,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc is null || IsBusy) return false;
         ImageDocument? source = null;
         bool ok = await RunBusyAsync("Чтение " + Path.GetFileName(path), (p, ct) =>
-            source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct));
+            source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
+                choosePartition: table => AskPartition(path, table)));
         if (!ok || source is null) return false;
 
         var clashing = source.Tree.Root.Children.Where(c => target.Find(c.Name) is not null).Select(c => c.Name).ToList();

@@ -21,13 +21,15 @@ internal sealed class FakeDialogs : IDialogService
     public string? PickImageToOpen(string? initialDirectory) => OpenPicks.Dequeue();
     public IReadOnlyList<string> PickFilesToAdd(string? initialDirectory) => FilePicks.Dequeue();
     public string? PickFolder(string title, string? initialDirectory) => FolderPicks.Dequeue();
-    public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory)
+    public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory, bool diskImage = false)
     {
         LastSuggestedName = suggestedName;
+        LastSaveWasDisk = diskImage;
         return SavePicks.Dequeue();
     }
 
     public string LastSuggestedName = "";
+    public bool LastSaveWasDisk;
     public bool ShowDialog(object viewModel) => OnDialog(viewModel);
 
     public Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string cancel = "Отмена")
@@ -100,6 +102,49 @@ internal static class Program
         using var fs = new FileStream(path, FileMode.Create);
         ImageDocument.WriteTo(t, fs, new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Gzip } });
         return path;
+    }
+
+    /// <summary>An SD card image: MBR, an ext2 boot partition and the SquashFS of <see cref="MakeImage"/> as partition 2, gzipped.</summary>
+    private static string MakeDisk(string name, out long rootOffset)
+    {
+        const int mib = 1 << 20;
+        using var boot = new FsTree(0x1ED, 1700000000);
+        boot.CreateFile(boot.Root, "uImage", new MemoryFileData(new byte[100000]), 0x1A4, 0, 0, 1700000001);
+        var bootImage = new MemoryStream();
+        ImageDocument.WriteTo(boot, bootImage, new SaveOptions { Format = ImageFormat.Ext, Ext = new Core.Ext.ExtOptions { Kind = Core.Ext.ExtKind.Ext2, SizeBytes = mib, BlockSize = 1024, Label = "boot" } });
+        byte[] root = File.ReadAllBytes(MakeImage(name + ".root"));
+
+        long p1 = mib, p2 = 2 * mib, slot2 = 4 * mib;
+        byte[] disk = new byte[p2 + (root.Length + 0xFFFF) / 0x10000 * 0x10000];       // the file ends behind the padded filesystem
+        void Entry(int slot, byte type, long offset, long length)
+        {
+            Span<byte> e = disk.AsSpan(446 + 16 * slot, 16);
+            e[4] = type;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e[8..], (uint)(offset / 512));
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e[12..], (uint)(length / 512));
+        }
+        Entry(0, 0x83, p1, mib);
+        Entry(1, 0x83, p2, slot2);
+        disk[510] = 0x55; disk[511] = 0xAA;
+        new Random(3).NextBytes(disk.AsSpan(512, 4096));                                // a boot loader
+        bootImage.ToArray().CopyTo(disk, p1);
+        root.CopyTo(disk, p2);
+        rootOffset = p2;
+
+        string path = Path.Combine(_dir, name);
+        using var fs = new FileStream(path, FileMode.Create);
+        using var gz = new System.IO.Compression.GZipStream(fs, System.IO.Compression.CompressionLevel.Fastest);
+        gz.Write(disk);
+        return path;
+    }
+
+    private static byte[] Gunzip(string path)
+    {
+        using var fs = File.OpenRead(path);
+        using var gz = new System.IO.Compression.GZipStream(fs, System.IO.Compression.CompressionMode.Decompress);
+        var ms = new MemoryStream();
+        gz.CopyTo(ms);
+        return ms.ToArray();
     }
 
     private static (MainViewModel Vm, FakeDialogs Dialogs, FakeShell Shell, SettingsStore Store) NewVm()
@@ -575,6 +620,94 @@ internal static class Program
 
             d.OnDialog = o => o is ImageInfoViewModel i && i.Rows.Count > 5;
             vm.ImageInfoCommand.Execute(null);
+            vm.Dispose();
+        });
+
+        await Test("disk image: partition choice, saving keeps the disk, filesystem alone on request", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string disk = MakeDisk("sd.img.gz", out long rootOffset);
+            byte[] before = Gunzip(disk);
+
+            // Two partitions can be edited: the user is asked, the root filesystem is preselected.
+            int asked = 0;
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                asked++;
+                Check(c.Rows.Count == 2 && c.Selected is { Partition.Number: 2, Content: "SquashFS", IsEditable: true }, "partition list: " + string.Join("; ", c.Rows.Select(r => r.Name + " " + r.Content)));
+                Check(c.Rows[0] is { Name: "Раздел 1", Content: "ext2 «boot»" } && c.Summary.Contains("MBR"), "boot partition row: " + c.Rows[0].Content);
+                c.Selected = null;
+                Check(!c.Accept() && c.HasError, "accepted without a selection");
+                c.Selected = c.Rows[1];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(disk), "open failed: " + string.Join("; ", d.Messages));
+            Check(asked == 1 && vm.Document!.Container is { Partition.Number: 2 } && !vm.Document.SavesFilesystemOnly, "the chosen partition was not opened");
+            Check(vm.DocumentInfo.StartsWith("образ диска MBR · раздел 2 из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            Check(!d.Notifications.Any(n => n.Contains("предупрежден")), "a disk image must open without warnings: " + string.Join("; ", d.Notifications));
+
+            d.OnDialog = o => o is ImageInfoViewModel i && i.Rows.Any(r => r.Label.StartsWith("▸ Раздел 2")) && i.Rows.Any(r => r.Label == "Раздел 1") && i.Rows.Any(r => r.Label == "Сохранение");
+            int infos = d.Messages.Count;
+            vm.ImageInfoCommand.Execute(null);
+
+            // Ctrl+S: no questions, the file stays a gzipped disk image with everything else untouched.
+            vm.CurrentPath = "/etc";
+            Select(vm, "Banner");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog on save: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Container is { Partition.Number: 2 } && vm.Document.OuterCompression == ArchiveCompression.Gzip, "the saved file is not a gzipped disk image");
+            Check(vm.CurrentPath == "/etc" && vm.Items.Count == 3 && !vm.IsModified, "view after saving");
+            byte[] after = Gunzip(disk);
+            Check(after.AsSpan(0, (int)rootOffset).SequenceEqual(before.AsSpan(0, (int)rootOffset)), "the partition table or the boot partition changed");
+            Check(after.Length >= before.Length && System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(after.AsSpan((int)rootOffset)) == 0x73717368, "no SquashFS in partition 2");
+
+            // Save as: the dialog explains the disk image and proposes the same name.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.ShowContainerOptions && s.KeepContainer && s.WritesDisk && s.Extension == ".img.gz", "disk options in the save dialog: " + s.Extension);
+                Check(s.ContainerSummary.Contains("sd.img.gz") && s.ContainerSummary.Contains("раздел 2") && s.ContainerNote.Contains("будет увеличен"), "texts: " + s.ContainerSummary + " / " + s.ContainerNote);
+                s.Format = SaveFormat.Tar;
+                Check(!s.WritesDisk && s.Extension == ".tar.gz", "a tar archive is never a disk image");
+                s.Format = SaveFormat.Ext4;
+                Check(s.WritesDisk && s.HasExtSizeNote, "ext4 inside the partition needs the size note");
+                s.SizeMode = ExtSizeMode.Fixed;
+                s.SizeMiB = "1";
+                Check(s.Accept(), "fixed size inside the partition: " + s.Error);
+                s.Format = SaveFormat.SquashFs;
+                return s.Accept();
+            };
+            string copy = Path.Combine(_dir, "sd-copy.img");
+            d.SavePicks.Enqueue(copy);
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "sd.img.gz" && d.LastSaveWasDisk, "suggested name for a disk image: " + d.LastSuggestedName);
+            Check(vm.Document!.Container is not null && vm.Document.OuterCompression is null && File.ReadAllBytes(copy).AsSpan(0, (int)rootOffset).SequenceEqual(before.AsSpan(0, (int)rootOffset)), "plain disk image");
+
+            // The filesystem alone, when the switch is turned off.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.KeepContainer = false;
+                Check(!s.WritesDisk && s.Extension == ".squashfs" && s.ContainerNote.Contains("только файловая система"), "filesystem-only mode: " + s.ContainerNote);
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "sd-root.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as filesystem failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "sd-copy.squashfs" && !d.LastSaveWasDisk && vm.Document!.Container is null && vm.Document.EmbeddedOffset == 0, "filesystem saved alone: " + d.LastSuggestedName);
+            Check(!vm.DocumentInfo.Contains("образ диска"), "status line of a plain image: " + vm.DocumentInfo);
+
+            // Cancelling the partition dialog leaves the current document alone.
+            d.OnDialog = o => o is PartitionChoiceViewModel ? false : throw new InvalidOperationException("unexpected dialog");
+            Check(!await vm.OpenPathAsync(disk) && vm.Document!.FilePath!.EndsWith("sd-root.squashfs"), "a cancelled choice changed the document");
+            Check(d.Notifications.Any(n => n.Contains("Отменено")) && d.Messages.Count == infos, "cancelling is not an error: " + string.Join("; ", d.Messages));
+
+            // A dropped disk image is recognised as an image.
+            d.Answers.Enqueue(DialogAnswer.Cancel);
+            await vm.HandleDropAsync(new[] { disk });
+            Check(d.Asked[^1] == "Что сделать с файлом?", "a dropped disk image was not recognised: " + d.Asked[^1]);
             vm.Dispose();
         });
 

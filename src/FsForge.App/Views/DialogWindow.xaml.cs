@@ -28,7 +28,8 @@ public partial class DialogWindow
             PropertiesViewModel => 580,
             SaveOptionsViewModel => 620,
             SettingsViewModel => 760,
-            ImageInfoViewModel => 680,
+            ImageInfoViewModel => 720,
+            PartitionChoiceViewModel => 600,
             MessagesViewModel => 760,
             _ => 520,
         };

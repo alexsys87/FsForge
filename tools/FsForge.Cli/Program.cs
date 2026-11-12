@@ -19,21 +19,35 @@ internal static class Program
     private const string Usage = """
         fsforge - SquashFS / ext2-3-4 / tar image tool
 
-          fsforge-cli info    <image>
+          fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
           fsforge-cli dump    <image>                       canonical listing with SHA-256 of every file
           fsforge-cli convert <image> <output> [options]    rewrite or convert an image
+          fsforge-cli edit    <image> <output> <changes> [options]   change files and save (output may be the image itself)
+                              changes: add:<dir in image>:<host file or folder>  rm:<path>  mkdir:<path>  chmod:<octal>:<path>
           fsforge-cli extract <image> <folder> [path]       unpack to a host folder (writes .fsforge-meta.json)
           fsforge-cli pack    <folder> <output> [options]   build an image from a host folder
           fsforge-cli selftest [folder]                     run the built-in tests
 
+        A disk image with a partition table (SD card images: boot partition + root filesystem) is opened
+        at its root filesystem partition; add part=<n> to any command to pick another one. "convert" writes
+        the whole disk image again with only that partition replaced, unless the output name says otherwise
+        (.squashfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
+
         options (key=value):
+          container=0|1                                 write the filesystem alone / the whole disk image
           format=squashfs|ext2|ext3|ext4|tar            default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
         """;
+
+    /// <summary>Partition requested with part=N on the command line; 0 when the image should decide.</summary>
+    private static int _partition;
+
+    private static ImageDocument OpenImage(string path, bool searchEmbedded = true) =>
+        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition);
 
     private static int Main(string[] args)
     {
@@ -44,12 +58,19 @@ internal static class Program
         }
         try
         {
+            // part=N applies to the image being opened, whatever the command.
+            if (Array.Find(args, x => x.StartsWith("part=", StringComparison.OrdinalIgnoreCase)) is { } part && args[0] != "pack")
+            {
+                if (!int.TryParse(part[5..], out _partition) || _partition <= 0) throw new FsException($"Invalid option '{part}'.");
+                args = args.Where(x => !ReferenceEquals(x, part)).ToArray();
+            }
             switch (args[0])
             {
                 case "info": return Info(args);
                 case "ls": return List(args);
                 case "dump" or "sqdump" or "extdump" or "tardump": return DumpCmd(args);
                 case "convert": return Convert(args);
+                case "edit": return Edit(args);
                 case "extract": return Extract(args);
                 case "pack": return Pack(args);
                 case "selftest": return SelfTest.Run(args.Length > 1 ? args[1] : null);
@@ -100,7 +121,7 @@ internal static class Program
 
     private static int Info(string[] a)
     {
-        using ImageDocument doc = ImageDocument.Open(a[1]);
+        using ImageDocument doc = OpenImage(a[1]);
         TreeStats st = doc.Tree.GetStats();
         Console.WriteLine($"File:        {doc.FilePath}");
         Console.WriteLine($"Format:      {doc.FormatName}");
@@ -121,6 +142,13 @@ internal static class Program
         }
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
+        if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
+        if (doc.Container is { } c)
+        {
+            Console.WriteLine($"Disk image:  {c.DiskLength} bytes, {c.Table.Scheme.ToString().ToUpperInvariant()} partition table");
+            foreach (PartitionInfo p in c.Table.Partitions)
+                Console.WriteLine($"  {(ReferenceEquals(p, c.Partition) ? '*' : ' ')} {p}  [offset 0x{p.Offset:X}{(p.StoredLength < p.Length ? $", {p.StoredLength} bytes in the file" : "")}]");
+        }
         if (doc.EmbeddedOffset > 0) Console.WriteLine($"Offset:      0x{doc.EmbeddedOffset:X}");
         Console.WriteLine($"Content:     {st.Files} files, {st.Directories} directories, {st.Symlinks} symlinks, {st.Specials} special, {st.DataBytes} bytes");
         foreach (string w in doc.Warnings) Console.Error.WriteLine("warning: " + w);
@@ -129,7 +157,7 @@ internal static class Program
 
     private static int List(string[] a)
     {
-        using ImageDocument doc = ImageDocument.Open(a[1]);
+        using ImageDocument doc = OpenImage(a[1]);
         FsNode dir = doc.Tree.Resolve(a.Length > 2 ? a[2] : "/") ?? throw new FsException("No such path in the image.");
         IEnumerable<FsNode> items = dir.IsDirectory ? dir.SortedChildren() : new[] { dir };
         foreach (FsNode n in items)
@@ -145,7 +173,7 @@ internal static class Program
 
     private static int DumpCmd(string[] a)
     {
-        using ImageDocument doc = ImageDocument.Open(a[1], searchEmbedded: a[0] == "dump");
+        using ImageDocument doc = OpenImage(a[1], searchEmbedded: a[0] == "dump");
         var w = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false), 1 << 16);
         Dump(doc.Tree, w);
         w.Flush();
@@ -162,12 +190,20 @@ internal static class Program
         ImageFormat? format = null;
         ExtKind? kind = null;
         string? f = o.GetValueOrDefault("format");
+        // A name that spells out a filesystem asks for that filesystem alone, not for a disk image around it.
+        bool namedFilesystem = false;
         if (f is null)
         {
             string name = Path.GetFileName(output).ToLowerInvariant();
             if (ArchiveCodec.CompressionFromFileName(name) is not null) f = "tar";
-            else if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
-            else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
+            else
+            {
+                foreach (string z in new[] { ".gz", ".xz", ".zst", ".zstd" })
+                    if (name.EndsWith(z)) name = name[..^z.Length];
+                if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
+                else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
+                namedFilesystem = f is not null;
+            }
         }
         switch (f?.ToLowerInvariant())
         {
@@ -181,6 +217,7 @@ internal static class Program
         }
 
         SaveOptions s = doc.CreateSaveOptions(format);
+        s.KeepContainer = o.TryGetValue("container", out string? keep) ? keep != "0" : !namedFilesystem;
         if (format == ImageFormat.Ext && doc.Format != ImageFormat.Ext) s.Ext = new ExtOptions();
         if (kind is not null) s.Ext.Kind = kind.Value;
         if (s.Format == ImageFormat.Tar && doc.Format != ImageFormat.Tar && ArchiveCodec.CompressionFromFileName(output) is { } byName)
@@ -191,7 +228,7 @@ internal static class Program
         {
             switch (key.ToLowerInvariant())
             {
-                case "format" or "verify": break;
+                case "format" or "verify" or "container": break;
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
                     else s.SquashFs.Compression = Enum.Parse<SquashCompression>(value, true);
@@ -222,6 +259,7 @@ internal static class Program
             }
         }
         // A converted ext image gets its size from the content unless one was requested.
+        // (Inside a disk image the size is the partition's business: see ImageDocument.Save.)
         if (s.Format == ImageFormat.Ext && !o.ContainsKey("size") && (doc.Format != ImageFormat.Ext || o.ContainsKey("bs") || o.ContainsKey("free")))
         {
             s.Ext.SizeBytes = 0;
@@ -234,7 +272,7 @@ internal static class Program
     private static int Convert(string[] a)
     {
         if (a.Length < 3) throw new FsException("usage: fsforge-cli convert <image> <output> [options]");
-        ImageDocument doc = ImageDocument.Open(a[1]);
+        ImageDocument doc = OpenImage(a[1]);
         try
         {
             foreach (string w in doc.Warnings) Console.Error.WriteLine("warning: " + w);
@@ -252,10 +290,62 @@ internal static class Program
         return 0;
     }
 
+    private static readonly string[] EditVerbs = { "add:", "rm:", "mkdir:", "chmod:" };
+
+    private static int Edit(string[] a)
+    {
+        if (a.Length < 4) throw new FsException("usage: fsforge-cli edit <image> <output> <changes> [options]");
+        string[] changes = a.Skip(3).Where(x => EditVerbs.Any(v => x.StartsWith(v, StringComparison.Ordinal))).ToArray();
+        string[] rest = a.Take(3).Concat(a.Skip(3).Except(changes)).ToArray();
+        ImageDocument doc = OpenImage(a[1]);
+        try
+        {
+            foreach (string w in doc.Warnings) Console.Error.WriteLine("warning: " + w);
+            FsTree tree = doc.Tree;
+            FsNode Need(string path) => tree.Resolve(path) ?? throw new FsException($"No '{path}' in the image.");
+            foreach (string change in changes)
+            {
+                string verb = change[..change.IndexOf(':')], arg = change[(change.IndexOf(':') + 1)..];
+                int sep = arg.IndexOf(':');
+                switch (verb)
+                {
+                    case "add":
+                        if (sep <= 0) throw new FsException($"Invalid change '{change}' (expected add:<dir in image>:<host path>).");
+                        ImportResult ir = HostImporter.Import(tree, Need(arg[..sep]), new[] { Path.GetFullPath(arg[(sep + 1)..]) }, new ImportOptions());
+                        foreach (string w in ir.Warnings) Console.Error.WriteLine("warning: " + w);
+                        break;
+                    case "rm":
+                        tree.Remove(Need(arg));
+                        break;
+                    case "mkdir":
+                        int slash = arg.TrimEnd('/').LastIndexOf('/');
+                        if (slash < 0) throw new FsException($"Invalid change '{change}' (expected an absolute path).");
+                        tree.CreateDirectory(Need(slash == 0 ? "/" : arg[..slash]), arg.TrimEnd('/')[(slash + 1)..], 0x1ED, 0, 0, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        break;
+                    case "chmod":
+                        if (sep <= 0) throw new FsException($"Invalid change '{change}' (expected chmod:<octal>:<path>).");
+                        tree.SetMode(new[] { Need(arg[(sep + 1)..]) }, System.Convert.ToInt32(arg[..sep], 8), recursive: false, targets: FsTree.Targets.All);
+                        break;
+                }
+            }
+            SaveOptions s = BuildOptions(doc, a[2], Options(rest, 3));
+            var sw = Stopwatch.StartNew();
+            ImageDocument.SaveResult r = doc.Save(a[2], s);
+            doc = r.Document;
+            foreach (string w in r.Warnings) Console.Error.WriteLine("warning: " + w);
+            Console.Error.WriteLine($"{changes.Length} changes; written {r.BytesWritten} bytes in {sw.ElapsedMilliseconds} ms");
+        }
+        finally
+        {
+            doc.Dispose();
+        }
+        return 0;
+    }
+
     private static int Extract(string[] a)
     {
         if (a.Length < 3) throw new FsException("usage: fsforge-cli extract <image> <folder> [path]");
-        using ImageDocument doc = ImageDocument.Open(a[1]);
+        using ImageDocument doc = OpenImage(a[1]);
         FsNode node = doc.Tree.Resolve(a.Length > 3 ? a[3] : "/") ?? throw new FsException("No such path in the image.");
         ExtractResult r = HostExtractor.Extract(new[] { node }, a[2], new ExtractOptions());
         foreach (string w in r.Warnings) Console.Error.WriteLine("warning: " + w);

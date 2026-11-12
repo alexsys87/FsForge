@@ -33,7 +33,8 @@ public interface IDialogService
     string? PickFolder(string title, string? initialDirectory);
 
     /// <summary>Asks where to save an image of the given format; null when cancelled.</summary>
-    string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory);
+    /// <param name="diskImage">The file is a whole disk image (partition table and partitions), not a filesystem alone.</param>
+    string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory, bool diskImage = false);
 
     /// <summary>Shows the modal dialog that belongs to a view model; true when the user accepted it.</summary>
     bool ShowDialog(object viewModel);

@@ -16,6 +16,7 @@ public sealed class DialogService : IDialogService
 {
     private const string ImageFilter =
         "Образы и архивы|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
+        "Образы дисков (SD-карты)|*.img;*.img.gz;*.img.xz;*.img.zst|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|Архивы tar|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|Все файлы|*.*";
 
     private readonly Func<Window?> _owner;
@@ -50,9 +51,9 @@ public sealed class DialogService : IDialogService
         return dialog.ShowDialog(_owner()) == true ? dialog.FolderName : null;
     }
 
-    public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory)
+    public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory, bool diskImage = false)
     {
-        string filter = format switch
+        string filter = diskImage ? "Образ диска|*.img;*.img.gz;*.img.xz;*.img.zst;*.bin|Все файлы|*.*" : format switch
         {
             ImageFormat.SquashFs => "SquashFS|*.squashfs;*.sqfs;*.sfs;*.img;*.bin|Все файлы|*.*",
             ImageFormat.Ext => "Образ ext2/3/4|*.ext4;*.ext3;*.ext2;*.img;*.bin|Все файлы|*.*",

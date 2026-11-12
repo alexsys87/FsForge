@@ -471,6 +471,26 @@
                 </StackPanel>
             </Border>
 
+            <!--  The disk image the filesystem was opened from  -->
+            <StackPanel Visibility="{Binding ShowContainerOptions, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="Образ диска" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Text="{Binding ContainerSummary}"
+                            TextWrapping="Wrap" />
+                        <HeaderedContentControl Header="Сохранить образ диска целиком: таблица разделов и остальные разделы остаются как были" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding KeepContainer}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding ContainerNote}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  SquashFS  -->
             <StackPanel Visibility="{Binding IsSquash, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="SquashFS" />
@@ -544,6 +564,11 @@
                             Visibility="{Binding IsMinimalSize, Converter={StaticResource BoolToVisibility}}">
                             <ui:TextBox Width="140" Text="{Binding ExtraFreeMiB, UpdateSourceTrigger=PropertyChanged}" />
                         </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding ExtSizeNote}"
+                            Visibility="{Binding HasExtSizeNote, Converter={StaticResource BoolToVisibility}}" />
                         <HeaderedContentControl
                             Header="Размер блока"
                             IsEnabled="{Binding CanChangeGeometry}"
@@ -685,6 +710,52 @@
                     </HeaderedContentControl>
                 </StackPanel>
             </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <!--  ============================ partition of a disk image ============================  -->
+
+    <DataTemplate DataType="{x:Type vm:PartitionChoiceViewModel}">
+        <StackPanel Margin="0,0,0,4">
+            <TextBlock
+                Margin="0,0,0,10"
+                Text="{Binding Summary}"
+                TextWrapping="Wrap" />
+            <ListBox
+                MaxHeight="340"
+                ItemsSource="{Binding Rows}"
+                SelectedItem="{Binding Selected}">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid x:Name="RowRoot" Margin="2,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ui:SymbolIcon
+                                Grid.Column="0"
+                                Margin="0,0,12,0"
+                                VerticalAlignment="Center"
+                                FontSize="20"
+                                Symbol="HardDrive20" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock FontWeight="SemiBold">
+                                    <Run Text="{Binding Name, Mode=OneWay}" />
+                                    <Run Text="—" />
+                                    <Run Text="{Binding Content, Mode=OneWay}" />
+                                </TextBlock>
+                                <TextBlock Style="{StaticResource Hint}" Text="{Binding Details}" />
+                            </StackPanel>
+                        </Grid>
+                        <DataTemplate.Triggers>
+                            <!--  Partitions without an editable filesystem are listed for orientation only.  -->
+                            <DataTrigger Binding="{Binding IsEditable}" Value="False">
+                                <Setter TargetName="RowRoot" Property="Opacity" Value="0.55" />
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
         </StackPanel>
     </DataTemplate>
 
