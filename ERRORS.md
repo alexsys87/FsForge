@@ -37,7 +37,7 @@
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, ext2/3/4 image, disk image with such a partition, or tar archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS внутри прошивок, если файл не образ». |
+| `The file is not a SquashFS, ext2/3/4 or UBIFS image, UBI image, disk image with such a partition, or tar archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
 | …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
@@ -109,7 +109,59 @@
 размонтирована; журнал воспроизведён при чтении (…)», «…журнал пуст» или «журнал не воспроизведён
 (требуется восстановление)».
 
-## 4. Чтение архивов tar
+## 4. Чтение UBIFS и UBI
+
+UBIFS и UBI читаются и записываются (запись — в разделе 7). Образ UBI всегда сохраняется целиком,
+с заменой открытого тома.
+
+### Образы UBI (тома)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| Предупреждение: `The UBI image was found inside the file at offset 0x<…>. Saving writes the UBI image alone, without the data in front of it.` | Образ UBI лежит в файле прошивки не с начала (перед ним ядро или заголовок производителя). Заголовок и контрольные суммы прошивки программа не пересобирает. | Сохраните под новым именем и соберите прошивку заново средствами производителя. |
+| `None of the volumes of this UBI image holds UBIFS or SquashFS. Its volumes: <список>.`, `The UBI image holds no volumes.` | В образе нет тома с файловой системой, которую программа читает (например, только ядро). | Проверьте, тот ли это файл: корневая файловая система может быть в другом разделе флеш-памяти. |
+| `The UBI image has no volume '<имя>'. Its volumes: <список>.` | Параметр `vol=` в `fsforge-cli` называет том, которого нет. | Возьмите имя или номер из списка в сообщении (или из `fsforge-cli info`). |
+| `Volume '<имя>' (<N>) holds <формат>, not UBIFS or SquashFS, and cannot be opened.` | Выбран том без читаемой файловой системы (ядро, пустой том). | Выберите другой том. |
+| `The selected volume does not hold UBIFS or SquashFS.`; в окне выбора — «В этом томе нет UBIFS или SquashFS — его нельзя открыть.», «Выберите том.» | То же в окне выбора тома. | Выберите том с пометкой UBIFS или SquashFS. |
+| `The file is not a UBI image, so there is no volume '<имя>' to open.` | `vol=` указан для файла, который не является образом UBI. | Уберите параметр. |
+| `The file is a UBI image and has no partition table, so there is no partition <N> to open.` | `part=` указан для образа UBI. | Тома UBI выбираются параметром `vol=`. |
+| `The size of the erase blocks of this UBI image cannot be determined: no second erase-counter header was found. A flash dump that includes out-of-band (spare) data is not supported.` | В файле один блок стирания, либо это дамп NAND вместе с OOB-данными: блоки в нём идут не подряд. | Снимите дамп без OOB (`nanddump --omitoob`) или уберите OOB сторонней утилитой. |
+| `Not a UBI image (bad erase-counter header).`, `UBI version <N> is not supported (only 1).`, `Corrupt UBI image: invalid header offsets.` | Испорчен заголовок первого блока или неизвестная версия UBI. | Получите файл заново. |
+| Предупреждение: `<N> erase block(s) of the UBI image have damaged headers and were ignored.` | У части блоков испорчены заголовки (битые блоки флеш-памяти, оборванная запись, посторонние данные в дампе). | Если после этого файловая система читается без ошибок — ничего. Иначе снимите дамп заново. |
+| Предупреждение: `<N> erase block(s) in the file belong to another UBI image and were ignored: only the first UBI image of the file is read.` | В одном файле несколько образов UBI (два слота прошивки, дамп всей флеш-памяти). Читается первый. | Чтобы открыть другой, вырежьте его раздел из дампа в отдельный файл (`dd` с нужным смещением). |
+| Предупреждение: `The size of the UBI image is not a multiple of its erase block size (<N> bytes); the incomplete last block was ignored.` | За образом в файле есть хвост (подпись, выравнивание) или файл обрезан. | Обычно безопасно. Если затем появляются ошибки чтения — файл неполный. |
+| Предупреждение: `The UBI image has no volume table; the names of its volumes are unknown.`, `The volume table of the UBI image is damaged; the names of its volumes are unknown.` | Не найдена или испорчена служебная таблица томов. | Тома всё равно открываются — по номерам. |
+
+### UBIFS
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The UBIFS image is encrypted (fscrypt). Names and contents of its files cannot be read without the keys, so encrypted images are not supported.` | Файловая система создана с шифрованием. | Не поддерживается. |
+| Предупреждение: `'<путь>' is encrypted and was skipped.` | Отдельный объект зашифрован. | Его содержимое недоступно без ключа. |
+| Предупреждение: `The UBIFS image is authenticated (signed). The signatures are not verified.` | Образ подписан (`mkfs.ubifs --hash-algo … --auth-key …`). | Содержимое читается как обычно; подлинность не проверяется. |
+| Предупреждение: `The image uses UBIFS format version <N>, which is newer than this program knows (5). It may be read incorrectly.` | Формат новее поддерживаемого. | Сверьте результат с Linux (`mount -t ubifs`). |
+| `UBIFS key format <N> is not supported.`, сжатие: `The data node at erase block <N>, offset <M> uses an unknown compressor (<K>).` | Нестандартный вариант формата. | Не поддерживается. |
+| `Not a UBIFS image (no superblock node).`, `The file is too small to be a UBIFS image.` | Это не UBIFS. | Проверьте файл; см. «Открытие файла». |
+| `Corrupt UBIFS image: bad checksum of the superblock.`, `…invalid geometry in the superblock.`, `…no valid master node was found.`, `…the root directory is missing.` | Повреждены основные структуры. | Получите образ заново. Для дампа с устройства — снимите его повторно, без OOB и с исправлением ошибок (ECC). |
+| `The UBIFS image is truncated: erase block <N>, offset <M> is not in the file.` | Файл короче файловой системы. | Файл скопирован не полностью. |
+| `Corrupt UBIFS image: …` (the index points outside the filesystem, no node at…, unexpected node at…, bad checksum of the node at…, invalid index node at…, the index node at… is at the wrong level of the tree) | Повреждён корень индекса — открыть нечего. | То же. |
+| Предупреждение: `A damaged node was skipped; the file or name it describes is missing. <причина>`, `A part of the index is damaged and was skipped; files may be missing. <причина>`, `... and <N> more damaged node(s) were skipped.` | Отдельный узел не прошёл проверку контрольной суммы (сбойные биты в дампе). Остальное открыто. | Объект будет отсутствовать и в сохранённом образе. Снимите дамп заново, если он нужен. |
+| Предупреждение: `'<путь>' points to a missing inode and was skipped.` | У имени нет инода: следствие предыдущего пункта или некорректного выключения. | Обычно безопасно. |
+| Предупреждение: `Invalid directory entry '<имя>' in '<папка>' was skipped.`, `Directory '<путь>' is linked more than once and was skipped.`, `'<путь>' has an unknown file type and was skipped.`, `'<путь>' has an invalid size and was skipped.`, `The symbolic link '<путь>' has no target and was skipped.`, `The extended attribute '<имя>' of '<путь>' cannot be read and was skipped.` | Повреждённые записи. | Объект (атрибут) пропущен; остальное открыто. |
+| При чтении файла: `Corrupt UBIFS image: invalid data node at…`, `…the data node at… does not belong to the file.`, `…does not unpack to its recorded size.`, `Corrupt zlib data in a UBIFS data node.`, `Corrupt LZO block.`, `Corrupt Zstandard block.` | Повреждён блок данных файла. Ошибка появляется при извлечении, просмотре или сохранении. | Удалите этот файл из образа перед сохранением или получите исправный образ. |
+
+### Журнал UBIFS (после некорректного выключения)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| Предупреждение: `The filesystem was not cleanly unmounted: <N> journal node(s) were applied while reading. The file itself was not changed.` | Образ снят с работавшего или внезапно выключенного устройства. Программа воспроизвела журнал в памяти и показывает состояние, которое смонтировало бы ядро. | Ничего делать не нужно. |
+| Предупреждение: `<N> journal erase block(s) of the UBIFS image end in damaged data (an interrupted write); the nodes before the damage were applied.` | Последняя запись оборвана выключением питания. Ядро отбрасывает её так же. | Ничего делать не нужно. |
+| Предупреждение: `The log of the UBIFS image does not start with the record of its last commit; the journal was not replayed. Changes made shortly before the image was taken may be missing.`, `The master node of the UBIFS image points to a log outside the log area; the journal was not replayed.` | Журнал не соответствует последней фиксации (дамп снят во время записи, повреждён). | Показано состояние последней фиксации. Если нужны самые последние изменения — снимите дамп с остановленного устройства. |
+
+В окне «Сведения об образе» строка «Состояние» показывает: «чистая», «не была корректно
+размонтирована; журнал воспроизведён при чтении (…)» или «…журнал пуст».
+
+## 5. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -125,7 +177,7 @@
 | Предупреждение: `'<имя>': the hard link target '<цель>' is not in the archive; the link was skipped.` | Жёсткая ссылка на файл, которого нет в архиве (архив собран не целиком). | Добавьте недостающий файл вручную. |
 | Предупреждение: `'<имя>' was skipped: <причина>` | Запись с недопустимым именем или конфликтом. | Запись потеряна; при необходимости добавьте её вручную. |
 
-## 5. Ошибки сжатых данных
+## 6. Ошибки сжатых данных
 
 Появляются при открытии, извлечении или сохранении, когда читается конкретный блок данных:
 
@@ -138,7 +190,7 @@
 Причина — повреждённые данные или редкие параметры сжатия. Если ошибка возникает при извлечении
 одного файла — повреждён именно он: извлеките остальное. Если при открытии — см. общие способы.
 
-## 6. Сохранение
+## 7. Сохранение
 
 ### Общие
 
@@ -202,6 +254,27 @@
 | `The inode table is too large for SquashFS.`, `The directory table is too large for SquashFS.` | Предел формата (сотни миллионов объектов). | Разделите содержимое на несколько образов. |
 | Предупреждение: `<путь>: extended attribute '<имя>' cannot be stored in SquashFS and was skipped.` | SquashFS хранит только `user.`, `trusted.` и `security.`. | Атрибут потерян; если нужен — ext или tar pax. |
 
+### Запись UBIFS и UBI
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The UBIFS min. I/O unit size must be a power of two.`, `The UBIFS erase block (LEB) size must be at least <N> bytes.` / `at most <N> bytes.`, `…must be a multiple of the min. I/O unit size and of 8.` | Неверные размеры страницы или блока стирания UBIFS. | Возьмите значения у вашей флеш-памяти (`mtdinfo -a`, `cat /proc/mtd`): размер логического блока = размер блока стирания минус заголовки UBI (для NAND 128 КБ со страницей 2048 — 126976, с подстраницами 512 — 129024, для NOR 64 КБ — 65408). |
+| `The maximum number of UBIFS erase blocks must be at least <N>.`, `The maximum number of UBIFS erase blocks is too low for the fixed areas of the filesystem.` | Задан слишком малый предел размера файловой системы. | Увеличьте «Макс. число блоков стирания» или оставьте 0. |
+| `The UBIFS index fanout must be between 3 and <N>.`, `UBIFS needs at least one erase block for orphans.`, `Unknown UBIFS compressor.`, `UBIFS sizes cannot be negative.` | Неверные параметры. | Верните значения по умолчанию. |
+| `The UBIFS log is too small for the journal: at least <N> erase blocks are needed.` | Заданный журнал не помещается в лог. | Уберите свои размеры журнала и лога. |
+| `The content needs <N> erase blocks, more than the maximum of <M> set for the filesystem.` | Содержимое не помещается в заданный предел. | Увеличьте «Макс. число блоков стирания» или удалите файлы. |
+| `The UBIFS geometry is not usable: the table of LEB properties does not fit into an erase block.` | Слишком малый блок стирания для заданного максимального размера. | Уменьшите максимальный размер или возьмите больший блок. |
+| `The target of the symbolic link '<путь>' cannot be stored in UBIFS: it must be 1 to 4095 bytes long.` | Цель ссылки слишком длинная. | Сократите цель или удалите ссылку. |
+| Предупреждение: `'<путь>': the extended attribute '<имя>' was not stored. UBIFS keeps only the user, trusted and security namespaces.`, `…is too large for UBIFS (4096 bytes at most) and was not stored.` | У атрибута пространство имён, которого нет в UBIFS (например, `system.posix_acl_access`), или он слишком велик. | Атрибут потерян в сохранённом образе. |
+| `'<путь>' is too large for UBIFS.`, `The content of '<путь>' changed while the image was being written.` | Файл больше 16 ТБ; либо исходный файл изменился во время записи. | Повторите сохранение. |
+| `The UBIFS erase block size (<N>) must stay the erase block size of the UBI volume (<M>).` | Для файловой системы в томе UBI указан иной блок стирания, чем у образа. | Верните размер блока из образа: ядро не смонтирует иначе. |
+| Предупреждение: `The filesystem no longer fits into volume <том> (<N> erase blocks): the volume was enlarged to <M> erase blocks. The flash must have room for it.` | Файловая система выросла. Том в образе UBI увеличен. | Проверьте, что в флеш-памяти хватит блоков; иначе удалите файлы. |
+| `Only UBIFS and SquashFS can be wrapped into a UBI image.` | Для нового образа UBI выбрана ext или tar. | Выберите UBIFS или SquashFS. |
+| `The UBI min. I/O unit size must be a power of two.`, `The UBI sub-page size must be a power of two that is not larger than the min. I/O unit.`, `The UBI erase block size must be between 4 KiB and 16 MiB and a multiple of the min. I/O unit.`, `The UBI erase block is too small for the headers.` | Неверная геометрия образа UBI. | См. выше: размеры берутся из параметров флеш-памяти. |
+| `The UBI volume name must be 1 to 127 bytes long.`, `The UBI volume number is out of range.`, `The UBI volume number <N> is used twice.`, `The UBI volume name '<имя>' is used twice.`, `A UBI volume name is longer than 127 bytes.` | Неверное имя или номер тома. | Исправьте. |
+| `Invalid UBI geometry.` | Внутренняя проверка заголовков. | Сообщите об ошибке. |
+| `The written image does not match the source and was discarded; …` с `Volume <том> of the UBI image is missing or differs in the written image.`, `The content of volume <том> differs from the source UBI image.`, `The written file is not a UBI image.` | Проверка после записи: остальные тома образа UBI в новом файле не совпали с исходными. | Исходный файл не изменён. Если повторяется — это ошибка программы. |
+
 ### Запись tar
 
 | Сообщение | Причина | Что делать |
@@ -219,7 +292,7 @@
 | `The added file '<путь>' can no longer be read: <текст>` | Файл, добавленный с диска, удалён, переименован или заблокирован до сохранения. Образ ссылается на него и читает только при записи. | Верните файл на место или добавьте его заново. Чтобы такого не было, включите Настройки → «Сразу копировать добавляемые файлы во временную папку». |
 | `The file '<путь>' has changed since it was added to the image. Add it again.` | Размер добавленного файла изменился. | Добавьте файл заново (или включите ту же настройку). |
 
-## 7. Правка образа
+## 8. Правка образа
 
 Сообщения в окнах «Создать», «Свойства», «Переименовать» и при вставке. Ядро даёт английский текст,
 окна показывают русский перевод.
@@ -250,7 +323,7 @@
 | «Вставка» со списком | Часть объектов не вставлена; причина указана для каждого. |
 | «Путь не найден» (уведомление) | Путь, введённый в адресной строке, не существует в образе. Проверьте написание; пути начинаются с `/`. |
 
-## 8. Добавление файлов и сборка из папки
+## 9. Добавление файлов и сборка из папки
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -262,7 +335,7 @@
 | Предупреждение: `'<путь>' was skipped: <текст>` | Файл не читается (занят, нет прав) или имя недопустимо. | Закройте программу, держащую файл, и добавьте его снова. |
 | Вопрос «Объекты с такими именами уже существуют» | Совпадение имён при добавлении. | Выберите действие; поведение по умолчанию — Настройки → «Если объект с таким именем уже есть». |
 
-## 9. Извлечение и внешний редактор
+## 10. Извлечение и внешний редактор
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -278,7 +351,7 @@
 | «Замена содержимого» — «Выберите один файл.» | Для замены содержимого выбрано несколько файлов. | Выберите один. |
 | «Не удалось выполнить действие» | Не удалось открыть папку в Проводнике или скопировать путь в буфер обмена. | Повторите; причина указана в тексте. |
 
-## 10. Настройки и параметры сохранения
+## 11. Настройки и параметры сохранения
 
 | Сообщение | Что делать |
 |---|---|
@@ -289,7 +362,7 @@
 | «Размер образа — целое число мегабайт (МиБ), не меньше 1.» | Введите целое число. |
 | «Запас свободного места — целое неотрицательное число мегабайт.» | Введите 0 или больше. |
 
-## 11. Прочее
+## 12. Прочее
 
 | Сообщение | Причина | Что делать |
 |---|---|---|

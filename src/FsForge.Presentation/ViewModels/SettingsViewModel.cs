@@ -120,7 +120,8 @@ public sealed class SettingsViewModel : DialogViewModel
 
     public IReadOnlyList<Choice<ImageFormat>> NewFormats { get; } = new[]
     {
-        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Tar, L.T("архив tar")),
+        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Ubifs, "UBIFS"),
+        new Choice<ImageFormat>(ImageFormat.Tar, L.T("архив tar")),
     };
 
     public IReadOnlyList<Choice<ExtKind>> ExtKinds { get; } = new[]

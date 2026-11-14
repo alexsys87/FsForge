@@ -2,7 +2,7 @@
 # Cross-checks the FsForge core against the reference Linux tools.
 # Needs root (loop mounts, device nodes) and: squashfs-tools, e2fsprogs, tar, attr, python3;
 # optional: libarchive-tools (bsdtar), busybox (also makes the FAT partition of the disk image tests), acl,
-# util-linux partx.
+# util-linux partx, mtd-utils (mkfs.ubifs and ubinize for the UBIFS and UBI tests).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -248,6 +248,95 @@ if command -v bsdtar >/dev/null; then rm -rf tx; mkdir tx; bsdtar -xp --xattrs -
 if command -v busybox >/dev/null; then rm -rf tx; mkdir tx; busybox tar -xzp -C tx -f img/w_gnu.tar.gz 2>/dev/null
   # busybox restores neither the times of directories and links nor the owners of links
   python3 scan.py tx | cut -f1-5,7-8 | grep -v "	l	0777	" | cmp -s - <(cut -f1-5,7-8 tree.tar.nox.ref | grep -v "	l	0777	") && ok "busybox extracts the .tar.gz identically" || bad "busybox extraction differs"; rm -rf tx; fi
+
+# ---------------------------------------------------------- UBIFS and UBI
+# Images made by mkfs.ubifs and ubinize are read and compared, then converted to the other formats; images written
+# by FsForge are read back and, where the kernel has the modules, attached to a simulated flash and mounted.
+# (mkfs.ubifs cannot store the 3000-byte attribute, hence the tree without it.)
+if command -v mkfs.ubifs >/dev/null && command -v ubinize >/dev/null; then
+echo "UBIFS: images made by mkfs.ubifs"
+ub() { n=$1; shift; if mkfs.ubifs -r tree1k -o img/$n.ubifs "$@" > out/mk.$n.log 2>&1; then cmpdump "ubifs $n" img/$n.ubifs tree1k.ref; else bad "mkfs.ubifs $n: $(tail -1 out/mk.$n.log)"; fi; }
+NAND="-m 2048 -e 126976 -c 2000"
+ub lzo $NAND -x lzo; ub zlib $NAND -x zlib; ub zstd $NAND -x zstd; ub none $NAND -x none; ub favor_lzo $NAND -x favor_lzo
+ub nor -m 1 -e 65408 -c 4000; ub page4k -m 4096 -e 253952 -c 1000 -F; ub fanout3 $NAND -f 3; ub fanout32 $NAND -f 32 -k test
+if command -v openssl >/dev/null && openssl req -new -newkey rsa:2048 -x509 -sha256 -days 30 -nodes -subj "/CN=fsforge" -keyout out/ub.key -out out/ub.crt 2>/dev/null; then
+  ub signed $NAND --hash-algo sha256 --auth-key out/ub.key --auth-cert out/ub.crt
+  grep -q "authenticated" out/r.ubifs_signed.err && ok "an authenticated image is reported as such" || bad "no warning for an authenticated image"; fi
+head -c 64 /dev/urandom > out/ub.fskey
+if mkfs.ubifs -r tree1k -o img/crypt.ubifs $NAND -K out/ub.fskey -b 0123456789abcdef > out/mk.crypt.log 2>&1; then
+  $F dump img/crypt.ubifs > /dev/null 2> out/ub.crypt.err; grep -q "is encrypted" out/ub.crypt.err && ok "an encrypted image is refused with an explanation" || bad "encrypted image: $(head -c 200 out/ub.crypt.err)"; fi
+$F info img/lzo.ubifs > out/ub.info 2>&1; grep -q "Format: *UBIFS" out/ub.info && grep -q "99 x 126976\|x 126976" out/ub.info && grep -q "State: *clean" out/ub.info \
+  && ok "info: geometry and state of a UBIFS image" || bad "info of a UBIFS image: $(head -3 out/ub.info)"
+
+echo "UBI: images made by ubinize"
+head -c 300000 /dev/urandom > img/kernel.bin
+mkdir -p data/upper/etc; echo overlay > data/upper/etc/config.txt; ln -sf config.txt data/upper/etc/link; python3 scan.py data > data.ref
+mkfs.ubifs -r data -o img/data.ubifs $NAND -x zlib > /dev/null 2>&1
+mksquashfs tree1k img/ubi-root.sqfs -noappend -quiet -no-progress -comp xz >/dev/null
+ubi() { n=$1; root=$2; shift 2
+  printf '[kernel]\nmode=ubi\nvol_id=0\nvol_type=static\nvol_name=kernel\nimage=img/kernel.bin\n[rootfs]\nmode=ubi\nvol_id=1\nvol_type=dynamic\nvol_name=rootfs\nimage=%s\n[rootfs_data]\nmode=ubi\nvol_id=2\nvol_type=dynamic\nvol_name=rootfs_data\nvol_size=4MiB\nvol_flags=autoresize\nimage=img/data.ubifs\n' $root > img/$n.cfg
+  ubinize -o img/$n.ubi "$@" img/$n.cfg > out/ubinize.$n.log 2>&1 || bad "ubinize $n: $(tail -1 out/ubinize.$n.log)"; }
+ubi nand img/lzo.ubifs -m 2048 -p 128KiB
+cmpdump "ubi: UBIFS volume 'rootfs' (largest, opened by default)" img/nand.ubi tree1k.ref
+if $F dump img/nand.ubi vol=rootfs_data > out/ubi.data.txt 2> out/ubi.data.err && cmp -s out/ubi.data.txt data.ref; then ok "read  ubi: volume chosen by name (vol=rootfs_data)"; else bad "ubi vol=rootfs_data: $(head -c 200 out/ubi.data.err)"; fi
+$F dump img/nand.ubi vol=2 2>/dev/null | cmp -s - data.ref && ok "read  ubi: volume chosen by number (vol=2)" || bad "ubi vol=2"
+$F dump img/nand.ubi vol=kernel > /dev/null 2> out/ubi.k.err; grep -q "cannot be opened" out/ubi.k.err && ok "a volume without a filesystem is refused" || bad "ubi vol=kernel: $(cat out/ubi.k.err)"
+$F dump img/nand.ubi vol=nosuch > /dev/null 2> out/ubi.n.err; grep -q "has no volume 'nosuch'" out/ubi.n.err && ok "a missing volume is reported" || bad "ubi vol=nosuch: $(cat out/ubi.n.err)"
+$F info img/nand.ubi > out/ubi.info 2>&1; grep -q '0: "kernel".*static' out/ubi.info && grep -q '\* 1: "rootfs", UBIFS' out/ubi.info && grep -q '2: "rootfs_data", UBIFS.*autoresize' out/ubi.info \
+  && grep -q "erase blocks of 131072 bytes, logical block 126976" out/ubi.info && ok "info: volume table of a UBI image" || bad "info of a UBI image: $(cat out/ubi.info)"
+ubi sub img/lzo.ubifs -m 2048 -p 128KiB -s 512;  cmpdump "ubi: sub-pages (VID header at 512)" img/sub.ubi tree1k.ref
+mkfs.ubifs -r tree1k -o img/nor.ubifs -m 1 -e 65408 -c 4000 >/dev/null 2>&1; sed -i 's|img/lzo.ubifs|img/nor.ubifs|' img/sub.cfg
+mkfs.ubifs -r data -o img/data-nor.ubifs -m 1 -e 65408 -c 400 >/dev/null 2>&1; sed 's|img/data.ubifs|img/data-nor.ubifs|' img/sub.cfg > img/norubi.cfg
+ubinize -o img/nor.ubi -m 1 -p 64KiB img/norubi.cfg >/dev/null 2>&1; cmpdump "ubi: NOR flash (64 KiB erase blocks)" img/nor.ubi tree1k.ref
+ubi sq img/ubi-root.sqfs -m 2048 -p 128KiB
+cmpdump "ubi: SquashFS volume (OpenWrt layout)" img/sq.ubi tree1k.ref
+gzip -k -f img/nand.ubi; cmpdump "ubi: compressed image (.ubi.gz)" img/nand.ubi.gz tree1k.ref
+(head -c $((3*131072)) /dev/urandom; cat img/sq.ubi) > img/factory.bin
+cmpdump "ubi: found inside a firmware file behind a kernel" img/factory.bin tree1k.ref
+# A dump of a flash that was in use: erased blocks, and an old copy of a block left behind by wear levelling.
+python3 - img/nand.ubi img/worn.ubi <<'PY'
+import sys, struct, zlib
+d = bytearray(open(sys.argv[1], 'rb').read()); P = 131072
+crc = lambda b: (~zlib.crc32(b)) & 0xffffffff
+pebs = [d[i:i+P] for i in range(0, len(d), P)]
+vid = lambda p: struct.unpack('>II', p[2048+8:2048+16]) if p[2048:2052] == b'UBI!' else None
+i = next(k for k, p in enumerate(pebs) if vid(p) == (1, 7))                # block 7 of the rootfs volume
+old = bytearray(pebs[i]); old[4096:8192] = bytes(4096)                     # stale content, lower sequence number
+new = bytearray(pebs[i]); new[2048+40:2048+48] = struct.pack('>Q', 1 << 40)
+new[2048+60:2048+64] = struct.pack('>I', crc(bytes(new[2048:2048+60])))
+erased = bytearray(b'\xff' * P); erased[:64] = pebs[0][:64]
+out = pebs[:i] + [old, erased, bytearray(b'\xff' * P)] + pebs[i+1:] + [new]
+open(sys.argv[2], 'wb').write(b''.join(out))
+PY
+cmpdump "ubi: flash dump with erased blocks and a stale copy of a block" img/worn.ubi tree1k.ref
+cat img/nand.ubi img/sq.ubi img/nand.ubi > img/dual.bin          # a device with two firmware slots, dumped as one file
+if $F dump img/dual.bin > out/ubi.dual.txt 2> out/ubi.dual.err && cmp -s out/ubi.dual.txt tree1k.ref && grep -q "belong to another UBI image" out/ubi.dual.err; then
+  ok "read  ubi: only the first of several UBI images in one dump is used"; else bad "dump with several UBI images: $(head -c 300 out/ubi.dual.err)"; fi
+
+echo "UBIFS: conversion to the writable formats"
+if $F convert img/nand.ubi img/w_ubi.sqfs verify=content 2> out/w.ubi1.err && kmount ubi_sq img/w_ubi.sqfs tree1k.ref; then ok "UBI/UBIFS -> SquashFS (kernel)"; else bad "UBI/UBIFS -> SquashFS: $(cat out/w.ubi1.err)"; fi
+if $F convert img/zstd.ubifs img/w_ubifs.ext4 verify=content 2> out/w.ubi2.err && e2fsck -fn img/w_ubifs.ext4 > out/fsck.ubi.txt 2>&1 && kmount ubi_ext img/w_ubifs.ext4 tree1k.ref "^/lost+found"; then
+  ok "UBIFS -> ext4 (e2fsck + kernel)"; else bad "UBIFS -> ext4: $(cat out/w.ubi2.err)"; fi
+if $F convert img/zlib.ubifs img/w_ubifs.tar.gz verify=content 2> out/w.ubi3.err; then rm -rf tx; mkdir tx; tar -x --xattrs --xattrs-include='*' -p -f img/w_ubifs.tar.gz -C tx 2>/dev/null
+  python3 scan.py tx | cmp -s - <(grep -v "^/dev/sock" tree1k.ref) && ok "UBIFS -> tar.gz (GNU tar)" || bad "UBIFS -> tar.gz differs"; rm -rf tx; else bad "UBIFS -> tar.gz: $(cat out/w.ubi3.err)"; fi
+if $F edit img/sq.ubi img/w_ubi_edit.sqfs rm:/bigtext mkdir:/newdir 2> out/w.ubi4.err && $F ls img/w_ubi_edit.sqfs / | grep -q " newdir$" && ! $F ls img/w_ubi_edit.sqfs / | grep -q " bigtext$"; then
+  ok "edit of a SquashFS volume is saved as the filesystem alone"; else bad "edit of a UBI volume: $(cat out/w.ubi4.err)"; fi
+
+echo "UBIFS and UBI: images written by FsForge"
+. "$HERE/verify-ubifs-kernel.sh"
+ubk_prepare
+# What FsForge wrote is read back by FsForge itself, here from the files; the kernel follows below.
+for n in lzo zlib zstd none fanout3 biglpt tight nor; do cmpdump "FsForge reads its own $n.ubifs" ubk/$n.ubifs tree1k.ref; done
+for n in nand sub fixed sq nor sq2ubifs; do cmpdump "FsForge reads its own $n.ubi" ubk/$n.ubi tree1k.ref; done
+cut -f1-5,7- ubk/tiny.ref | cmp -s - <(cut -f1-5,7- data.ref) && ok "read  FsForge reads its own tiny.ubi" || bad "tiny.ubi differs from its folder"
+[ "$(stat -c %s ubk/zlib.ubifs)" = "$(stat -c %s img/zlib.ubifs)" ] && [ "$(stat -c %s ubk/none.ubifs)" = "$(stat -c %s img/none.ubifs)" ] \
+  && ok "same image size as mkfs.ubifs for the same content (zlib, none)" || bad "image size differs from mkfs.ubifs: $(stat -c %s ubk/zlib.ubifs ubk/none.ubifs img/zlib.ubifs img/none.ubifs | tr '\n' ' ')"
+$F info ubk/edited.ubi > out/ubk.info 2>&1; grep -q '0: "kernel".*static' out/ubk.info && grep -q '\* 1: "rootfs", UBIFS' out/ubk.info && grep -q '2: "rootfs_data", UBIFS.*autoresize' out/ubk.info \
+  && ok "the edited UBI image keeps its volume table" || bad "volume table of edited.ubi: $(cat out/ubk.info)"
+if $F convert img/tree1k.sqfs ubk/bad.ubi format=ext4 ubi=1 2> out/ubk.bad.err; then bad "ext4 in a new UBI image was accepted"; else ok "only UBIFS and SquashFS go into a new UBI image"; fi
+if $F convert img/tree1k.sqfs ubk/bad.ubifs maxleb=40 2> out/ubk.bad.err; then bad "content beyond the maximum size was accepted"; else grep -q "erase blocks" out/ubk.bad.err && [ ! -e ubk/bad.ubifs ] && ok "content that exceeds the maximum size is rejected" || bad "$(cat out/ubk.bad.err)"; fi
+if ubk_modules; then ubk_check; else echo "  --    kernel checks skipped: nandsim, mtdram, ubi or ubifs cannot be loaded (see tests/verify-ubifs-kernel.sh)"; fi
+else echo "UBIFS: skipped (mtd-utils with mkfs.ubifs and ubinize is not installed)"; fi
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

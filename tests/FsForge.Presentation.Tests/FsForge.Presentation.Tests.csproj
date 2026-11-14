@@ -10,6 +10,11 @@
     <RootNamespace>FsForge.Presentation.Tests</RootNamespace>
   </PropertyGroup>
 
+  <!-- UBIFS and UBI are read-only formats: the test images come from the builder of the built-in core tests. -->
+  <ItemGroup>
+    <Compile Include="..\..\tools\FsForge.Cli\UbifsImageBuilder.cs" Link="UbifsImageBuilder.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\FsForge.Presentation\FsForge.Presentation.csproj" />
   </ItemGroup>

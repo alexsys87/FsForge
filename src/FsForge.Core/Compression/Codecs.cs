@@ -341,7 +341,7 @@ public sealed class Lz4Codec : IBlockCodec
 
 // -------------------------------------------------------------------- lzo
 
-/// <summary>LZO1X decompressor (decode only).</summary>
+/// <summary>LZO1X: the decompressor, and a compressor that writes the same format (UBIFS data blocks).</summary>
 public sealed class LzoCodec : IBlockCodec
 {
     public int Decompress(ReadOnlySpan<byte> src, Span<byte> dst)
@@ -492,8 +492,137 @@ public sealed class LzoCodec : IBlockCodec
         }
     }
 
-    public int Compress(ReadOnlySpan<byte> src, Span<byte> dst) =>
-        throw new FsException("Writing LZO compressed SquashFS images is not supported; choose another compressor.");
+    // ------------------------------------------------------------ compress
+
+    private const int HashBits = 13, MaxDistance = 16384, MaxChain = 48;
+    private readonly int[] _head = new int[1 << HashBits];
+    private int[] _prev = Array.Empty<int>();
+
+    /// <summary>
+    /// Compresses to the LZO1X format (what lzo1x_decompress reads). Matches are searched through
+    /// hash chains within the last 16 KiB, which keeps every match in the two short forms of the format.
+    /// </summary>
+    public int Compress(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        int n = src.Length;
+        if (_prev.Length < n) _prev = new int[n];
+        Array.Fill(_head, -1);
+        var o = new Output(dst);
+        int literalStart = 0, ip = 0;
+
+        while (ip + 3 <= n)
+        {
+            int hash = (int)(((uint)(src[ip] | src[ip + 1] << 8 | src[ip + 2] << 16) * 0x9E3779B1u) >> (32 - HashBits));
+            int bestLength = 0, bestDistance = 0;
+            int candidate = _head[hash];
+            for (int chain = 0; candidate >= 0 && chain < MaxChain; chain++, candidate = _prev[candidate])
+            {
+                int distance = ip - candidate;
+                if (distance > MaxDistance) break;
+                int length = src[candidate..].CommonPrefixLength(src[ip..]);
+                // A three-byte match pays off only in the two-byte form, which reaches 2048 bytes back.
+                if (length > bestLength && (length >= 4 || length == 3 && distance <= 2048))
+                {
+                    bestLength = length;
+                    bestDistance = distance;
+                }
+            }
+            _prev[ip] = _head[hash];
+            _head[hash] = ip;
+            if (bestLength < 3)
+            {
+                ip++;
+                continue;
+            }
+
+            if (!o.Literals(src[literalStart..ip]) || !o.Match(bestLength, bestDistance)) return -1;
+            int end = ip + bestLength;
+            for (ip++; ip < end && ip + 3 <= n; ip++)
+            {
+                int h = (int)(((uint)(src[ip] | src[ip + 1] << 8 | src[ip + 2] << 16) * 0x9E3779B1u) >> (32 - HashBits));
+                _prev[ip] = _head[h];
+                _head[h] = ip;
+            }
+            ip = end;
+            literalStart = end;
+        }
+        if (!o.Literals(src[literalStart..]) || !o.End()) return -1;
+        return o.Length;
+    }
+
+    private ref struct Output(Span<byte> buffer)
+    {
+        private readonly Span<byte> _buffer = buffer;
+        private int _length;
+        private bool _afterMatch;       // the last instruction was a match, whose low bits can announce up to 3 literals
+
+        public readonly int Length => _length;
+
+        private bool Put(int value)
+        {
+            if (_length >= _buffer.Length) return false;
+            _buffer[_length++] = (byte)value;
+            return true;
+        }
+
+        /// <summary>A run length above what the instruction byte holds: zero bytes count 255 each, the last byte the rest.</summary>
+        private bool Extend(int rest)
+        {
+            for (; rest > 255; rest -= 255)
+                if (!Put(0)) return false;
+            return Put(rest);
+        }
+
+        public bool Literals(ReadOnlySpan<byte> run)
+        {
+            int count = run.Length;
+            if (count == 0) return true;
+            if (_length == 0 && count <= 238)
+            {
+                if (!Put(17 + count)) return false;         // only the first byte of a stream can say this
+            }
+            else if (count <= 3 && _afterMatch)
+            {
+                _buffer[_length - 2] |= (byte)count;
+            }
+            else if (count <= 3)
+            {
+                return false;                               // cannot happen: short runs follow a match or start the stream
+            }
+            else if (count <= 18)
+            {
+                if (!Put(count - 3)) return false;
+            }
+            else if (!Put(0) || !Extend(count - 18))
+            {
+                return false;
+            }
+            if (_length + count > _buffer.Length) return false;
+            run.CopyTo(_buffer[_length..]);
+            _length += count;
+            _afterMatch = false;
+            return true;
+        }
+
+        public bool Match(int length, int distance)
+        {
+            int d = distance - 1;
+            _afterMatch = true;
+            if (length <= 8 && distance <= 2048)
+                return Put((length - 1) << 5 | (d & 7) << 2) && Put(d >> 3);
+            if (length <= 33)
+            {
+                if (!Put(32 | (length - 2))) return false;
+            }
+            else if (!Put(32) || !Extend(length - 33))
+            {
+                return false;
+            }
+            return Put(d << 2 & 0xFF) && Put(d >> 6);
+        }
+
+        public bool End() => Put(17) && Put(0) && Put(0);
+    }
 }
 
 // ------------------------------------------------------------------- zstd

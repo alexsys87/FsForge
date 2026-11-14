@@ -48,6 +48,17 @@ public static class Fmt
     /// <summary>"Раздел 2 — SquashFS, 104 МБ".</summary>
     public static string Partition(PartitionInfo p) => L.F("Раздел {0} — {1}, {2}", p.Number, PartitionContent(p), Size(p.Length));
 
+    /// <summary>"«rootfs» (1)", or the number alone for a volume without a name.</summary>
+    public static string VolumeName(Core.Ubifs.UbiVolumeInfo v) => v.Name.Length > 0 ? L.F("«{0}» ({1})", v.Name, v.Id) : v.Id.ToString();
+
+    /// <summary>What a UBI volume holds: "UBIFS", "SquashFS", "неизвестное содержимое".</summary>
+    public static string VolumeContent(Core.Ubifs.UbiVolumeInfo v) => v.Content switch
+    {
+        Core.Images.PartitionContent.Empty => L.T("пусто"),
+        _ when v.ContentName.Length > 0 => v.ContentName,
+        _ => L.T("неизвестное содержимое"),
+    };
+
     public static string PartitionScheme(PartitionTable t) => t.Scheme == Core.Images.PartitionScheme.Gpt ? "GPT" : "MBR";
 
     public const string DateFormat = "yyyy-MM-dd HH:mm:ss";

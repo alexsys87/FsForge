@@ -472,22 +472,87 @@
                 </StackPanel>
             </Border>
 
-            <!--  The disk image the filesystem was opened from  -->
+            <!--  The disk image or UBI image the filesystem was opened from  -->
             <StackPanel Visibility="{Binding ShowContainerOptions, Converter={StaticResource BoolToVisibility}}">
-                <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Образ диска'}" />
+                <TextBlock Style="{StaticResource Section}" Text="{Binding ContainerTitle}" />
                 <Border Style="{StaticResource Card}">
                     <StackPanel>
                         <TextBlock
                             Margin="0,0,0,8"
                             Text="{Binding ContainerSummary}"
                             TextWrapping="Wrap" />
-                        <HeaderedContentControl Header="{l:Tr 'Сохранить образ диска целиком: таблица разделов и остальные разделы остаются как были'}" Style="{StaticResource Row}">
+                        <HeaderedContentControl Header="{Binding ContainerToggleText}" Style="{StaticResource Row}">
                             <ui:ToggleSwitch IsChecked="{Binding KeepContainer}" />
                         </HeaderedContentControl>
                         <TextBlock
                             Margin="0,0,0,8"
                             Style="{StaticResource Hint}"
                             Text="{Binding ContainerNote}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  UBIFS  -->
+            <StackPanel Visibility="{Binding IsUbifs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="UBIFS" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Сжатие'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="300"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding UbifsCompressions}"
+                                SelectedValue="{Binding UbifsCompression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Размер логического блока стирания (LEB), байт'}"
+                            IsEnabled="{Binding CanEditUbifsGeometry}"
+                            Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding UbifsLebSize, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Размер страницы (мин. единица ввода-вывода), байт'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding UbifsMinIoSize, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding UbifsGeometryNote}" />
+                        <HeaderedContentControl Header="{l:Tr 'Макс. число блоков стирания (0 — автоматически)'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding UbifsMaxLebCount, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Исправлять свободное место при первом монтировании (mkfs.ubifs -F)'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding SpaceFixup}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  A new UBI image around UBIFS or SquashFS  -->
+            <StackPanel Visibility="{Binding ShowNewUbi, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Образ UBI'}" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Упаковать в образ UBI (как ubinize): один том с этой файловой системой'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding NewUbi}" />
+                        </HeaderedContentControl>
+                        <StackPanel Visibility="{Binding ShowUbiOptions, Converter={StaticResource BoolToVisibility}}">
+                            <HeaderedContentControl Header="{l:Tr 'Размер физического блока стирания (PEB), байт'}" Style="{StaticResource Row}">
+                                <ui:TextBox Width="140" Text="{Binding UbiPebSize, UpdateSourceTrigger=PropertyChanged}" />
+                            </HeaderedContentControl>
+                            <HeaderedContentControl Header="{l:Tr 'Размер страницы (мин. единица ввода-вывода), байт'}" Style="{StaticResource Row}">
+                                <ui:TextBox Width="140" Text="{Binding UbifsMinIoSize, UpdateSourceTrigger=PropertyChanged}" />
+                            </HeaderedContentControl>
+                            <HeaderedContentControl Header="{l:Tr 'Размер подстраницы, байт (0 — подстраниц нет)'}" Style="{StaticResource Row}">
+                                <ui:TextBox Width="140" Text="{Binding UbiSubPageSize, UpdateSourceTrigger=PropertyChanged}" />
+                            </HeaderedContentControl>
+                            <HeaderedContentControl Header="{l:Tr 'Имя тома'}" Style="{StaticResource Row}">
+                                <ui:TextBox Width="200" Text="{Binding UbiVolumeName, UpdateSourceTrigger=PropertyChanged}" />
+                            </HeaderedContentControl>
+                            <HeaderedContentControl Header="{l:Tr 'Том занимает всё свободное место флеш-памяти (autoresize)'}" Style="{StaticResource Row}">
+                                <ui:ToggleSwitch IsChecked="{Binding UbiAutoResize}" />
+                            </HeaderedContentControl>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -749,7 +814,7 @@
                             </StackPanel>
                         </Grid>
                         <DataTemplate.Triggers>
-                            <!--  Partitions without an editable filesystem are listed for orientation only.  -->
+                            <!--  Partitions (or UBI volumes) without a filesystem to open are listed for orientation only.  -->
                             <DataTrigger Binding="{Binding IsEditable}" Value="False">
                                 <Setter TargetName="RowRoot" Property="Opacity" Value="0.55" />
                             </DataTrigger>
@@ -911,7 +976,7 @@
                     <HeaderedContentControl Header="{l:Tr 'Предлагать сохранить изменения при закрытии'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.ConfirmDiscardChanges}" />
                     </HeaderedContentControl>
-                    <HeaderedContentControl Header="{l:Tr 'Искать SquashFS внутри прошивок, если файл не образ'}" Style="{StaticResource Row}">
+                    <HeaderedContentControl Header="{l:Tr 'Искать SquashFS и UBI внутри прошивок, если файл не образ'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.SearchEmbedded}" />
                     </HeaderedContentControl>
                     <HeaderedContentControl Header="{l:Tr 'Показывать предупреждения после открытия'}" Style="{StaticResource Row}">

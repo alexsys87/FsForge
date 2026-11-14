@@ -7,6 +7,7 @@ using FsForge.Core.Host;
 using FsForge.Core.Images;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Ubifs;
 
 namespace FsForge.Cli;
 
@@ -17,7 +18,7 @@ namespace FsForge.Cli;
 internal static class Program
 {
     private const string Usage = """
-        fsforge - SquashFS / ext2-3-4 / tar image tool
+        fsforge - SquashFS / ext2-3-4 / UBIFS / tar image tool
 
           fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
@@ -34,20 +35,30 @@ internal static class Program
         the whole disk image again with only that partition replaced, unless the output name says otherwise
         (.squashfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
 
+        A UBI image (ubinize output, a flash dump without out-of-band data) is opened at the volume that holds
+        the most data; add vol=<name or number> to any command to pick another one. "convert" writes the whole
+        UBI image again with only that volume replaced, unless the output name or container=0 says otherwise.
+        An output name ending in .ubifs makes a UBIFS image; one ending in .ubi wraps it into a new UBI image.
+
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|ext2|ext3|ext4|tar            default: by output extension, else the source format
+          format=squashfs|ext2|ext3|ext4|ubifs|tar      default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
+          ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
+          ubi:      ubi=0|1 peb=<bytes> minio=<bytes> subpage=<bytes> volname=<text> volid=<n> volsize=<MiB> autoresize=0|1
         """;
 
     /// <summary>Partition requested with part=N on the command line; 0 when the image should decide.</summary>
     private static int _partition;
 
+    /// <summary>UBI volume requested with vol=NAME on the command line; null when the image should decide.</summary>
+    private static string? _volume;
+
     private static ImageDocument OpenImage(string path, bool searchEmbedded = true) =>
-        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition);
+        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition, volume: _volume);
 
     private static int Main(string[] args)
     {
@@ -64,6 +75,12 @@ internal static class Program
                 if (!int.TryParse(part[5..], out _partition) || _partition <= 0) throw new FsException($"Invalid option '{part}'.");
                 args = args.Where(x => !ReferenceEquals(x, part)).ToArray();
             }
+            if (Array.Find(args, x => x.StartsWith("vol=", StringComparison.OrdinalIgnoreCase)) is { } vol && args[0] != "pack")
+            {
+                if (vol.Length == 4) throw new FsException($"Invalid option '{vol}'.");
+                _volume = vol[4..];
+                args = args.Where(x => !ReferenceEquals(x, vol)).ToArray();
+            }
             switch (args[0])
             {
                 case "info": return Info(args);
@@ -75,6 +92,7 @@ internal static class Program
                 case "pack": return Pack(args);
                 case "selftest": return SelfTest.Run(args.Length > 1 ? args[1] : null);
                 case "xztest": return XzTest(args);
+                case "blocktest": return BlockTest(args);
                 // Positional forms kept for the verification scripts.
                 case "sqrepack": return Convert(Positional(args, "squashfs", "comp", "block", "effort", "bcj"));
                 case "extrepack": return Convert(Positional(args, null, "format", "bs", "size", "isize", "journal"));
@@ -140,6 +158,15 @@ internal static class Program
             Console.WriteLine($"Label/UUID:  '{e.Label}' {e.Uuid}");
             Console.WriteLine($"Features:    {string.Join(' ', e.FeatureNames)}");
         }
+        if (doc.Ubifs is { } u)
+        {
+            Console.WriteLine($"Blocks:      {u.LebCount} x {u.LebSize} (may grow to {u.MaxLebCount}), min. I/O unit {u.MinIoSize}");
+            Console.WriteLine($"Space:       {u.UsedBytes} bytes used, {u.FreeBytes} free");
+            Console.WriteLine($"Compression: {u.DefaultCompression.ToString().ToLowerInvariant()}, format version {u.FormatVersion}, key hash {u.KeyHash}");
+            Console.WriteLine($"UUID:        {u.Uuid}");
+            Console.WriteLine($"State:       {(u.ReplayedNodes > 0 ? $"not cleanly unmounted, {u.ReplayedNodes} journal nodes from {u.ReplayedBuds} erase blocks replayed" : u.Dirty ? "not cleanly unmounted, journal empty" : "clean")}" +
+                              $"{(u.SpaceFixup ? ", space fixup pending" : "")}{(u.Authenticated ? ", authenticated" : "")}");
+        }
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
         if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
@@ -148,6 +175,12 @@ internal static class Program
             Console.WriteLine($"Disk image:  {c.DiskLength} bytes, {c.Table.Scheme.ToString().ToUpperInvariant()} partition table");
             foreach (PartitionInfo p in c.Table.Partitions)
                 Console.WriteLine($"  {(ReferenceEquals(p, c.Partition) ? '*' : ' ')} {p}  [offset 0x{p.Offset:X}{(p.StoredLength < p.Length ? $", {p.StoredLength} bytes in the file" : "")}]");
+        }
+        if (doc.Ubi is { } ubi)
+        {
+            Console.WriteLine($"UBI image:   {ubi.Image.PebCount} erase blocks of {ubi.Image.PebSize} bytes, logical block {ubi.Image.LebSize}");
+            foreach (UbiVolumeInfo v in ubi.Image.Volumes)
+                Console.WriteLine($"  {(ReferenceEquals(v, ubi.Volume) ? '*' : ' ')} {v}  [{v.StoredBlocks} blocks in the file]");
         }
         if (doc.EmbeddedOffset > 0) Console.WriteLine($"Offset:      0x{doc.EmbeddedOffset:X}");
         Console.WriteLine($"Content:     {st.Files} files, {st.Directories} directories, {st.Symlinks} symlinks, {st.Specials} special, {st.DataBytes} bytes");
@@ -180,6 +213,8 @@ internal static class Program
         foreach (string s in doc.Warnings) Console.Error.WriteLine("warning: " + s);
         if (doc.Ext is { } e)
             Console.Error.WriteLine($"{e.Kind} bs={e.BlockSize} blocks={e.BlocksCount} inodes={e.InodesCount} isize={e.InodeSize} journal={e.JournalBytes} features={string.Join(',', e.FeatureNames)}");
+        if (doc.Ubifs is { } u)
+            Console.Error.WriteLine($"ubifs leb={u.LebSize} lebs={u.LebCount} minio={u.MinIoSize} comp={u.DefaultCompression} version={u.FormatVersion} replayed={u.ReplayedNodes}");
         if (doc.Tar is { } t)
             Console.Error.WriteLine($"tar comp={t.Compression} entries={t.Entries} pax={t.HasPaxHeaders} gnu={t.HasGnuExtensions} prefix='{t.PathPrefix}' root={t.HasRootEntry}");
         return 0;
@@ -202,12 +237,14 @@ internal static class Program
                     if (name.EndsWith(z)) name = name[..^z.Length];
                 if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
+                else if (name.EndsWith(".ubifs")) f = "ubifs";
                 namedFilesystem = f is not null;
             }
         }
         switch (f?.ToLowerInvariant())
         {
             case null: break;
+            case "ubifs": format = ImageFormat.Ubifs; break;
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
@@ -219,6 +256,19 @@ internal static class Program
         SaveOptions s = doc.CreateSaveOptions(format);
         s.KeepContainer = o.TryGetValue("container", out string? keep) ? keep != "0" : !namedFilesystem;
         if (format == ImageFormat.Ext && doc.Format != ImageFormat.Ext) s.Ext = new ExtOptions();
+        // A name ending in .ubi asks for a UBI image: the one the source is, or a new one around UBIFS.
+        string plainName = Path.GetFileName(output).ToLowerInvariant();
+        foreach (string z in new[] { ".gz", ".xz", ".zst", ".zstd" })
+            if (plainName.EndsWith(z)) plainName = plainName[..^z.Length];
+        if (o.TryGetValue("ubi", out string? wrap)) s.NewUbi = wrap != "0";
+        else if (plainName.EndsWith(".ubi") && doc.Ubi is null && doc.Container is null)
+        {
+            s.NewUbi = true;
+            if (f is null) s.Format = ImageFormat.Ubifs;
+        }
+        if (s.NewUbi && doc.Ubi is not null && !o.ContainsKey("container")) s.KeepContainer = false;
+        if (s.NewUbi && s.Format is ImageFormat.Ext or ImageFormat.Tar)
+            throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image; add format=ubifs or format=squashfs.");
         if (kind is not null) s.Ext.Kind = kind.Value;
         if (s.Format == ImageFormat.Tar && doc.Format != ImageFormat.Tar && ArchiveCodec.CompressionFromFileName(output) is { } byName)
             s.Tar.Compression = byName;
@@ -228,22 +278,35 @@ internal static class Program
         {
             switch (key.ToLowerInvariant())
             {
-                case "format" or "verify" or "container": break;
+                case "format" or "verify" or "container" or "ubi": break;
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
+                    else if (s.Format == ImageFormat.Ubifs) s.Ubifs.Compression = Enum.Parse<UbifsCompression>(value, true);
                     else s.SquashFs.Compression = Enum.Parse<SquashCompression>(value, true);
                     break;
                 case "block": s.SquashFs.BlockSize = int.Parse(value); break;
                 case "level":
                     s.SquashFs.GzipLevel = s.Tar.GzipLevel = Math.Clamp(int.Parse(value), 1, 9);
-                    s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = int.Parse(value);
+                    s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = int.Parse(value);
                     break;
                 case "effort": s.SquashFs.XzEffort = s.Tar.XzEffort = int.Parse(value); break;
                 case "bcj": s.SquashFs.XzFilters.Add(Enum.Parse<BcjFilter>(value, true)); break;
                 case "dict": s.SquashFs.XzDictionarySize = int.Parse(value); break;
                 case "nofrag": s.SquashFs.NoFragments = value != "0"; break;
                 case "dedup": s.SquashFs.Deduplicate = value != "0"; break;
-                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = value != "0"; break;
+                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = value != "0"; break;
+                case "minio": s.Ubifs.MinIoSize = s.Ubi.MinIoSize = int.Parse(value); break;
+                case "leb": s.Ubifs.LebSize = int.Parse(value); break;
+                case "maxleb": s.Ubifs.MaxLebCount = int.Parse(value); break;
+                case "fanout": s.Ubifs.Fanout = int.Parse(value); break;
+                case "jrn": s.Ubifs.JournalBytes = long.Parse(value) << 20; s.Ubifs.LogLebs = 0; break;
+                case "fixup": s.Ubifs.SpaceFixup = value != "0"; break;
+                case "peb": s.Ubi.PebSize = int.Parse(value); break;
+                case "subpage": s.Ubi.SubPageSize = int.Parse(value); break;
+                case "volname": s.Ubi.VolumeName = value; break;
+                case "volid": s.Ubi.VolumeId = int.Parse(value); break;
+                case "volsize": s.Ubi.VolumeBytes = long.Parse(value) << 20; break;
+                case "autoresize": s.Ubi.AutoResize = value != "0"; break;
                 case "bs": s.Ext.BlockSize = int.Parse(value); break;
                 case "size": s.Ext.SizeBytes = long.Parse(value) << 20; break;
                 case "free": s.Ext.ExtraFreeBytes = long.Parse(value) << 20; break;
@@ -373,6 +436,33 @@ internal static class Program
         {
             doc.Dispose();
         }
+        return 0;
+    }
+
+    // blocktest <file> <out> lzo|deflate [blocksize] : compresses a file block by block as UBIFS does; every block is
+    // written as a 4-byte original size, a 4-byte packed size and the packed data, for a reference decompressor to check.
+    private static int BlockTest(string[] a)
+    {
+        byte[] data = File.ReadAllBytes(a[1]);
+        int block = a.Length > 4 ? int.Parse(a[4]) : 4096;
+        var lzo = new LzoCodec();
+        var deflate = new RawDeflate(11);
+        using var o = File.Create(a[2]);
+        byte[] dst = new byte[block * 2 + 64], back = new byte[block];
+        long total = 0;
+        for (int off = 0; off < data.Length; off += block)
+        {
+            ReadOnlySpan<byte> src = data.AsSpan(off, Math.Min(block, data.Length - off));
+            int n = a[3] == "lzo" ? lzo.Compress(src, dst) : deflate.Compress(src, dst);
+            if (n < 0) throw new FsException("the block did not fit");
+            if (a[3] == "lzo" && (lzo.Decompress(dst.AsSpan(0, n), back.AsSpan(0, src.Length)) != src.Length || !back.AsSpan(0, src.Length).SequenceEqual(src)))
+                throw new FsException($"LZO round trip failed at {off}");
+            o.Write(BitConverter.GetBytes(src.Length));
+            o.Write(BitConverter.GetBytes(n));
+            o.Write(dst, 0, n);
+            total += n;
+        }
+        Console.WriteLine($"{data.Length} -> {total} ({100.0 * total / Math.Max(1, data.Length):F2}%)");
         return 0;
     }
 

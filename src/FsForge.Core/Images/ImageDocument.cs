@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Ubifs;
 
 namespace FsForge.Core.Images;
 
@@ -10,6 +11,9 @@ public enum ImageFormat
     SquashFs,
     Ext,
     Tar,
+
+    /// <summary>UBIFS, the filesystem of raw NAND and NOR flash; alone or in a volume of a UBI image.</summary>
+    Ubifs,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -31,11 +35,23 @@ public sealed class SaveOptions
     public SquashFsOptions SquashFs { get; set; } = new();
     public ExtOptions Ext { get; set; } = new();
     public TarOptions Tar { get; set; } = new();
+    public UbifsOptions Ubifs { get; set; } = new();
+
+    /// <summary>Geometry and volume of the UBI image that <see cref="NewUbi"/> asks for.</summary>
+    public UbiOptions Ubi { get; set; } = new();
+
+    /// <summary>
+    /// Wrap the filesystem (UBIFS or SquashFS) into a new UBI image with one volume, as ubinize does.
+    /// Has no effect when the document came from a UBI image that is being kept (<see cref="KeepContainer"/>).
+    /// </summary>
+    public bool NewUbi { get; set; }
+
     public VerifyLevel Verify { get; set; } = VerifyLevel.Structure;
 
     /// <summary>
     /// When the filesystem was opened from a partition of a disk image, write the whole disk image
     /// again - partition table and all other partitions untouched - instead of the filesystem alone.
+    /// Likewise for a volume of a UBI image: the UBI image is written again with the other volumes as they were.
     /// Has no effect on other documents and on tar archives.
     /// </summary>
     public bool KeepContainer { get; set; } = true;
@@ -52,12 +68,18 @@ public sealed class SaveOptions
         SquashFs = SquashFs.Clone(),
         Ext = Ext.Clone(),
         Tar = Tar.Clone(),
+        Ubifs = Ubifs.Clone(),
+        Ubi = Ubi.Clone(),
+        NewUbi = NewUbi,
         Verify = Verify,
         KeepContainer = KeepContainer,
         KeepBackup = KeepBackup,
         TempDirectory = TempDirectory,
     };
 }
+
+/// <summary>The UBI image and the volume a filesystem was opened from.</summary>
+public sealed record UbiContainer(UbiImage Image, UbiVolumeInfo Volume);
 
 /// <summary>
 /// An opened image: the editable tree plus what is known about the file it came from.
@@ -84,6 +106,13 @@ public sealed class ImageDocument : IDisposable
     public SquashFsInfo? SquashFs { get; private init; }
     public ExtInfo? Ext { get; private init; }
     public TarInfo? Tar { get; private init; }
+    public UbifsInfo? Ubifs { get; private init; }
+
+    /// <summary>
+    /// The UBI image and the volume the filesystem was opened from; null when the file is not a UBI image.
+    /// Such a document is saved as the whole UBI image again, with the other volumes as they were.
+    /// </summary>
+    public UbiContainer? Ubi { get; private init; }
 
     /// <summary>
     /// Offset of the filesystem inside the (unpacked) file: the start of its partition, or the place
@@ -109,7 +138,7 @@ public sealed class ImageDocument : IDisposable
     /// <summary>
     /// The file holds more than the filesystem and cannot be rebuilt around a changed one (a firmware
     /// container with its own headers and checksums, an Android sparse image). Saving writes the
-    /// filesystem alone, so it must go to a new file.
+    /// filesystem alone (or the UBI image alone), so it must go to a new file.
     /// </summary>
     public bool SavesFilesystemOnly => AndroidSparse || (EmbeddedOffset > 0 && Container is null);
 
@@ -139,6 +168,7 @@ public sealed class ImageDocument : IDisposable
     {
         ImageFormat.SquashFs => "SquashFS",
         ImageFormat.Ext => Ext?.Kind.ToString().ToLowerInvariant() ?? "ext4",
+        ImageFormat.Ubifs => "UBIFS",
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
 
@@ -159,6 +189,17 @@ public sealed class ImageDocument : IDisposable
         IBlockSource src = file;
         if (IsAndroidSparse(file)) src = new AndroidSparseSource(file);
         if (FilesystemAt(src) is { } direct) return direct;
+        if (UbiImage.IsUbi(src))
+        {
+            try
+            {
+                return UbiImage.Read(src).PickDefault() is { } volume ? FormatOf(volume) : null;
+            }
+            catch (FsException)
+            {
+                return null;
+            }
+        }
         if (ReferenceEquals(src, file) && TarReader.IsTar(src, out _)) return ImageFormat.Tar;
         if (PartitionTable.Read(src)?.PickDefault() is { } part) return FormatOf(part);
         if (!ReferenceEquals(src, file)) return null;
@@ -177,7 +218,16 @@ public sealed class ImageDocument : IDisposable
     }
 
     private static ImageFormat? FilesystemAt(IBlockSource src) =>
-        SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs : ExtReader.IsExt(src) ? ImageFormat.Ext : null;
+        SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs
+        : UbifsReader.IsUbifs(src) ? ImageFormat.Ubifs
+        : ExtReader.IsExt(src) ? ImageFormat.Ext : null;
+
+    private static ImageFormat FormatOf(UbiVolumeInfo volume) => volume.Content switch
+    {
+        PartitionContent.SquashFs => ImageFormat.SquashFs,
+        PartitionContent.Ext => ImageFormat.Ext,
+        _ => ImageFormat.Ubifs,
+    };
 
     private static ImageFormat FormatOf(PartitionInfo part) =>
         part.Content == PartitionContent.SquashFs ? ImageFormat.SquashFs : ImageFormat.Ext;
@@ -203,6 +253,8 @@ public sealed class ImageDocument : IDisposable
         Fill(1 << 20);
         var first = new DiskHead(head.ToArray());
         if (FilesystemAt(first) is { } direct) return direct;
+        // The volumes of a UBI image are spread over the whole of it; UBIFS is the usual content.
+        if (UbiImage.IsUbi(first)) return ImageFormat.Ubifs;
         if (PartitionTable.Read(first) is not { } table) return null;
         // Unpack up to the beginning of the last partition that is within reach.
         Fill(table.Partitions.Where(p => p.Offset < SniffLimit).Select(p => p.Offset + 4096).DefaultIfEmpty(0).Max());
@@ -246,9 +298,15 @@ public sealed class ImageDocument : IDisposable
     /// Called when a disk image has several partitions with an editable filesystem. Returning null cancels the
     /// operation. Without it the largest such partition is opened.
     /// </param>
+    /// <param name="volume">Name or number of the volume to open in a UBI image; null lets the image or <paramref name="chooseVolume"/> decide.</param>
+    /// <param name="chooseVolume">
+    /// Called when a UBI image has several volumes with a readable filesystem. Returning null cancels the
+    /// operation. Without it the volume that holds the most data is opened.
+    /// </param>
     public static ImageDocument Open(string path, string? tempDirectory = null, bool searchEmbedded = true,
         IProgress<ProgressInfo>? progress = null, CancellationToken ct = default,
-        int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null)
+        int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null,
+        string? volume = null, Func<UbiImage, UbiVolumeInfo?>? chooseVolume = null)
     {
         path = Path.GetFullPath(path);
         FileBlockSource file;
@@ -282,8 +340,14 @@ public sealed class ImageDocument : IDisposable
             IBlockSource fs = src;
             DiskContainer? container = null;
             PartitionTable? table = null;
+            UbiContainer? ubi = null;
 
-            if (FilesystemAt(src) is null)
+            if (FilesystemAt(src) is null && UbiImage.IsUbi(src))
+            {
+                if (partition > 0) throw new FsException($"The file is a UBI image and has no partition table, so there is no partition {partition} to open.");
+                (fs, ubi) = OpenUbi(src, volume, chooseVolume, ct);
+            }
+            else if (FilesystemAt(src) is null)
             {
                 if (!sparse && outer is null && TarReader.IsTar(src, out _))
                 {
@@ -306,14 +370,41 @@ public sealed class ImageDocument : IDisposable
                 {
                     if (partition > 0) throw new FsException($"The file has no partition table, so there is no partition {partition} to open.");
                     long found = searchEmbedded ? SquashFsReader.FindEmbedded(src, 0, 256L << 20, ct) : -1;
-                    if (found <= 0) throw new FsException(DescribeUnknown(src, outer, table));
-                    offset = found;
-                    fs = new SubBlockSource(src, offset, src.Length - offset, ownsInner: false);
+                    // A SquashFS that lies inside a UBI image is cut into erase blocks there: the UBI image has to be opened instead.
+                    long foundUbi = searchEmbedded ? UbiImage.FindEmbedded(src, 0, found > 0 ? found : 256L << 20, ct) : -1;
+                    if (foundUbi > 0)
+                    {
+                        offset = foundUbi;
+                        (fs, ubi) = OpenUbi(new SubBlockSource(src, offset, src.Length - offset, ownsInner: false), volume, chooseVolume, ct);
+                    }
+                    else
+                    {
+                        if (found <= 0) throw new FsException(DescribeUnknown(src, outer, table));
+                        offset = found;
+                        fs = new SubBlockSource(src, offset, src.Length - offset, ownsInner: false);
+                    }
                 }
             }
+            if (volume is not null && ubi is null)
+                throw new FsException($"The file is not a UBI image, so there is no volume '{volume}' to open.");
 
             ImageDocument doc;
-            if (SquashFsReader.IsSquashFs(fs))
+            if (UbifsReader.IsUbifs(fs))
+            {
+                UbifsReader r = UbifsReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Ubifs, path)
+                {
+                    Ubifs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+                if (r.Info.ReplayedNodes > 0)
+                    doc._warnings.Add($"The filesystem was not cleanly unmounted: {r.Info.ReplayedNodes} journal node(s) were applied while reading. " +
+                                      "The file itself was not changed.");
+            }
+            else if (SquashFsReader.IsSquashFs(fs))
             {
                 SquashFsReader r = SquashFsReader.Open(fs);
                 FsTree tree = r.ReadTree(progress, ct);
@@ -321,7 +412,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
                 {
                     SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.Compression is SquashCompression.Lzo or SquashCompression.Lzma)
@@ -336,15 +427,19 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ext, path)
                 {
                     Ext = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
             // The readers look through a window that does not own the file: the tree keeps it open.
             if (!ReferenceEquals(fs, src)) doc.Tree.AttachResource(src);
 
+            if (ubi is not null) doc._warnings.AddRange(ubi.Image.Warnings);
             if (sparse)
                 doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image of the filesystem.");
+            else if (offset > 0 && container is null && ubi is not null)
+                doc._warnings.Add($"The UBI image was found inside the file at offset 0x{offset:X}. " +
+                                  "Saving writes the UBI image alone, without the data in front of it.");
             else if (offset > 0 && container is null)
                 doc._warnings.Add($"The {doc.FormatName} filesystem was found inside the file at offset 0x{offset:X}, and the file has no " +
                                   "partition table that would tell how to rebuild it. Saving writes the filesystem alone, without the surrounding container.");
@@ -383,6 +478,42 @@ public sealed class ImageDocument : IDisposable
         return answer;
     }
 
+    /// <summary>Reads the volumes of a UBI image and selects the one to open.</summary>
+    private static (IBlockSource Fs, UbiContainer Container) OpenUbi(IBlockSource source, string? wanted,
+        Func<UbiImage, UbiVolumeInfo?>? ask, CancellationToken ct)
+    {
+        UbiImage image = UbiImage.Read(source, ct);
+        UbiVolumeInfo chosen;
+        if (wanted is not null)
+        {
+            chosen = image.Find(wanted)
+                ?? throw new FsException($"The UBI image has no volume '{wanted}'. Its volumes: {ListVolumes(image)}.");
+            if (!chosen.IsReadable)
+                throw new FsException($"Volume {VolumeText(chosen)} holds {(chosen.ContentName.Length > 0 ? chosen.ContentName : "an unknown format")}, " +
+                                      "not UBIFS or SquashFS, and cannot be opened.");
+        }
+        else
+        {
+            IReadOnlyList<UbiVolumeInfo> readable = image.Readable;
+            if (readable.Count == 0)
+                throw new FsException(image.Volumes.Count == 0
+                    ? "The UBI image holds no volumes."
+                    : "None of the volumes of this UBI image holds UBIFS or SquashFS. Its volumes: " + ListVolumes(image) + ".");
+            if (readable.Count == 1 || ask is null) chosen = image.PickDefault()!;
+            else
+            {
+                chosen = ask(image) ?? throw new OperationCanceledException();
+                if (!chosen.IsReadable || !image.Volumes.Contains(chosen))
+                    throw new FsException("The selected volume does not hold UBIFS or SquashFS.");
+            }
+        }
+        return (image.OpenVolume(chosen), new UbiContainer(image, chosen));
+    }
+
+    private static string VolumeText(UbiVolumeInfo v) => v.Name.Length > 0 ? $"'{v.Name}' ({v.Id})" : v.Id.ToString();
+
+    private static string ListVolumes(UbiImage image) => string.Join("; ", image.Volumes.Select(v => v.ToString()));
+
     private static string ListPartitions(PartitionTable table) => string.Join("; ", table.Partitions.Select(p => p.ToString()));
 
     private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
@@ -393,7 +524,7 @@ public sealed class ImageDocument : IDisposable
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, ext2/3/4 image, disk image with such a partition, or tar archive." + hint;
+        return "The file is not a SquashFS, ext2/3/4 or UBIFS image, UBI image, disk image with such a partition, or tar archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -468,15 +599,27 @@ public sealed class ImageDocument : IDisposable
     {
         SaveOptions o = defaults?.Clone() ?? new SaveOptions();
         o.Format = format ?? Format;
+        if (Ubifs is not null) o.Ubifs = UbifsOptions.FromInfo(Ubifs);
+        // A filesystem that goes into a UBI image is made for the erase blocks of that image.
+        if (Ubifs is null && Ubi is not null)
+        {
+            o.Ubifs.LebSize = Ubi.Volume.LebSize;
+            o.Ubifs.MinIoSize = Ubi.Image.GuessMinIoSize();
+        }
         if (SquashFs is not null) o.SquashFs = SquashFsOptions.FromInfo(SquashFs);
         if (Ext is not null) o.Ext = ExtOptions.FromInfo(Ext);
         if (Tar is not null) o.Tar = TarOptions.FromInfo(Tar);
         return o;
     }
 
-    /// <summary>True when saving with these options writes the whole disk image and not the filesystem alone.</summary>
+    /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
-        Container is not null && options.KeepContainer && options.Format != ImageFormat.Tar;
+        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format != ImageFormat.Tar;
+
+    /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
+    public bool WritesUbi(SaveOptions options) =>
+        Ubi is not null && WritesContainer(options) ||
+        Container is null && options.NewUbi && options.Format is ImageFormat.Ubifs or ImageFormat.SquashFs;
 
     /// <summary>Writes a tree to a stream in the selected format; returns the writer's warnings.</summary>
     public static IReadOnlyList<string> WriteTo(FsTree tree, Stream output, SaveOptions options,
@@ -484,6 +627,7 @@ public sealed class ImageDocument : IDisposable
     {
         ImageFormat.SquashFs => SquashFsWriter.Write(tree, output, options.SquashFs, progress, ct),
         ImageFormat.Ext => ExtWriter.Write(tree, output, options.Ext, progress, ct),
+        ImageFormat.Ubifs => UbifsWriter.Write(tree, output, options.Ubifs, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -519,6 +663,11 @@ public sealed class ImageDocument : IDisposable
 
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
+        bool ubiOut = WritesUbi(options);
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar)
+            throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
+        // The volume to look into when the written UBI image is read back.
+        string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
         // A tar archive carries its compression in its own options; an image gets it from the file name.
         ArchiveCompression outer = options.Format == ImageFormat.Tar ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
 
@@ -530,18 +679,20 @@ public sealed class ImageDocument : IDisposable
             if (outer != ArchiveCompression.None) raw = NewTempFile(options.TempDirectory);
             using (var fs = new FileStream(raw, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
             {
-                if (container is null) warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
-                else WriteDisk(fs, container, options, warnings, progress, ct);
+                if (container is not null) WriteDisk(fs, container, options, warnings, progress, ct);
+                else if (ubiOut) WriteUbi(fs, options, warnings, progress, ct);
+                else warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
                 fs.Flush(flushToDisk: true);
             }
 
             if (options.Verify != VerifyLevel.None)
             {
                 ct.ThrowIfCancellationRequested();
-                using ImageDocument check = Open(raw, options.TempDirectory, searchEmbedded: false, null, ct, partition);
+                using ImageDocument check = Open(raw, options.TempDirectory, searchEmbedded: false, null, ct, partition, volume: volume);
                 List<string> problems = TreeComparer.Compare(Tree, check.Tree, TreeComparer.RulesFor(options),
                     options.Verify == VerifyLevel.Content, progress, ct);
                 if (container is not null) problems.AddRange(CompareSurroundings(container, check.Container, ct));
+                if (ubiOut && Ubi is not null && WritesContainer(options)) problems.AddRange(CompareVolumes(Ubi, check.Ubi, ct));
                 if (problems.Count > 0)
                 {
                     string list = string.Join(Environment.NewLine, problems.Take(10));
@@ -597,8 +748,127 @@ public sealed class ImageDocument : IDisposable
             Dispose();
         }
 
-        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition);
+        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition, volume: volume);
         return new SaveResult(reopened, warnings, written);
+    }
+
+    // ---------------------------------------------------------- UBI image
+
+    /// <summary>
+    /// Writes a UBI image around the filesystem: the image the document was opened from, with the
+    /// other volumes copied as they are, or a new image with a single volume.
+    /// </summary>
+    private void WriteUbi(FileStream output, SaveOptions options, List<string> warnings, IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        UbiContainer? source = Ubi is not null && WritesContainer(options) ? Ubi : null;
+        int pebSize, vidOffset, dataOffset, lebSize, reserved;
+        uint sequence;
+        if (source is not null)
+        {
+            (pebSize, vidOffset, dataOffset, sequence) = (source.Image.PebSize, source.Image.VidHeaderOffset, source.Image.DataOffset, source.Image.ImageSequence);
+            lebSize = source.Volume.LebSize;
+            reserved = source.Volume.ReservedLebs;
+        }
+        else
+        {
+            UbiOptions u = options.Ubi;
+            u.Validate();
+            (pebSize, vidOffset, dataOffset, lebSize) = (u.PebSize, u.VidHeaderOffset, u.DataOffset, u.LebSize);
+            sequence = (uint)Random.Shared.NextInt64(1, uint.MaxValue);
+            reserved = (int)Math.Min(int.MaxValue, u.VolumeBytes / lebSize);
+        }
+
+        SaveOptions o = options;
+        if (options.Format == ImageFormat.Ubifs)
+        {
+            o = options.Clone();
+            // The kernel refuses a filesystem whose erase block or I/O unit differs from that of its volume.
+            if (o.Ubifs.LebSize != lebSize)
+            {
+                if (source is not null && Format == ImageFormat.Ubifs)
+                    throw new FsException($"The UBIFS erase block size ({o.Ubifs.LebSize}) must stay the erase block size of the UBI volume ({lebSize}).");
+                o.Ubifs.LebSize = lebSize;
+            }
+            if (source is null) o.Ubifs.MinIoSize = options.Ubi.MinIoSize;
+            if (o.Ubifs.VolumeLebCount == 0) o.Ubifs.VolumeLebCount = reserved;
+        }
+
+        string tmp = NewTempFile(options.TempDirectory);
+        try
+        {
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
+                warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
+            using var data = new FileBlockSource(tmp);
+
+            // What the volume table has to reserve: the image, and for UBIFS a main area that holds its journal.
+            int needed = Math.Max((int)((data.Length + lebSize - 1) / lebSize), UbifsReader.MinimumVolumeLebs(data));
+            var volumes = new List<UbiVolumeSpec>();
+            if (source is null)
+            {
+                volumes.Add(new UbiVolumeSpec
+                {
+                    Id = options.Ubi.VolumeId, Name = options.Ubi.VolumeName, Data = data,
+                    ReservedLebs = Math.Max(reserved, needed), AutoResize = options.Ubi.AutoResize,
+                });
+            }
+            else
+            {
+                UbiVolumeInfo opened = source.Volume;
+                if (reserved > 0 && needed > reserved)
+                    warnings.Add($"The filesystem no longer fits into volume {VolumeText(opened)} ({reserved} erase blocks): the volume was enlarged to " +
+                                 $"{needed} erase blocks. The flash must have room for it.");
+                foreach (UbiVolumeInfo v in source.Image.Volumes)
+                {
+                    bool replaced = ReferenceEquals(v, opened);
+                    volumes.Add(new UbiVolumeSpec
+                    {
+                        Id = v.Id, Name = v.Name, IsStatic = v.IsStatic, AutoResize = v.AutoResize, Alignment = v.Alignment, ExtraFlags = v.Flags,
+                        Data = replaced ? data : source.Image.OpenVolume(v),
+                        ReservedLebs = replaced ? Math.Max(reserved, needed) : v.ReservedLebs,
+                        IsStored = replaced ? null : lnum => source.Image.IsStored(v, lnum),
+                    });
+                }
+            }
+            UbiWriter.Write(output, pebSize, vidOffset, dataOffset, sequence, volumes, progress, ct);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
+    }
+
+    /// <summary>Checks that the volumes that were not rewritten read the same in the written UBI image.</summary>
+    private static List<string> CompareVolumes(UbiContainer source, UbiContainer? written, CancellationToken ct)
+    {
+        var problems = new List<string>();
+        if (written is null)
+        {
+            problems.Add("The written file is not a UBI image.");
+            return problems;
+        }
+        byte[] x = new byte[1 << 20], y = new byte[1 << 20];
+        foreach (UbiVolumeInfo a in source.Image.Volumes)
+        {
+            if (ReferenceEquals(a, source.Volume)) continue;
+            UbiVolumeInfo? b = written.Image.Volumes.FirstOrDefault(v => v.Id == a.Id);
+            if (b is null || b.Name != a.Name || b.IsStatic != a.IsStatic || b.Length != a.Length)
+            {
+                problems.Add($"Volume {VolumeText(a)} of the UBI image is missing or differs in the written image.");
+                continue;
+            }
+            IBlockSource sa = source.Image.OpenVolume(a), sb = written.Image.OpenVolume(b);
+            for (long offset = 0; offset < a.Length; offset += x.Length)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(x.Length, a.Length - offset);
+                sa.ReadExactly(offset, x.AsSpan(0, n));
+                sb.ReadExactly(offset, y.AsSpan(0, n));
+                if (x.AsSpan(0, n).SequenceEqual(y.AsSpan(0, n))) continue;
+                problems.Add($"The content of volume {VolumeText(a)} differs from the source UBI image.");
+                break;
+            }
+        }
+        return problems;
     }
 
     // ------------------------------------------------------ disk container
@@ -927,6 +1197,11 @@ public static class TreeComparer
             IgnoreXattrs = true,                    // only the user/trusted/security namespaces exist in SquashFS
             MinTime = 0,
             MaxTime = uint.MaxValue,
+        },
+        ImageFormat.Ubifs => new Rules
+        {
+            IgnoreOwners = o.Ubifs.AllRoot,
+            IgnoreXattrs = true,                    // only the user/trusted/security namespaces exist in UBIFS
         },
         ImageFormat.Ext => new Rules
         {
