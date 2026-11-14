@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using FsForge.Core;
 using FsForge.Core.Images;
+using FsForge.Core.Ubifs;
 using FsForge.Presentation.Mvvm;
 using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
@@ -568,10 +569,14 @@ public sealed class PropertiesViewModel : DialogViewModel
     }
 }
 
-/// <summary>Asks which partition of a disk image to open when several hold an editable filesystem.</summary>
+/// <summary>
+/// Asks which partition of a disk image to open when several hold an editable filesystem; likewise
+/// for the volumes of a UBI image.
+/// </summary>
 public sealed class PartitionChoiceViewModel : DialogViewModel
 {
-    public sealed record Row(PartitionInfo Partition, string Name, string Content, string Details, bool IsEditable);
+    /// <summary>A partition of a disk image, or a volume of a UBI image (then <see cref="Partition"/> is null).</summary>
+    public sealed record Row(PartitionInfo? Partition, string Name, string Content, string Details, bool IsEditable, UbiVolumeInfo? Volume = null);
 
     private Row? _selected;
 
@@ -590,6 +595,25 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Partition, preferred));
     }
 
+    public PartitionChoiceViewModel(string fileName, UbiImage ubi)
+    {
+        _volumes = true;
+        Title = L.T("Выбор тома");
+        AcceptText = L.T("Открыть");
+        Summary = L.F("«{0}» — образ UBI (блоки стирания по {1}). ", fileName, Fmt.Size(ubi.PebSize)) +
+                  L.T("Файловые системы, которые можно открыть, есть в нескольких томах. Какой из них открыть?");
+        foreach (UbiVolumeInfo v in ubi.Volumes)
+        {
+            string details = L.F("{0} · {1}", Fmt.Size(v.Length), v.IsStatic ? L.T("статический") : L.T("динамический")) +
+                             (v.AutoResize ? L.T(" · занимает всё свободное место (autoresize)") : "");
+            Rows.Add(new Row(null, L.F("Том {0}", Fmt.VolumeName(v)), Fmt.VolumeContent(v), details, v.IsReadable, v));
+        }
+        UbiVolumeInfo? preferred = ubi.PickDefault();
+        _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Volume, preferred));
+    }
+
+    private readonly bool _volumes;
+
     public string Summary { get; }
     public ObservableCollection<Row> Rows { get; } = new();
 
@@ -605,19 +629,25 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
     /// <summary>The partition to open; set by <see cref="Accept"/>.</summary>
     public PartitionInfo? Result { get; private set; }
 
+    /// <summary>The UBI volume to open; set by <see cref="Accept"/> when the dialog lists volumes.</summary>
+    public UbiVolumeInfo? VolumeResult { get; private set; }
+
     public override bool Accept()
     {
         if (_selected is null)
         {
-            Error = L.T("Выберите раздел.");
+            Error = _volumes ? L.T("Выберите том.") : L.T("Выберите раздел.");
             return false;
         }
         if (!_selected.IsEditable)
         {
-            Error = L.T("В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.");
+            Error = _volumes
+                ? L.T("В этом томе нет UBIFS или SquashFS — его нельзя открыть.")
+                : L.T("В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
+        VolumeResult = _selected.Volume;
         return true;
     }
 }
@@ -664,6 +694,24 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 : e.JournalReplayed ? L.T("не была корректно размонтирована; журнал пуст")
                 : e.Clean ? L.T("чистая") : L.T("не была корректно размонтирована"));
         }
+        if (doc.Ubifs is { } u)
+        {
+            Add(L.T("Версия формата"), u.FormatVersion.ToString());
+            Add(L.T("Размер ФС"), L.F("{0} ({1} блоков стирания по {2} байт), может вырасти до {3}", Fmt.Size(u.SizeBytes), Fmt.Bytes(u.LebCount), Fmt.Bytes(u.LebSize), Fmt.Size((long)u.MaxLebCount * u.LebSize)));
+            Add(L.T("Занято / свободно"), L.F("{0} / {1} (на момент последней фиксации)", Fmt.Size(u.UsedBytes), Fmt.Size(u.FreeBytes)));
+            Add(L.T("Мин. единица ввода-вывода"), L.F("{0} байт", Fmt.Bytes(u.MinIoSize)));
+            Add(L.T("Сжатие"), u.DefaultCompression.ToString().ToLowerInvariant() + L.T(" (по умолчанию; у каждого блока данных своё)"));
+            Add("UUID", u.Uuid.ToString());
+            Add(L.T("Особенности"), string.Join(", ", new[]
+            {
+                L.F("хеш имён {0}", u.KeyHash), L.F("ветвление индекса {0}", u.Fanout), u.BigLpt ? L.T("большая таблица LPT") : null,
+                u.SpaceFixup ? L.T("свободное место исправляется при первом монтировании") : null, u.Authenticated ? L.T("подписана (подписи не проверяются)") : null,
+            }.Where(x => x is not null)));
+            Add(L.T("Состояние"), u.ReplayedNodes > 0
+                ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
+                : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
+            Add(L.T("Сохранение"), L.T("UBIFS открывается только для чтения; содержимое сохраняется в SquashFS, ext2/3/4 или tar"));
+        }
         if (doc.Tar is { } t)
         {
             Add(L.T("Сжатие"), t.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : t.Compression.ToString().ToLowerInvariant());
@@ -681,6 +729,18 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 Add(ReferenceEquals(p, disk.Partition) ? L.F("▸ Раздел {0} (открыт)", p.Number) : L.F("Раздел {0}", p.Number), text);
             }
             Add(L.T("Сохранение"), L.T("образ диска целиком: заменяется только открытый раздел, таблица разделов и остальные разделы не меняются"));
+        }
+        else if (doc.Ubi is { } ubi)
+        {
+            Add(L.T("Образ UBI"), L.F("{0} блоков стирания по {1}, логический блок {2} байт", Fmt.Bytes(ubi.Image.PebCount), Fmt.Size(ubi.Image.PebSize), Fmt.Bytes(ubi.Image.LebSize)));
+            foreach (UbiVolumeInfo v in ubi.Image.Volumes)
+            {
+                string text = L.F("{0}, {1}, {2}", Fmt.VolumeContent(v), Fmt.Size(v.Length), v.IsStatic ? L.T("статический") : L.T("динамический"));
+                if (v.AutoResize) text += L.T(" · занимает всё свободное место (autoresize)");
+                Add(ReferenceEquals(v, ubi.Volume) ? L.F("▸ Том {0} (открыт)", Fmt.VolumeName(v)) : L.F("Том {0}", Fmt.VolumeName(v)), text);
+            }
+            if (doc.EmbeddedOffset > 0) Add(L.T("Смещение образа UBI в файле"), $"0x{doc.EmbeddedOffset:X}");
+            if (doc.Ubifs is null) Add(L.T("Сохранение"), L.T("только файловая система, отдельным файлом: образы UBI не записываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");

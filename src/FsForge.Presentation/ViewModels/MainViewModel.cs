@@ -4,6 +4,7 @@ using System.Windows.Input;
 using FsForge.Core;
 using FsForge.Core.Host;
 using FsForge.Core.Images;
+using FsForge.Core.Ubifs;
 using FsForge.Core.Tar;
 using FsForge.Presentation.Mvvm;
 using FsForge.Presentation.Services;
@@ -455,7 +456,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         string info = _doc.FormatName;
         if (_doc.SquashFs is { } s) info += L.F(" · {0} · блок {1}", s.Compression.ToString().ToLowerInvariant(), Fmt.Size(s.BlockSize));
         if (_doc.Ext is { } e) info += L.F(" · {0} · свободно {1}", Fmt.Size(e.SizeBytes), Fmt.Size(e.FreeBlocks * e.BlockSize));
+        if (_doc.Ubifs is { } u) info += L.F(" · {0} · только чтение", u.DefaultCompression.ToString().ToLowerInvariant());
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
+        if (_doc.Ubi is { } ubi)
+            info = L.F("образ UBI · том {0} из {1} · ", Fmt.VolumeName(ubi.Volume), ubi.Image.Volumes.Count) + info;
         if (_doc.Container is { } disk)
             info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
         DocumentInfo = info;
@@ -560,7 +564,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ImageDocument? doc = null;
         bool ok = await RunBusyAsync(L.T("Открытие ") + Path.GetFileName(path), (p, ct) =>
             doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
-                choosePartition: table => AskPartition(path, table)));
+                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi)));
         if (!ok || doc is null) return false;
 
         SetDocument(doc);
@@ -586,6 +590,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 var vm = new PartitionChoiceViewModel(Path.GetFileName(path), table);
                 done.SetResult(_dialogs.ShowDialog(vm) ? vm.Result : null);
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>Lets the user pick a volume of a UBI image; works like <see cref="AskPartition"/>.</summary>
+    private UbiVolumeInfo? AskVolume(string path, UbiImage ubi)
+    {
+        var done = new TaskCompletionSource<UbiVolumeInfo?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() =>
+        {
+            try
+            {
+                var vm = new PartitionChoiceViewModel(Path.GetFileName(path), ubi);
+                done.SetResult(_dialogs.ShowDialog(vm) ? vm.VolumeResult : null);
             }
             catch (Exception ex)
             {
@@ -1101,7 +1124,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ImageDocument? source = null;
         bool ok = await RunBusyAsync(L.T("Чтение ") + Path.GetFileName(path), (p, ct) =>
             source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
-                choosePartition: table => AskPartition(path, table)));
+                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi)));
         if (!ok || source is null) return false;
 
         var clashing = source.Tree.Root.Children.Where(c => target.Find(c.Name) is not null).Select(c => c.Name).ToList();

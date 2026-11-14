@@ -18,9 +18,10 @@ public sealed class DialogService : IDialogService
     private static string AllFiles => L.T("Все файлы") + "|*.*";
 
     private static string ImageFilter =>
-        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
         L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
+        L.T("UBI и UBIFS (только чтение)") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
         L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" + AllFiles;
 
     private readonly Func<Window?> _owner;

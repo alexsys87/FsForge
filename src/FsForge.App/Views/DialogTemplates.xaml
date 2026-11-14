@@ -472,6 +472,11 @@
                 </StackPanel>
             </Border>
 
+            <!--  A source that cannot be written back: UBIFS, a volume of a UBI image  -->
+            <Border Style="{StaticResource Card}" Visibility="{Binding HasSourceNote, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{Binding SourceNote}" TextWrapping="Wrap" />
+            </Border>
+
             <!--  The disk image the filesystem was opened from  -->
             <StackPanel Visibility="{Binding ShowContainerOptions, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Образ диска'}" />
@@ -749,7 +754,7 @@
                             </StackPanel>
                         </Grid>
                         <DataTemplate.Triggers>
-                            <!--  Partitions without an editable filesystem are listed for orientation only.  -->
+                            <!--  Partitions (or UBI volumes) without a filesystem to open are listed for orientation only.  -->
                             <DataTrigger Binding="{Binding IsEditable}" Value="False">
                                 <Setter TargetName="RowRoot" Property="Opacity" Value="0.55" />
                             </DataTrigger>
@@ -911,7 +916,7 @@
                     <HeaderedContentControl Header="{l:Tr 'Предлагать сохранить изменения при закрытии'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.ConfirmDiscardChanges}" />
                     </HeaderedContentControl>
-                    <HeaderedContentControl Header="{l:Tr 'Искать SquashFS внутри прошивок, если файл не образ'}" Style="{StaticResource Row}">
+                    <HeaderedContentControl Header="{l:Tr 'Искать SquashFS и UBI внутри прошивок, если файл не образ'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.SearchEmbedded}" />
                     </HeaderedContentControl>
                     <HeaderedContentControl Header="{l:Tr 'Показывать предупреждения после открытия'}" Style="{StaticResource Row}">

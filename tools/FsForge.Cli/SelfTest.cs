@@ -86,6 +86,7 @@ internal static partial class SelfTest
             Test("images wrapped in gzip, xz and zstd open transparently", () => CompressedImages(tree, reference));
             DiskTests(tree, reference);
             JournalTests();
+            UbifsTests(tree, reference);
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
