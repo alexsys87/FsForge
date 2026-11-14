@@ -6,8 +6,11 @@ namespace FsForge.Core.Ext;
 /// <summary>Reader for ext2, ext3 and ext4 images (block maps, extents, inline data, xattrs).</summary>
 public sealed class ExtReader : IDisposable
 {
-    private readonly IBlockSource _source;
+    private readonly IBlockSource _image;
     private readonly bool _ownsSource;
+
+    /// <summary>What the reader reads: the image itself, or the image with its journal replayed.</summary>
+    private IBlockSource _source;
 
     private int _blockSize;
     private long _blocksCount;
@@ -16,9 +19,15 @@ public sealed class ExtReader : IDisposable
     private uint _incompat, _roCompat;
     private bool _is64Bit;
     private long[] _inodeTables = Array.Empty<long>();
+    private uint _journalInode;
+
+    // Journal recovery done while opening (see ReplayJournal).
+    private bool _replayed;
+    private int _replayedTransactions, _replayedBlocks;
 
     private ExtReader(IBlockSource source, bool ownsSource)
     {
+        _image = source;
         _source = source;
         _ownsSource = ownsSource;
         Info = null!;
@@ -41,6 +50,7 @@ public sealed class ExtReader : IDisposable
         try
         {
             r.ReadSuperblock();
+            if (r.Info.NeedsRecovery) r.ReplayJournal();
             return r;
         }
         catch
@@ -92,9 +102,9 @@ public sealed class ExtReader : IDisposable
         if ((unsupported & IncompatJournalDev) != 0) throw new FsException("This is an external ext journal device, not a filesystem.");
         if (unsupported != 0) throw new FsException($"The image uses unsupported ext features (incompat 0x{unsupported:X}).");
 
+        // After a replay the superblock may still carry the flag (it is cleared on disk only by a real recovery).
+        if (_replayed) _incompat &= ~IncompatRecover;
         bool needsRecovery = (_incompat & IncompatRecover) != 0;
-        if (needsRecovery)
-            Warnings.Add("The filesystem was not cleanly unmounted: its journal contains changes that were not replayed.");
         if (_blocksCount * _blockSize > _source.Length + _blockSize)
             Warnings.Add("The image file is shorter than the filesystem it contains.");
 
@@ -141,6 +151,7 @@ public sealed class ExtReader : IDisposable
             _inodeTables[g] = table;
         }
 
+        _journalInode = hasJournal ? Le.U32(sb, 0xE0) : 0;
         long journalBytes = 0;
         if (hasJournal && Le.U32(sb, 0xE0) != 0)
             journalBytes = ((long)Le.U32(sb, 0x10C + 15 * 4) << 32) | Le.U32(sb, 0x10C + 16 * 4);
@@ -165,10 +176,94 @@ public sealed class ExtReader : IDisposable
             HasJournal = hasJournal,
             JournalBytes = journalBytes,
             NeedsRecovery = needsRecovery,
+            JournalReplayed = _replayed,
+            ReplayedTransactions = _replayedTransactions,
+            ReplayedBlocks = _replayedBlocks,
             Clean = (Le.U16(sb, 0x3A) & 1) != 0,
             MkfsTime = Le.U32(sb, 0x108),
             WriteTime = Le.U32(sb, 0x30),
         };
+    }
+
+    // ------------------------------------------------------------- journal
+
+    private const string LostChanges = " Changes recorded only in the journal are missing from what is shown and saved.";
+
+    /// <summary>
+    /// Replays the journal of a filesystem that was not cleanly unmounted. The image is not changed:
+    /// from here on every read goes through an overlay that serves recovered blocks from the journal,
+    /// and the superblock and group descriptors are read again from that view.
+    /// </summary>
+    private void ReplayJournal()
+    {
+        if (_journalInode == 0)
+        {
+            Warnings.Add("The filesystem was not cleanly unmounted and its journal is on a separate device, so it was not replayed." + LostChanges);
+            return;
+        }
+
+        ExtJournal.Result result;
+        Dictionary<long, (long Offset, bool Escaped)> map;
+        try
+        {
+            RawInode journal = ReadInode(_journalInode);
+            List<Run> runs = MapBlocks(journal);
+            long journalBlocks = journal.Size / _blockSize;
+
+            long Physical(long logical)
+            {
+                // Runs are sorted by logical block.
+                int lo = 0, hi = runs.Count - 1;
+                while (lo <= hi)
+                {
+                    int mid = (lo + hi) >> 1;
+                    Run r = runs[mid];
+                    if (logical < r.Logical) hi = mid - 1;
+                    else if (logical >= r.Logical + r.Count) lo = mid + 1;
+                    else return r.Phys + (logical - r.Logical);
+                }
+                throw new FsException($"Block {logical} of the journal is not allocated.");
+            }
+
+            result = ExtJournal.Replay((logical, buf) => ReadBlock(Physical(logical), buf), journalBlocks, _blockSize, _blocksCount);
+            map = new Dictionary<long, (long, bool)>(result.Blocks.Count);
+            foreach ((long block, ExtJournal.Replayed r) in result.Blocks)
+                map[block] = (Physical(r.JournalBlock) * _blockSize, r.Escaped);
+        }
+        catch (FsException ex)
+        {
+            Warnings.Add("The filesystem was not cleanly unmounted and its journal could not be replayed: " + ex.Message + LostChanges);
+            return;
+        }
+
+        // Read the filesystem again as it is after recovery.
+        _replayed = true;
+        _replayedTransactions = result.Transactions;
+        _replayedBlocks = map.Count;
+        if (map.Count > 0) _source = new JournalOverlaySource(_image, _blockSize, map);
+        Warnings.Clear();
+        try
+        {
+            ReadSuperblock();
+        }
+        catch (FsException ex)
+        {
+            // The recovered metadata is unusable: fall back to the image as it is outside the journal.
+            _source = _image;
+            _replayed = false;
+            _replayedTransactions = _replayedBlocks = 0;
+            Warnings.Clear();
+            ReadSuperblock();
+            Warnings.Add("The filesystem was not cleanly unmounted and its replayed journal gives invalid metadata (" + ex.Message + "), so it was not used." + LostChanges);
+            return;
+        }
+
+        if (result.Transactions > 0)
+            Warnings.Add($"The filesystem was not cleanly unmounted; its journal was replayed while reading " +
+                         $"({result.Transactions} transaction(s), {map.Count} block(s)). The image file itself is unchanged.");
+        Warnings.AddRange(result.Warnings);
+        if (result.FastCommit && result.Transactions > 0)
+            Warnings.Add("The journal uses fast commits, which are not replayed: the very last changes may be missing.");
     }
 
     private void ReadBlock(long block, Span<byte> dst)
@@ -716,6 +811,6 @@ public sealed class ExtReader : IDisposable
 
     public void Dispose()
     {
-        if (_ownsSource) _source.Dispose();
+        if (_ownsSource) _image.Dispose();
     }
 }

@@ -658,7 +658,11 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add("Метка", e.Label.Length > 0 ? e.Label : "(нет)");
             Add("UUID", e.Uuid.ToString());
             Add("Возможности", string.Join(" ", e.FeatureNames));
-            Add("Состояние", e.NeedsRecovery ? "журнал не воспроизведён (требуется восстановление)" : e.Clean ? "чистая" : "не была корректно размонтирована");
+            Add("Состояние", e.NeedsRecovery ? "журнал не воспроизведён (требуется восстановление)"
+                : e.JournalReplayed && e.ReplayedTransactions > 0
+                    ? $"не была корректно размонтирована; журнал воспроизведён при чтении (транзакций: {e.ReplayedTransactions}, блоков: {Fmt.Bytes(e.ReplayedBlocks)}), файл не изменён"
+                : e.JournalReplayed ? "не была корректно размонтирована; журнал пуст"
+                : e.Clean ? "чистая" : "не была корректно размонтирована");
         }
         if (doc.Tar is { } t)
         {
