@@ -31,6 +31,7 @@ public enum PartitionContent
     Xfs,
     Luks,
     Ubi,
+    Ubifs,
 }
 
 /// <summary>One entry of a partition table.</summary>

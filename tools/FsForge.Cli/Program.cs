@@ -7,6 +7,7 @@ using FsForge.Core.Host;
 using FsForge.Core.Images;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Ubifs;
 
 namespace FsForge.Cli;
 
@@ -17,7 +18,7 @@ namespace FsForge.Cli;
 internal static class Program
 {
     private const string Usage = """
-        fsforge - SquashFS / ext2-3-4 / tar image tool
+        fsforge - SquashFS / ext2-3-4 / UBIFS / tar image tool
 
           fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
@@ -34,6 +35,10 @@ internal static class Program
         the whole disk image again with only that partition replaced, unless the output name says otherwise
         (.squashfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
 
+        UBIFS images and UBI images (ubinize output, flash dumps without out-of-band data) are read only:
+        "convert" writes their content as SquashFS (the default), ext2/3/4 or tar. A UBI image is opened at
+        the volume that holds the most data; add vol=<name or number> to any command to pick another one.
+
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
           format=squashfs|ext2|ext3|ext4|tar            default: by output extension, else the source format
@@ -46,8 +51,11 @@ internal static class Program
     /// <summary>Partition requested with part=N on the command line; 0 when the image should decide.</summary>
     private static int _partition;
 
+    /// <summary>UBI volume requested with vol=NAME on the command line; null when the image should decide.</summary>
+    private static string? _volume;
+
     private static ImageDocument OpenImage(string path, bool searchEmbedded = true) =>
-        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition);
+        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition, volume: _volume);
 
     private static int Main(string[] args)
     {
@@ -63,6 +71,12 @@ internal static class Program
             {
                 if (!int.TryParse(part[5..], out _partition) || _partition <= 0) throw new FsException($"Invalid option '{part}'.");
                 args = args.Where(x => !ReferenceEquals(x, part)).ToArray();
+            }
+            if (Array.Find(args, x => x.StartsWith("vol=", StringComparison.OrdinalIgnoreCase)) is { } vol && args[0] != "pack")
+            {
+                if (vol.Length == 4) throw new FsException($"Invalid option '{vol}'.");
+                _volume = vol[4..];
+                args = args.Where(x => !ReferenceEquals(x, vol)).ToArray();
             }
             switch (args[0])
             {
@@ -140,6 +154,15 @@ internal static class Program
             Console.WriteLine($"Label/UUID:  '{e.Label}' {e.Uuid}");
             Console.WriteLine($"Features:    {string.Join(' ', e.FeatureNames)}");
         }
+        if (doc.Ubifs is { } u)
+        {
+            Console.WriteLine($"Blocks:      {u.LebCount} x {u.LebSize} (may grow to {u.MaxLebCount}), min. I/O unit {u.MinIoSize}");
+            Console.WriteLine($"Space:       {u.UsedBytes} bytes used, {u.FreeBytes} free");
+            Console.WriteLine($"Compression: {u.DefaultCompression.ToString().ToLowerInvariant()}, format version {u.FormatVersion}, key hash {u.KeyHash}");
+            Console.WriteLine($"UUID:        {u.Uuid}");
+            Console.WriteLine($"State:       {(u.ReplayedNodes > 0 ? $"not cleanly unmounted, {u.ReplayedNodes} journal nodes from {u.ReplayedBuds} erase blocks replayed" : u.Dirty ? "not cleanly unmounted, journal empty" : "clean")}" +
+                              $"{(u.SpaceFixup ? ", space fixup pending" : "")}{(u.Authenticated ? ", authenticated" : "")}");
+        }
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
         if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
@@ -148,6 +171,12 @@ internal static class Program
             Console.WriteLine($"Disk image:  {c.DiskLength} bytes, {c.Table.Scheme.ToString().ToUpperInvariant()} partition table");
             foreach (PartitionInfo p in c.Table.Partitions)
                 Console.WriteLine($"  {(ReferenceEquals(p, c.Partition) ? '*' : ' ')} {p}  [offset 0x{p.Offset:X}{(p.StoredLength < p.Length ? $", {p.StoredLength} bytes in the file" : "")}]");
+        }
+        if (doc.Ubi is { } ubi)
+        {
+            Console.WriteLine($"UBI image:   {ubi.Image.PebCount} erase blocks of {ubi.Image.PebSize} bytes, logical block {ubi.Image.LebSize}");
+            foreach (UbiVolumeInfo v in ubi.Image.Volumes)
+                Console.WriteLine($"  {(ReferenceEquals(v, ubi.Volume) ? '*' : ' ')} {v}  [{v.StoredBlocks} blocks in the file]");
         }
         if (doc.EmbeddedOffset > 0) Console.WriteLine($"Offset:      0x{doc.EmbeddedOffset:X}");
         Console.WriteLine($"Content:     {st.Files} files, {st.Directories} directories, {st.Symlinks} symlinks, {st.Specials} special, {st.DataBytes} bytes");
@@ -180,6 +209,8 @@ internal static class Program
         foreach (string s in doc.Warnings) Console.Error.WriteLine("warning: " + s);
         if (doc.Ext is { } e)
             Console.Error.WriteLine($"{e.Kind} bs={e.BlockSize} blocks={e.BlocksCount} inodes={e.InodesCount} isize={e.InodeSize} journal={e.JournalBytes} features={string.Join(',', e.FeatureNames)}");
+        if (doc.Ubifs is { } u)
+            Console.Error.WriteLine($"ubifs leb={u.LebSize} lebs={u.LebCount} minio={u.MinIoSize} comp={u.DefaultCompression} version={u.FormatVersion} replayed={u.ReplayedNodes}");
         if (doc.Tar is { } t)
             Console.Error.WriteLine($"tar comp={t.Compression} entries={t.Entries} pax={t.HasPaxHeaders} gnu={t.HasGnuExtensions} prefix='{t.PathPrefix}' root={t.HasRootEntry}");
         return 0;
@@ -202,12 +233,14 @@ internal static class Program
                     if (name.EndsWith(z)) name = name[..^z.Length];
                 if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
+                else if (name.EndsWith(".ubifs") || name.EndsWith(".ubi")) f = "ubifs";
                 namedFilesystem = f is not null;
             }
         }
         switch (f?.ToLowerInvariant())
         {
             case null: break;
+            case "ubifs" or "ubi": throw new FsException("UBIFS and UBI images can be read but not written. Use format=squashfs, ext2, ext3, ext4 or tar.");
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;

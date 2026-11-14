@@ -167,6 +167,8 @@ public sealed class AppSettings
             Tar = Tar.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
+        // Where the content of a read-only format (UBIFS) goes unless the user chooses otherwise.
+        defaults.Format = NewImageFormat;
         SaveOptions o = doc.CreateSaveOptions(format, defaults);
         ApplyCommon(o);
         return o;
@@ -276,6 +278,7 @@ public sealed class SettingsStore
         s.WindowWidth = Math.Clamp(s.WindowWidth, 640, 10000);
         s.WindowHeight = Math.Clamp(s.WindowHeight, 420, 10000);
         s.ExtExtraFreeMiB = Math.Clamp(s.ExtExtraFreeMiB, 0, 1 << 20);
+        if (!ImageDocument.CanWrite(s.NewImageFormat) || !Enum.IsDefined(s.NewImageFormat)) s.NewImageFormat = ImageFormat.SquashFs;
         s.TextEditor ??= "";
         s.TempDirectory ??= "";
         try { s.SquashFs.Validate(); } catch (FsForge.Core.FsException) { s.SquashFs = new SquashFsOptions(); }

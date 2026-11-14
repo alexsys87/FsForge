@@ -155,6 +155,11 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, L.T("заданный, МиБ")));
         SizeModes = sizeModes;
 
+        if (doc.Format == ImageFormat.Ubifs)
+            SourceNote = L.T("Исходный образ — UBIFS. Этот формат программа только читает, поэтому содержимое сохраняется в другом формате и в новом файле; исходный файл не меняется.");
+        else if (doc.Ubi is { } ubi)
+            SourceNote = L.F("Файловая система открыта из тома {0} образа UBI. Образы UBI программа не записывает: будет сохранена только файловая система, отдельным файлом.", Fmt.VolumeName(ubi.Volume));
+
         if (doc.Container is { } disk)
         {
             PartitionInfo p = disk.Partition;
@@ -171,6 +176,11 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool ShowContainerOptions => HasContainer && !FormatLocked;
 
     public string ContainerSummary { get; } = "";
+
+    /// <summary>Why the result cannot go back where the content came from (a read-only format, a UBI image); empty otherwise.</summary>
+    public string SourceNote { get; } = "";
+
+    public bool HasSourceNote => SourceNote.Length > 0;
 
     /// <summary>Write the whole disk image again (true) or the filesystem alone (false).</summary>
     public bool KeepContainer
