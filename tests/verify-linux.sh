@@ -177,6 +177,46 @@ ex ext4_free img/xz.sqfs tree.ref format=ext4 free=20 label=rootfs reserved=5
 for v in ext2 ext3 ext4 ext4_inline ext4_bigalloc ext4_metabg; do [ -f img/$v.img ] && { grep -v "^/lost+found" out/eref.$v.txt > out/eref.nolf.$v.txt; ex "same_$v" img/$v.img out/eref.nolf.$v.txt; }; done
 if $F convert img/xz.sqfs img/w_small.img format=ext4 size=4 2>/dev/null; then bad "an image that is too small was accepted"; else ok "content that does not fit is rejected"; fi
 
+# Images left with an unreplayed journal: debugfs edits a copy, the changed blocks are written into the
+# journal of the original (jo/jw/jc), and the result must read like the kernel's own recovery of it.
+echo "ext: unreplayed journals"
+head -c 70000 /dev/urandom > img/j_new.bin
+blockdiff() { python3 - "$@" <<'PY'
+import sys
+a, b, bs, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+fa, fb, fo, n, blocks = open(a, 'rb'), open(b, 'rb'), open(out, 'wb'), 0, []
+while True:
+    x, y = fa.read(bs), fb.read(bs)
+    if not x: break
+    if x != y: blocks.append(str(n)); fo.write(y)
+    n += 1
+print(','.join(blocks))
+PY
+}
+jr() { n=$1; jo=$2; shift 2; rm -f img/j_$n*.img
+  mke2fs -q -F "$@" -d tree1k img/j_$n.img 64M >/dev/null 2>&1 || { echo "  skip  journal $n (mke2fs)"; return; }
+  bs=$(dumpe2fs -h img/j_$n.img 2>/dev/null | sed -n 's/^Block size: *//p')
+  cp img/j_$n.img img/j_${n}_b.img
+  printf 'mkdir jdir\nwrite img/j_new.bin jdir/new.bin\nsymlink jdir/l /etc/passwd\ncd jdir\nmknod fifo p\ncd /\nsif / mode 040700\n' > out/j.$n.cmd
+  debugfs -w -f out/j.$n.cmd img/j_${n}_b.img >/dev/null 2>&1
+  list=$(blockdiff img/j_$n.img img/j_${n}_b.img $bs out/j.$n.data)
+  cp img/j_$n.img img/j_${n}_dirty.img
+  printf 'jo %s\njw -b %s out/j.%s.data\njc\n' "$jo" "$list" "$n" > out/j.$n.cmd2
+  debugfs -w -f out/j.$n.cmd2 img/j_${n}_dirty.img >/dev/null 2>&1
+  dumpe2fs -h img/j_${n}_dirty.img 2>/dev/null | grep -q needs_recovery || { bad "journal $n: debugfs did not leave a journal to replay"; return; }
+  cp img/j_${n}_dirty.img img/j_${n}_kernel.img
+  mount -o loop,ro img/j_${n}_kernel.img mnt 2> out/j.$n.err || { bad "journal $n: the kernel cannot recover the reference copy: $(cat out/j.$n.err)"; return; }
+  python3 scan.py mnt > out/j.$n.ref; umount mnt
+  cmpdump "journal $n: replayed like the kernel does" img/j_${n}_dirty.img out/j.$n.ref
+  grep -q "replayed while reading" out/r.journal_${n}:_*.err || bad "journal $n: no message about the replay"
+  if $F convert img/j_${n}_dirty.img img/j_${n}_saved.img verify=content 2> out/j.$n.save.err && e2fsck -fn img/j_${n}_saved.img > out/j.$n.fsck 2>&1; then
+    kmount "j_$n" img/j_${n}_saved.img out/j.$n.ref && ok "journal $n: saved image is clean (e2fsck) and has the recovered content (kernel)" || bad "journal $n: saved image differs"
+  else bad "journal $n: saving: $(cat out/j.$n.save.err; tail -3 out/j.$n.fsck)"; fi
+  rm -f img/j_$n*.img
+}
+jr ext4 "" -t ext4; jr ext4_csum -c -t ext4; jr ext4_1k_csum -c -t ext4 -b 1024; jr ext4_no64 "" -t ext4 -O ^64bit,^metadata_csum
+jr ext3 "" -t ext3; jr ext3_1k_v1sum -c -t ext3 -b 1024
+
 # -------------------------------------------------------------------- tar
 echo "tar: archives made by GNU tar${BSD:+ and bsdtar}"
 mt() { n=$1; ref=$2; shift 2; (cd tree && tar -c "$@" -f ../img/$n . 2>/dev/null)

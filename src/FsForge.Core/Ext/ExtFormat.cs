@@ -32,7 +32,14 @@ public sealed class ExtInfo
     public Guid Uuid { get; init; }
     public bool HasJournal { get; init; }
     public long JournalBytes { get; init; }
+    /// <summary>The filesystem was not cleanly unmounted and its journal could not be replayed.</summary>
     public bool NeedsRecovery { get; init; }
+
+    /// <summary>The journal was replayed while reading (in memory; the file is not changed).</summary>
+    public bool JournalReplayed { get; init; }
+
+    public int ReplayedTransactions { get; init; }
+    public int ReplayedBlocks { get; init; }
     public bool Clean { get; init; }
     public long MkfsTime { get; init; }
     public long WriteTime { get; init; }
