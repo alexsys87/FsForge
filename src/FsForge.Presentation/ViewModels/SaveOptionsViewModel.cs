@@ -40,35 +40,35 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Ext4, "ext4"),
         new Choice<SaveFormat>(SaveFormat.Ext3, "ext3"),
         new Choice<SaveFormat>(SaveFormat.Ext2, "ext2"),
-        new Choice<SaveFormat>(SaveFormat.Tar, "Архив tar (rootfs.tar.gz)"),
+        new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
     };
 
     public static IReadOnlyList<Choice<SquashCompression>> SquashCompressions { get; } = new[]
     {
-        new Choice<SquashCompression>(SquashCompression.Xz, "xz — лучшее сжатие"),
-        new Choice<SquashCompression>(SquashCompression.Zstd, "zstd — быстро и плотно"),
-        new Choice<SquashCompression>(SquashCompression.Gzip, "gzip — максимальная совместимость"),
-        new Choice<SquashCompression>(SquashCompression.Lz4, "lz4 — самая быстрая распаковка"),
+        new Choice<SquashCompression>(SquashCompression.Xz, L.T("xz — лучшее сжатие")),
+        new Choice<SquashCompression>(SquashCompression.Zstd, L.T("zstd — быстро и плотно")),
+        new Choice<SquashCompression>(SquashCompression.Gzip, L.T("gzip — максимальная совместимость")),
+        new Choice<SquashCompression>(SquashCompression.Lz4, L.T("lz4 — самая быстрая распаковка")),
     };
 
     public static IReadOnlyList<Choice<int>> SquashBlockSizes { get; } =
-        new[] { 4, 8, 16, 32, 64, 128, 256, 512, 1024 }.Select(k => new Choice<int>(k * 1024, k < 1024 ? $"{k} КБ" : "1 МБ")).ToArray();
+        new[] { 4, 8, 16, 32, 64, 128, 256, 512, 1024 }.Select(k => new Choice<int>(k * 1024, k < 1024 ? L.F("{0} КБ", k) : L.T("1 МБ"))).ToArray();
 
     public static IReadOnlyList<Choice<int>> XzEfforts { get; } = new[]
     {
-        new Choice<int>(0, "быстро"), new Choice<int>(1, "обычно"), new Choice<int>(2, "максимум (медленно)"),
+        new Choice<int>(0, L.T("быстро")), new Choice<int>(1, L.T("обычно")), new Choice<int>(2, L.T("максимум (медленно)")),
     };
 
     public static IReadOnlyList<Choice<int>> GzipLevels { get; } =
-        Enumerable.Range(1, 9).Select(l => new Choice<int>(l, l == 1 ? "1 — быстрее" : l == 9 ? "9 — плотнее" : l.ToString())).ToArray();
+        Enumerable.Range(1, 9).Select(l => new Choice<int>(l, l == 1 ? L.T("1 — быстрее") : l == 9 ? L.T("9 — плотнее") : l.ToString())).ToArray();
 
     public static IReadOnlyList<Choice<int>> ZstdLevels { get; } =
-        new[] { 1, 3, 6, 10, 15, 19, 22 }.Select(l => new Choice<int>(l, l == 1 ? "1 — быстрее" : l == 22 ? "22 — плотнее" : l.ToString())).ToArray();
+        new[] { 1, 3, 6, 10, 15, 19, 22 }.Select(l => new Choice<int>(l, l == 1 ? L.T("1 — быстрее") : l == 22 ? L.T("22 — плотнее") : l.ToString())).ToArray();
 
     /// <summary>Value -1 stands for "no filter".</summary>
     public static IReadOnlyList<Choice<int>> BcjFilters { get; } = new[]
     {
-        new Choice<int>(-1, "нет"),
+        new Choice<int>(-1, L.T("нет")),
         new Choice<int>((int)BcjFilter.Arm, "ARM"),
         new Choice<int>((int)BcjFilter.ArmThumb, "ARM Thumb"),
         new Choice<int>((int)BcjFilter.Arm64, "ARM64"),
@@ -79,12 +79,12 @@ public static class OptionLists
 
     public static IReadOnlyList<Choice<int>> ExtBlockSizes { get; } = new[]
     {
-        new Choice<int>(4096, "4096 байт"), new Choice<int>(2048, "2048 байт"), new Choice<int>(1024, "1024 байта"),
+        new Choice<int>(4096, L.T("4096 байт")), new Choice<int>(2048, L.T("2048 байт")), new Choice<int>(1024, L.T("1024 байта")),
     };
 
     public static IReadOnlyList<Choice<int>> ExtInodeSizes { get; } = new[]
     {
-        new Choice<int>(256, "256 байт (время после 2038 года)"), new Choice<int>(128, "128 байт (компактнее)"),
+        new Choice<int>(256, L.T("256 байт (время после 2038 года)")), new Choice<int>(128, L.T("128 байт (компактнее)")),
     };
 
     public static IReadOnlyList<Choice<ArchiveCompression>> TarCompressions { get; } = new[]
@@ -92,25 +92,25 @@ public static class OptionLists
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.tar.gz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Xz, "xz (.tar.xz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Zstd, "zstd (.tar.zst)"),
-        new Choice<ArchiveCompression>(ArchiveCompression.None, "без сжатия (.tar)"),
+        new Choice<ArchiveCompression>(ArchiveCompression.None, L.T("без сжатия (.tar)")),
     };
 
     public static IReadOnlyList<Choice<TarDialect>> TarDialects { get; } = new[]
     {
-        new Choice<TarDialect>(TarDialect.Pax, "pax (POSIX) — хранит расширенные атрибуты"),
-        new Choice<TarDialect>(TarDialect.Gnu, "GNU tar — без расширенных атрибутов"),
+        new Choice<TarDialect>(TarDialect.Pax, L.T("pax (POSIX) — хранит расширенные атрибуты")),
+        new Choice<TarDialect>(TarDialect.Gnu, L.T("GNU tar — без расширенных атрибутов")),
     };
 
     public static IReadOnlyList<Choice<string>> TarPrefixes { get; } = new[]
     {
-        new Choice<string>("./", "./ — как у «tar -C rootfs .»"), new Choice<string>("", "без префикса"),
+        new Choice<string>("./", L.T("./ — как у «tar -C rootfs .»")), new Choice<string>("", L.T("без префикса")),
     };
 
     public static IReadOnlyList<Choice<VerifyLevel>> VerifyLevels { get; } = new[]
     {
-        new Choice<VerifyLevel>(VerifyLevel.Structure, "структуру: имена, типы, размеры, права"),
-        new Choice<VerifyLevel>(VerifyLevel.Content, "структуру и содержимое каждого файла"),
-        new Choice<VerifyLevel>(VerifyLevel.None, "не проверять"),
+        new Choice<VerifyLevel>(VerifyLevel.Structure, L.T("структуру: имена, типы, размеры, права")),
+        new Choice<VerifyLevel>(VerifyLevel.Content, L.T("структуру и содержимое каждого файла")),
+        new Choice<VerifyLevel>(VerifyLevel.None, L.T("не проверять")),
     };
 }
 
@@ -124,12 +124,12 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     private string _sizeMiB, _extraFreeMiB, _label, _reserved;
     private int _bcj;
 
-    public SaveOptionsViewModel(ImageDocument doc, SaveOptions options, string title = "Параметры сохранения", bool lockFormat = false)
+    public SaveOptionsViewModel(ImageDocument doc, SaveOptions options, string? title = null, bool lockFormat = false)
     {
         _doc = doc;
         _o = options.Clone();
-        Title = title;
-        AcceptText = "Далее…";
+        Title = title ?? L.T("Параметры сохранения");
+        AcceptText = L.T("Далее…");
         FormatLocked = lockFormat;
         _format = _o.Format switch
         {
@@ -146,20 +146,20 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         _bcj = _o.SquashFs.XzFilters.Count > 0 ? (int)_o.SquashFs.XzFilters[0] : -1;
 
         TreeStats st = doc.Tree.GetStats();
-        ContentSummary = $"Содержимое: {Fmt.Plural(st.Files, "файл", "файла", "файлов")}, {Fmt.Plural(st.Directories, "папка", "папки", "папок")}, {Fmt.Size(st.DataBytes)}";
+        ContentSummary = L.F("Содержимое: {0}, {1}, {2}", Fmt.Plural(st.Files, "файл", "файла", "файлов"), Fmt.Plural(st.Directories, "папка", "папки", "папок"), Fmt.Size(st.DataBytes));
         OriginalSizeText = CanKeepSize ? Fmt.Size(_o.Ext.SizeBytes) : "";
 
         var sizeModes = new List<Choice<ExtSizeMode>>();
-        if (CanKeepSize) sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Keep, $"как у исходного образа ({OriginalSizeText})"));
-        sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Minimal, "минимальный по содержимому"));
-        sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, "заданный, МиБ"));
+        if (CanKeepSize) sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Keep, L.F("как у исходного образа ({0})", OriginalSizeText)));
+        sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Minimal, L.T("минимальный по содержимому")));
+        sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, L.T("заданный, МиБ")));
         SizeModes = sizeModes;
 
         if (doc.Container is { } disk)
         {
             PartitionInfo p = disk.Partition;
-            ContainerSummary = $"{Path.GetFileName(doc.FilePath)} — образ диска ({Fmt.PartitionScheme(disk.Table)}, разделов: {disk.Table.Partitions.Count}). " +
-                               $"Открыт раздел {p.Number}: {Fmt.PartitionContent(p)}, {Fmt.Size(p.Length)}.";
+            ContainerSummary = L.F("{0} — образ диска ({1}, разделов: {2}). ", Path.GetFileName(doc.FilePath), Fmt.PartitionScheme(disk.Table), disk.Table.Partitions.Count) +
+                               L.F("Открыт раздел {0}: {1}, {2}.", p.Number, Fmt.PartitionContent(p), Fmt.Size(p.Length));
         }
     }
 
@@ -195,20 +195,20 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (_doc.Container is not { } disk) return "";
             PartitionInfo p = disk.Partition;
-            if (IsTar) return "Архив tar сохраняется отдельным файлом; образ диска при этом не меняется.";
+            if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ диска при этом не меняется.");
             if (!_o.KeepContainer)
-                return "Будет записана только файловая система — без таблицы разделов и остальных разделов. Такой файл не загрузится с карты памяти; он годится для sysupgrade или записи в раздел вручную.";
+                return L.T("Будет записана только файловая система — без таблицы разделов и остальных разделов. Такой файл не загрузится с карты памяти; он годится для sysupgrade или записи в раздел вручную.");
             string grow = disk.CanGrow
-                ? $"Если файловая система перестанет помещаться в раздел {p.Number}, раздел будет увеличен (он последний)."
-                : $"Файловая система должна поместиться в раздел {p.Number} ({Fmt.Size(p.Length)}).";
-            return $"Таблица разделов, загрузчик и остальные разделы копируются без изменений, заменяется только раздел {p.Number}. {grow} " +
-                   "Имя файла с окончанием .gz, .xz или .zst означает сжатый образ.";
+                ? L.F("Если файловая система перестанет помещаться в раздел {0}, раздел будет увеличен (он последний).", p.Number)
+                : L.F("Файловая система должна поместиться в раздел {0} ({1}).", p.Number, Fmt.Size(p.Length));
+            return L.F("Таблица разделов, загрузчик и остальные разделы копируются без изменений, заменяется только раздел {0}. {1} ", p.Number, grow) +
+                   L.T("Имя файла с окончанием .gz, .xz или .zst означает сжатый образ.");
         }
     }
 
     /// <summary>How the ext size choices are read when the filesystem goes into a partition.</summary>
     public string ExtSizeNote => WritesDisk && _doc.Container is { } disk
-        ? $"В образе диска «минимальный» означает размер раздела ({Fmt.Size(disk.Partition.Length)}): файловая система занимает раздел целиком."
+        ? L.F("В образе диска «минимальный» означает размер раздела ({0}): файловая система занимает раздел целиком.", Fmt.Size(disk.Partition.Length))
         : "";
 
     public bool HasExtSizeNote => ExtSizeNote.Length > 0;
@@ -260,11 +260,11 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     public string FormatNote => _format switch
     {
-        SaveFormat.SquashFs => "Сжатая файловая система только для чтения (версия 4.0).",
-        SaveFormat.Ext4 => "ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+.",
-        SaveFormat.Ext3 => "ext3: журнал и карты блоков.",
-        SaveFormat.Ext2 => "ext2: без журнала, карты блоков.",
-        _ => "Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами.",
+        SaveFormat.SquashFs => L.T("Сжатая файловая система только для чтения (версия 4.0)."),
+        SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
+        SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
+        SaveFormat.Ext2 => L.T("ext2: без журнала, карты блоков."),
+        _ => L.T("Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами."),
     };
 
     private void RaiseCompression()
@@ -434,11 +434,11 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             o.Ext.Kind = _format switch { SaveFormat.Ext2 => ExtKind.Ext2, SaveFormat.Ext3 => ExtKind.Ext3, _ => ExtKind.Ext4 };
             if (o.Ext.Kind == ExtKind.Ext2) o.Ext.Journal = false;
             else if (o.Ext.Kind == ExtKind.Ext3) o.Ext.Journal = true;
-            if (System.Text.Encoding.UTF8.GetByteCount(_label) > 16) return Fail("Метка тома не длиннее 16 байт.");
+            if (System.Text.Encoding.UTF8.GetByteCount(_label) > 16) return Fail(L.T("Метка тома не длиннее 16 байт."));
             o.Ext.Label = _label;
             if (!double.TryParse(_reserved.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double reserved)
                 || reserved is < 0 or > 50)
-                return Fail("Резерв для root — число от 0 до 50 процентов.");
+                return Fail(L.T("Резерв для root — число от 0 до 50 процентов."));
             o.Ext.ReservedPercent = reserved;
 
             switch (_sizeMode)
@@ -448,9 +448,9 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                     break;
                 case ExtSizeMode.Fixed:
                     if (!long.TryParse(_sizeMiB.Trim(), out long mib) || mib < 1 || mib > 16L << 20)
-                        return Fail("Размер образа — целое число мегабайт (МиБ), не меньше 1.");
+                        return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
                     if (WritesDisk && _doc.Container is { CanGrow: false } disk && mib << 20 > disk.Partition.Length)
-                        return Fail($"Раздел {disk.Partition.Number} вмещает {Fmt.Size(disk.Partition.Length)} и не может быть увеличен — укажите размер не больше этого.");
+                        return Fail(L.F("Раздел {0} вмещает {1} и не может быть увеличен — укажите размер не больше этого.", disk.Partition.Number, Fmt.Size(disk.Partition.Length)));
                     o.Ext.SizeBytes = mib << 20;
                     o.Ext.ExtraFreeBytes = 0;
                     o.Ext.InodeCount = 0;
@@ -458,7 +458,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                     break;
                 default:
                     if (!long.TryParse(_extraFreeMiB.Trim().Length == 0 ? "0" : _extraFreeMiB.Trim(), out long free) || free < 0 || free > 16L << 20)
-                        return Fail("Запас свободного места — целое неотрицательное число мегабайт.");
+                        return Fail(L.T("Запас свободного места — целое неотрицательное число мегабайт."));
                     o.Ext.SizeBytes = 0;
                     o.Ext.ExtraFreeBytes = free << 20;
                     o.Ext.InodeCount = 0;

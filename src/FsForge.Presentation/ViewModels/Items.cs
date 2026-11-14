@@ -53,7 +53,7 @@ public sealed class NodeItem
         Modified = Fmt.Date(i.MTime, settings.UtcTimes);
         TypeText = i.Type switch
         {
-            FsNodeType.File when (i.Mode & 0x49) != 0 => "Исполняемый файл",
+            FsNodeType.File when (i.Mode & 0x49) != 0 => L.T("Исполняемый файл"),
             _ => Fmt.TypeName(i.Type),
         };
         Icon = i.Type switch
@@ -69,7 +69,7 @@ public sealed class NodeItem
         Details = i.Type switch
         {
             FsNodeType.Symlink => "→ " + i.LinkTarget,
-            FsNodeType.File when i.LinkCount > 1 => $"жёсткая ссылка ×{i.LinkCount}",
+            FsNodeType.File when i.LinkCount > 1 => L.F("жёсткая ссылка ×{0}", i.LinkCount),
             _ => i.HasXAttrs ? $"xattr: {i.XAttrs!.Count}" : "",
         };
     }

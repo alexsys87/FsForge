@@ -39,7 +39,7 @@ public interface IDialogService
     /// <summary>Shows the modal dialog that belongs to a view model; true when the user accepted it.</summary>
     bool ShowDialog(object viewModel);
 
-    Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string cancel = "Отмена");
+    Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string? cancel = null);
 
     Task ShowMessageAsync(string title, string message, MessageKind kind = MessageKind.Info);
 

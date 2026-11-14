@@ -244,7 +244,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             FsNode? node = _doc.Tree.Resolve(value.Trim());
             if (node is null)
             {
-                _dialogs.Notify("Путь не найден", value, MessageKind.Warning);
+                _dialogs.Notify(L.T("Путь не найден"), value, MessageKind.Warning);
                 OnPropertyChanged();
                 return;
             }
@@ -346,23 +346,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         string stage = p.Stage switch
         {
-            "read" => "Чтение структуры",
-            "data" => "Запись данных",
-            "verify" => "Проверка записанного образа",
-            "extract" => "Извлечение",
-            "import" => "Добавление",
-            "scan" => "Подготовка",
-            "unpack" => "Распаковка сжатого образа",
-            "copy" => "Копирование остальных разделов",
-            "compress" => "Сжатие образа",
-            "done" => "Завершение",
+            "read" => L.T("Чтение структуры"),
+            "data" => L.T("Запись данных"),
+            "verify" => L.T("Проверка записанного образа"),
+            "extract" => L.T("Извлечение"),
+            "import" => L.T("Добавление"),
+            "scan" => L.T("Подготовка"),
+            "unpack" => L.T("Распаковка сжатого образа"),
+            "copy" => L.T("Копирование остальных разделов"),
+            "compress" => L.T("Сжатие образа"),
+            "done" => L.T("Завершение"),
             _ => p.Stage,
         };
         if (p.Total > 0)
         {
             BusyIndeterminate = false;
             BusyPercent = 100.0 * p.Fraction;
-            string amount = p.Stage is "data" or "verify" or "extract" or "unpack" or "copy" or "compress" ? $"{Fmt.Size(p.Done)} из {Fmt.Size(p.Total)}" : $"{p.Done} из {p.Total}";
+            string amount = p.Stage is "data" or "verify" or "extract" or "unpack" or "copy" or "compress" ? L.F("{0} из {1}", Fmt.Size(p.Done), Fmt.Size(p.Total)) : L.F("{0} из {1}", p.Done, p.Total);
             BusyDetail = $"{stage}: {amount}" + (string.IsNullOrEmpty(p.Item) ? "" : "  ·  " + Shorten(p.Item!));
         }
         else
@@ -407,7 +407,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             // Never let a defect in an operation take the window down: report it instead.
-            error = $"Внутренняя ошибка ({ex.GetType().Name}): {ex.Message}";
+            error = L.F("Внутренняя ошибка ({0}): {1}", ex.GetType().Name, ex.Message);
         }
         finally
         {
@@ -418,12 +418,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         if (cancelled)
         {
-            _dialogs.Notify("Отменено", title, MessageKind.Warning);
+            _dialogs.Notify(L.T("Отменено"), title, MessageKind.Warning);
             return false;
         }
         if (error is not null)
         {
-            await _dialogs.ShowMessageAsync(title + " — ошибка", error, MessageKind.Error);
+            await _dialogs.ShowMessageAsync(title + L.T(" — ошибка"), error, MessageKind.Error);
             return false;
         }
         return true;
@@ -450,14 +450,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             DocumentInfo = "";
             return;
         }
-        string name = _doc.FilePath is null ? "Новый образ" : Path.GetFileName(_doc.FilePath);
+        string name = _doc.FilePath is null ? L.T("Новый образ") : Path.GetFileName(_doc.FilePath);
         Title = $"{name}{(_doc.IsModified ? " •" : "")} — FsForge";
         string info = _doc.FormatName;
-        if (_doc.SquashFs is { } s) info += $" · {s.Compression.ToString().ToLowerInvariant()} · блок {Fmt.Size(s.BlockSize)}";
-        if (_doc.Ext is { } e) info += $" · {Fmt.Size(e.SizeBytes)} · свободно {Fmt.Size(e.FreeBlocks * e.BlockSize)}";
+        if (_doc.SquashFs is { } s) info += L.F(" · {0} · блок {1}", s.Compression.ToString().ToLowerInvariant(), Fmt.Size(s.BlockSize));
+        if (_doc.Ext is { } e) info += L.F(" · {0} · свободно {1}", Fmt.Size(e.SizeBytes), Fmt.Size(e.FreeBlocks * e.BlockSize));
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
         if (_doc.Container is { } disk)
-            info = $"образ диска {Fmt.PartitionScheme(disk.Table)} · раздел {disk.Partition.Number} из {disk.Table.Partitions.Count} · " + info;
+            info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
         DocumentInfo = info;
     }
 
@@ -530,8 +530,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public async Task<bool> ConfirmDiscardAsync()
     {
         if (_doc is null || !_doc.IsModified || !_settings.ConfirmDiscardChanges) return true;
-        DialogAnswer a = await _dialogs.AskAsync("Несохранённые изменения",
-            "В образе есть несохранённые изменения. Сохранить их?", "Сохранить", "Не сохранять");
+        DialogAnswer a = await _dialogs.AskAsync(L.T("Несохранённые изменения"),
+            L.T("В образе есть несохранённые изменения. Сохранить их?"), L.T("Сохранить"), L.T("Не сохранять"));
         if (a == DialogAnswer.Cancel) return false;
         if (a == DialogAnswer.Secondary) return true;
         return await SaveAsync();
@@ -549,7 +549,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (IsBusy || !await ConfirmDiscardAsync()) return false;
         if (!File.Exists(path))
         {
-            await _dialogs.ShowMessageAsync("Файл не найден", path, MessageKind.Error);
+            await _dialogs.ShowMessageAsync(L.T("Файл не найден"), path, MessageKind.Error);
             if (_settings.RecentFiles.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)) > 0)
             {
                 RefreshRecent();
@@ -558,7 +558,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return false;
         }
         ImageDocument? doc = null;
-        bool ok = await RunBusyAsync("Открытие " + Path.GetFileName(path), (p, ct) =>
+        bool ok = await RunBusyAsync(L.T("Открытие ") + Path.GetFileName(path), (p, ct) =>
             doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table)));
         if (!ok || doc is null) return false;
@@ -569,7 +569,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshRecent();
         SaveSettings();
         if (doc.Warnings.Count > 0 && _settings.ShowWarningsAfterOpen)
-            ShowInfo($"Образ открыт с предупреждениями: {doc.Warnings.Count}", doc.Warnings[0], MessageKind.Warning, doc.Warnings, "Предупреждения при открытии");
+            ShowInfo(L.F("Образ открыт с предупреждениями: {0}", doc.Warnings.Count), doc.Warnings[0], MessageKind.Warning, doc.Warnings, L.T("Предупреждения при открытии"));
         return true;
     }
 
@@ -603,7 +603,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task NewFromFolderAsync()
     {
-        string? folder = _dialogs.PickFolder("Папка, из которой будет собран образ", NullIfEmpty(_settings.LastHostDirectory));
+        string? folder = _dialogs.PickFolder(L.T("Папка, из которой будет собран образ"), NullIfEmpty(_settings.LastHostDirectory));
         if (folder is not null) await NewFromFolderAsync(folder);
     }
 
@@ -614,7 +614,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ImageDocument doc = ImageDocument.CreateNew(_settings.NewImageFormat);
         ImportOptions options = _settings.ToImportOptions(ConflictPolicy.Overwrite);
         ImportResult? result = null;
-        bool ok = await RunBusyAsync("Чтение папки " + Path.GetFileName(folder), (p, ct) =>
+        bool ok = await RunBusyAsync(L.T("Чтение папки ") + Path.GetFileName(folder), (p, ct) =>
             result = HostImporter.ImportContents(doc.Tree, doc.Tree.Root, folder, options, p, ct));
         if (!ok || result is null)
         {
@@ -624,7 +624,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SetDocument(doc);
         _settings.LastHostDirectory = folder;
         SaveSettings();
-        ReportImport(result, "Образ собран из папки");
+        ReportImport(result, L.T("Образ собран из папки"));
         return true;
     }
 
@@ -661,7 +661,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
         string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string? path = _dialogs.PickSaveFile(disk ? "Сохранить образ диска" : "Сохранить образ", suggested, vm.Result.Format, vm.Extension, dir, disk);
+        string? path = _dialogs.PickSaveFile(disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ"), suggested, vm.Result.Format, vm.Extension, dir, disk);
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
     }
@@ -683,7 +683,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _settings.ApplyCommon(options);
 
         ImageDocument.SaveResult? result = null;
-        bool ok = await RunBusyAsync("Сохранение " + Path.GetFileName(path), (p, ct) => result = doc.Save(path, options, p, ct));
+        bool ok = await RunBusyAsync(L.T("Сохранение ") + Path.GetFileName(path), (p, ct) => result = doc.Save(path, options, p, ct));
         if (!ok || result is null)
         {
             // A failure after the source file was released leaves nothing to show.
@@ -699,9 +699,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveSettings();
         string done = $"{Path.GetFileName(path)} — {Fmt.Size(result.BytesWritten)}";
         if (result.Warnings.Count > 0)
-            ShowInfo($"Образ сохранён с предупреждениями: {result.Warnings.Count}", result.Warnings[0], MessageKind.Warning, result.Warnings, "Предупреждения при сохранении");
+            ShowInfo(L.F("Образ сохранён с предупреждениями: {0}", result.Warnings.Count), result.Warnings[0], MessageKind.Warning, result.Warnings, L.T("Предупреждения при сохранении"));
         else
-            _dialogs.Notify("Образ сохранён", done, MessageKind.Success);
+            _dialogs.Notify(L.T("Образ сохранён"), done, MessageKind.Success);
         return true;
     }
 
@@ -888,7 +888,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (_doc is null)
         {
-            StatusText = "Откройте образ или перетащите его в окно";
+            StatusText = L.T("Откройте образ или перетащите его в окно");
             return;
         }
         string text;
@@ -897,15 +897,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             long bytes = 0;
             foreach (NodeItem i in _selection)
                 if (i.Type == FsNodeType.File) bytes += i.Size;
-            text = $"Выбрано: {_selection.Count} из {Items.Count}" + (bytes > 0 ? $" · {Fmt.Size(bytes)}" : "");
+            text = L.F("Выбрано: {0} из {1}", _selection.Count, Items.Count) + (bytes > 0 ? $" · {Fmt.Size(bytes)}" : "");
         }
         else
         {
             text = Fmt.Plural(Items.Count, "объект", "объекта", "объектов");
-            if (_searchText.Length > 0) text = "Найдено: " + text;
+            if (_searchText.Length > 0) text = L.T("Найдено: ") + text;
         }
-        if (truncated) text += $" · показаны первые {SearchLimit}";
-        if (_clipboard.Count > 0) text += $" · в буфере: {_clipboard.Count} ({(_clipboardCut ? "вырезано" : "скопировано")})";
+        if (truncated) text += L.F(" · показаны первые {0}", SearchLimit);
+        if (_clipboard.Count > 0) text += L.F(" · в буфере: {0} ({1})", _clipboard.Count, (_clipboardCut ? L.T("вырезано") : L.T("скопировано")));
         StatusText = text;
     }
 
@@ -956,7 +956,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private async Task AddFolderAsync()
     {
-        string? folder = _dialogs.PickFolder("Папка, которую нужно добавить в образ", NullIfEmpty(_settings.LastHostDirectory));
+        string? folder = _dialogs.PickFolder(L.T("Папка, которую нужно добавить в образ"), NullIfEmpty(_settings.LastHostDirectory));
         if (folder is null) return;
         _settings.LastHostDirectory = Path.GetDirectoryName(folder) ?? folder;
         await AddHostPathsAsync(new[] { folder }, _current!);
@@ -972,9 +972,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             case ConflictMode.Rename: return ConflictPolicy.Rename;
         }
         if (conflicts == 0) return ConflictPolicy.Overwrite;
-        string what = conflicts == 1 ? $"«{firstName}» уже есть в этой папке." : $"«{firstName}» и ещё {conflicts - 1} уже есть в этой папке.";
-        DialogAnswer a = await _dialogs.AskAsync("Объекты с такими именами уже существуют",
-            what + " Папки будут объединены, файлы — заменены.", "Заменить", "Сохранить оба");
+        string what = conflicts == 1 ? L.F("«{0}» уже есть в этой папке.", firstName) : L.F("«{0}» и ещё {1} уже есть в этой папке.", firstName, conflicts - 1);
+        DialogAnswer a = await _dialogs.AskAsync(L.T("Объекты с такими именами уже существуют"),
+            what + L.T(" Папки будут объединены, файлы — заменены."), L.T("Заменить"), L.T("Сохранить оба"));
         return a switch
         {
             DialogAnswer.Primary => ConflictPolicy.Overwrite,
@@ -995,10 +995,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_settings.SnapshotAddedFiles) options.Snapshot = EnsureSpool();
         FsTree tree = _doc.Tree;
         ImportResult? result = null;
-        bool ok = await RunBusyAsync("Добавление в " + target.Path, (p, ct) => result = HostImporter.Import(tree, target, paths, options, p, ct));
+        bool ok = await RunBusyAsync(L.T("Добавление в ") + target.Path, (p, ct) => result = HostImporter.Import(tree, target, paths, options, p, ct));
         AfterTreeChanged(result?.Added);
         SaveSettings();
-        if (ok && result is not null) ReportImport(result, "Добавлено в образ");
+        if (ok && result is not null) ReportImport(result, L.T("Добавлено в образ"));
         return ok;
     }
 
@@ -1006,9 +1006,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         string summary = $"{Fmt.Plural(r.Files, "файл", "файла", "файлов")}, {Fmt.Plural(r.Directories, "папка", "папки", "папок")}" +
                          (r.Symlinks > 0 ? $", {Fmt.Plural(r.Symlinks, "ссылка", "ссылки", "ссылок")}" : "") +
-                         (r.Specials > 0 ? $", специальных: {r.Specials}" : "") + $" · {Fmt.Size(r.Bytes)}" +
-                         (r.Skipped > 0 ? $" · пропущено: {r.Skipped}" : "");
-        if (r.Warnings.Count > 0) ShowInfo(title + $" (предупреждений: {r.Warnings.Count})", summary, MessageKind.Warning, r.Warnings, "Предупреждения при добавлении");
+                         (r.Specials > 0 ? L.F(", специальных: {0}", r.Specials) : "") + $" · {Fmt.Size(r.Bytes)}" +
+                         (r.Skipped > 0 ? L.F(" · пропущено: {0}", r.Skipped) : "");
+        if (r.Warnings.Count > 0) ShowInfo(title + L.F(" (предупреждений: {0})", r.Warnings.Count), summary, MessageKind.Warning, r.Warnings, L.T("Предупреждения при добавлении"));
         else _dialogs.Notify(title, summary, MessageKind.Success);
     }
 
@@ -1050,9 +1050,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             if (paths.Count == 1 && Directory.Exists(paths[0]))
             {
-                DialogAnswer a = await _dialogs.AskAsync("Создать образ из папки?",
-                    $"Содержимое папки «{Path.GetFileName(paths[0])}» станет корнем нового образа. Формат выбирается при сохранении.",
-                    "Создать образ");
+                DialogAnswer a = await _dialogs.AskAsync(L.T("Создать образ из папки?"),
+                    L.F("Содержимое папки «{0}» станет корнем нового образа. Формат выбирается при сохранении.", Path.GetFileName(paths[0])),
+                    L.T("Создать образ"));
                 if (a == DialogAnswer.Primary) await NewFromFolderAsync(paths[0]);
                 return;
             }
@@ -1062,8 +1062,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 await OpenPathAsync(paths[0]);
                 return;
             }
-            DialogAnswer b = await _dialogs.AskAsync("Создать новый образ?",
-                $"Перетащено объектов: {paths.Count}. Создать новый образ и добавить их в его корень?", "Создать образ");
+            DialogAnswer b = await _dialogs.AskAsync(L.T("Создать новый образ?"),
+                L.F("Перетащено объектов: {0}. Создать новый образ и добавить их в его корень?", paths.Count), L.T("Создать образ"));
             if (b != DialogAnswer.Primary) return;
             SetDocument(ImageDocument.CreateNew(_settings.NewImageFormat));
             await AddHostPathsAsync(paths, _doc!.Tree.Root);
@@ -1073,9 +1073,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         target ??= _current!;
         if (single && format is not null)
         {
-            DialogAnswer a = await _dialogs.AskAsync("Что сделать с файлом?",
-                $"«{Path.GetFileName(paths[0])}» — это образ или архив. Его можно открыть вместо текущего образа или добавить в папку {target.Path} как обычный файл.",
-                "Открыть", "Добавить как файл");
+            DialogAnswer a = await _dialogs.AskAsync(L.T("Что сделать с файлом?"),
+                L.F("«{0}» — это образ или архив. Его можно открыть вместо текущего образа или добавить в папку {1} как обычный файл.", Path.GetFileName(paths[0]), target.Path),
+                L.T("Открыть"), L.T("Добавить как файл"));
             if (a == DialogAnswer.Cancel) return;
             if (a == DialogAnswer.Primary)
             {
@@ -1099,7 +1099,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (_doc is null || IsBusy) return false;
         ImageDocument? source = null;
-        bool ok = await RunBusyAsync("Чтение " + Path.GetFileName(path), (p, ct) =>
+        bool ok = await RunBusyAsync(L.T("Чтение ") + Path.GetFileName(path), (p, ct) =>
             source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table)));
         if (!ok || source is null) return false;
@@ -1115,15 +1115,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FsTree tree = _doc.Tree;
         IReadOnlyList<string> warnings = source.Warnings.ToList();
         TreeMerger.Result? result = null;
-        ok = await RunBusyAsync("Импорт в " + target.Path, (_, ct) => result = TreeMerger.Merge(tree, target, source.Tree, policy.Value, ct));
+        ok = await RunBusyAsync(L.T("Импорт в ") + target.Path, (_, ct) => result = TreeMerger.Merge(tree, target, source.Tree, policy.Value, ct));
         if (result is null) source.Dispose();       // nothing was handed over
         AfterTreeChanged(result?.TopLevel);
         if (!ok || result is null) return false;
 
-        string summary = $"Добавлено объектов: {result.Added}" + (result.Replaced > 0 ? $", заменено: {result.Replaced}" : "") +
-                         (result.Merged > 0 ? $", объединено папок: {result.Merged}" : "") + (result.Skipped > 0 ? $", пропущено: {result.Skipped}" : "");
-        if (warnings.Count > 0) ShowInfo($"Архив импортирован (предупреждений: {warnings.Count})", summary, MessageKind.Warning, warnings, "Предупреждения при чтении архива");
-        else _dialogs.Notify("Архив импортирован", summary, MessageKind.Success);
+        string summary = L.F("Добавлено объектов: {0}", result.Added) + (result.Replaced > 0 ? L.F(", заменено: {0}", result.Replaced) : "") +
+                         (result.Merged > 0 ? L.F(", объединено папок: {0}", result.Merged) : "") + (result.Skipped > 0 ? L.F(", пропущено: {0}", result.Skipped) : "");
+        if (warnings.Count > 0) ShowInfo(L.F("Архив импортирован (предупреждений: {0})", warnings.Count), summary, MessageKind.Warning, warnings, L.T("Предупреждения при чтении архива"));
+        else _dialogs.Notify(L.T("Архив импортирован"), summary, MessageKind.Success);
         return true;
     }
 
@@ -1133,10 +1133,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FsNode start = _selection.Count == 1 && _selection[0].IsDirectory ? _selection[0].Node : _current!;
         SaveOptions defaults = _settings.DefaultSaveOptions(_doc!, ImageFormat.Tar);
         defaults.Tar = _doc!.Tar is null ? _settings.Tar.Clone() : defaults.Tar;
-        var vm = new SaveOptionsViewModel(_doc, defaults, $"Экспорт {start.Path} в архив", lockFormat: true);
+        var vm = new SaveOptionsViewModel(_doc, defaults, L.F("Экспорт {0} в архив", start.Path), lockFormat: true);
         if (!_dialogs.ShowDialog(vm) || vm.Result is null) return;
         string name = (start.IsRoot ? (_doc.FilePath is null ? "rootfs" : StripExtensions(Path.GetFileName(_doc.FilePath))) : start.Name) + vm.Extension;
-        string? path = _dialogs.PickSaveFile("Экспорт в архив", name, ImageFormat.Tar, vm.Extension, NullIfEmpty(_settings.LastSaveDirectory));
+        string? path = _dialogs.PickSaveFile(L.T("Экспорт в архив"), name, ImageFormat.Tar, vm.Extension, NullIfEmpty(_settings.LastSaveDirectory));
         if (path is not null) await ExportArchiveAsync(start, path, vm.Result.Tar);
     }
 
@@ -1148,7 +1148,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         options.Threads = _settings.Threads;
         IReadOnlyList<string> warnings = Array.Empty<string>();
         string tmp = path + ".fsforge-tmp";
-        bool ok = await RunBusyAsync("Экспорт " + Path.GetFileName(path), (p, ct) =>
+        bool ok = await RunBusyAsync(L.T("Экспорт ") + Path.GetFileName(path), (p, ct) =>
         {
             try
             {
@@ -1166,8 +1166,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _settings.LastSaveDirectory = Path.GetDirectoryName(path) ?? "";
         SaveSettings();
         string done = $"{Path.GetFileName(path)} — {Fmt.Size(new FileInfo(path).Length)}";
-        if (warnings.Count > 0) ShowInfo($"Архив создан с предупреждениями: {warnings.Count}", done, MessageKind.Warning, warnings, "Предупреждения при экспорте");
-        else _dialogs.Notify("Архив создан", done, MessageKind.Success);
+        if (warnings.Count > 0) ShowInfo(L.F("Архив создан с предупреждениями: {0}", warnings.Count), done, MessageKind.Warning, warnings, L.T("Предупреждения при экспорте"));
+        else _dialogs.Notify(L.T("Архив создан"), done, MessageKind.Success);
         return true;
     }
 
@@ -1176,13 +1176,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private async Task ExtractSelectedAsync()
     {
         List<FsNode> nodes = _selection.Count > 0 ? _selection.Select(i => i.Node).ToList() : new List<FsNode> { _current! };
-        string? folder = _dialogs.PickFolder("Папка, в которую нужно извлечь", NullIfEmpty(_settings.LastHostDirectory));
+        string? folder = _dialogs.PickFolder(L.T("Папка, в которую нужно извлечь"), NullIfEmpty(_settings.LastHostDirectory));
         if (folder is not null) await ExtractAsync(nodes, folder);
     }
 
     private async Task ExtractAllAsync()
     {
-        string? folder = _dialogs.PickFolder("Папка, в которую нужно распаковать весь образ", NullIfEmpty(_settings.LastHostDirectory));
+        string? folder = _dialogs.PickFolder(L.T("Папка, в которую нужно распаковать весь образ"), NullIfEmpty(_settings.LastHostDirectory));
         if (folder is not null) await ExtractAsync(new[] { _doc!.Tree.Root }, folder);
     }
 
@@ -1192,15 +1192,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc is null || IsBusy || nodes.Count == 0) return false;
         ExtractOptions options = _settings.ToExtractOptions();
         ExtractResult? r = null;
-        bool ok = await RunBusyAsync("Извлечение в " + folder, (p, ct) => r = HostExtractor.Extract(nodes, folder, options, p, ct));
+        bool ok = await RunBusyAsync(L.T("Извлечение в ") + folder, (p, ct) => r = HostExtractor.Extract(nodes, folder, options, p, ct));
         if (!ok || r is null) return false;
 
         _settings.LastHostDirectory = folder;
         SaveSettings();
         string summary = $"{Fmt.Plural(r.Files, "файл", "файла", "файлов")}, {Fmt.Plural(r.Directories, "папка", "папки", "папок")} · {Fmt.Size(r.Bytes)}" +
-                         (r.Renamed > 0 ? $" · переименовано для Windows: {r.Renamed}" : "") + (r.Skipped > 0 ? $" · пропущено: {r.Skipped}" : "");
-        if (r.Warnings.Count > 0) ShowInfo($"Извлечено с предупреждениями: {r.Warnings.Count}", summary, MessageKind.Warning, r.Warnings, "Предупреждения при извлечении");
-        else _dialogs.Notify("Извлечено", summary, MessageKind.Success);
+                         (r.Renamed > 0 ? L.F(" · переименовано для Windows: {0}", r.Renamed) : "") + (r.Skipped > 0 ? L.F(" · пропущено: {0}", r.Skipped) : "");
+        if (r.Warnings.Count > 0) ShowInfo(L.F("Извлечено с предупреждениями: {0}", r.Warnings.Count), summary, MessageKind.Warning, r.Warnings, L.T("Предупреждения при извлечении"));
+        else _dialogs.Notify(L.T("Извлечено"), summary, MessageKind.Success);
         if (_settings.OpenFolderAfterExtract) TryShell(() => _shell.OpenFolder(folder));
         return true;
     }
@@ -1219,8 +1219,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         foreach (FsNode n in nodes) bytes += FsTree.GetStats(n).DataBytes;
         if (bytes > DragLimitBytes)
         {
-            _dialogs.Notify("Слишком много данных для перетаскивания",
-                $"Выбрано {Fmt.Size(bytes)}. Используйте команду «Извлечь».", MessageKind.Warning);
+            _dialogs.Notify(L.T("Слишком много данных для перетаскивания"),
+                L.F("Выбрано {0}. Используйте команду «Извлечь».", Fmt.Size(bytes)), MessageKind.Warning);
             return Array.Empty<string>();
         }
         string folder = Path.Combine(EditDirectory(), "drag-" + Guid.NewGuid().ToString("N")[..8]);
@@ -1233,7 +1233,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is FsException or IOException or UnauthorizedAccessException)
         {
-            _dialogs.Notify("Не удалось подготовить файлы", ex.Message, MessageKind.Error);
+            _dialogs.Notify(L.T("Не удалось подготовить файлы"), ex.Message, MessageKind.Error);
             return Array.Empty<string>();
         }
     }
@@ -1241,12 +1241,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private Task ShowAboutAsync()
     {
         string version = typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "";
-        return _dialogs.ShowMessageAsync("О программе FsForge",
+        return _dialogs.ShowMessageAsync(L.T("О программе FsForge"),
             $"FsForge {version}" + Environment.NewLine +
-            "Редактор образов SquashFS и ext2/ext3/ext4, архивов rootfs.tar (gz, xz, zst)." + Environment.NewLine + Environment.NewLine +
-            "Чтение и запись файловых систем выполняются собственным кодом на C#: без WSL и без утилит Linux." + Environment.NewLine +
-            "Интерфейс: WPF и библиотека WPF-UI (Fluent)." + Environment.NewLine + Environment.NewLine +
-            "Настройки: " + _store.FilePath);
+            L.T("Редактор образов SquashFS и ext2/ext3/ext4, архивов rootfs.tar (gz, xz, zst).") + Environment.NewLine + Environment.NewLine +
+            L.T("Чтение и запись файловых систем выполняются собственным кодом на C#: без WSL и без утилит Linux.") + Environment.NewLine +
+            L.T("Интерфейс: WPF и библиотека WPF-UI (Fluent).") + Environment.NewLine + Environment.NewLine +
+            L.T("Настройки: ") + _store.FilePath);
     }
 
     // -------------------------------------------------------------- editing
@@ -1265,8 +1265,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             long inside = nodes.Where(n => n.IsDirectory).Sum(n => FsTree.GetStats(n).Total - 1);
             string what = nodes.Count == 1 ? $"«{nodes[0].Name}»" : Fmt.Plural(nodes.Count, "объект", "объекта", "объектов");
-            string extra = inside > 0 ? $" Вместе с вложенными: {Fmt.Plural(inside, "объект", "объекта", "объектов")}." : "";
-            DialogAnswer a = await _dialogs.AskAsync("Удаление", $"Удалить {what} из образа?{extra}", "Удалить");
+            string extra = inside > 0 ? L.F(" Вместе с вложенными: {0}.", Fmt.Plural(inside, "объект", "объекта", "объектов")) : "";
+            DialogAnswer a = await _dialogs.AskAsync(L.T("Удаление"), L.F("Удалить {0} из образа?{1}", what, extra), L.T("Удалить"));
             if (a != DialogAnswer.Primary) return;
         }
         FsTree tree = _doc!.Tree;
@@ -1282,7 +1282,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         FsNode node = _selection[0].Node;
         if (node.IsRoot) return;
-        var vm = new PromptViewModel("Переименование", "Новое имя", node.Name, text => Validation.Name(node.Parent!, text, node), "Переименовать");
+        var vm = new PromptViewModel(L.T("Переименование"), L.T("Новое имя"), node.Name, text => Validation.Name(node.Parent!, text, node), L.T("Переименовать"));
         if (!_dialogs.ShowDialog(vm) || vm.Text == node.Name) return;
         try
         {
@@ -1290,7 +1290,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (FsException ex)
         {
-            _dialogs.Notify("Не удалось переименовать", Validation.Translate(ex.Message), MessageKind.Error);
+            _dialogs.Notify(L.T("Не удалось переименовать"), Validation.Translate(ex.Message), MessageKind.Error);
             return;
         }
         AfterTreeChanged(new[] { node });
@@ -1338,7 +1338,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     {
                         if (target.IsDescendantOf(node) || ReferenceEquals(target, node))
                         {
-                            errors.Add($"«{node.Name}»: нельзя скопировать папку внутрь самой себя.");
+                            errors.Add(L.F("«{0}»: нельзя скопировать папку внутрь самой себя.", node.Name));
                             continue;
                         }
                         added.Add(tree.Copy(node, target, FsTree.MakeUniqueName(target, node.Name)));
@@ -1352,7 +1352,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         if (_clipboardCut) _clipboard = new List<FsNode>();
         AfterTreeChanged(added);
-        if (errors.Count > 0) await _dialogs.ShowMessageAsync("Вставка", string.Join(Environment.NewLine, errors), MessageKind.Warning);
+        if (errors.Count > 0) await _dialogs.ShowMessageAsync(L.T("Вставка"), string.Join(Environment.NewLine, errors), MessageKind.Warning);
     }
 
     private void CopyPath()
@@ -1425,7 +1425,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         string dir = Path.Combine(EditDirectory(), "edit-" + Guid.NewGuid().ToString("N")[..8]);
         string hostPath = Path.Combine(dir, HostNames.MakeSafe(node.Name));
         var options = new ExtractOptions { WriteManifest = false, RestoreTimestamps = true };
-        bool ok = await RunBusyAsync("Открытие " + node.Name, (p, ct) => HostExtractor.Extract(new[] { node }, dir, options, p, ct));
+        bool ok = await RunBusyAsync(L.T("Открытие ") + node.Name, (p, ct) => HostExtractor.Extract(new[] { node }, dir, options, p, ct));
         if (!ok || !File.Exists(hostPath)) return;
 
         var info = new FileInfo(hostPath);
@@ -1439,7 +1439,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
-            await _dialogs.ShowMessageAsync("Не удалось открыть файл", ex.Message, MessageKind.Error);
+            await _dialogs.ShowMessageAsync(L.T("Не удалось открыть файл"), ex.Message, MessageKind.Error);
         }
     }
 
@@ -1471,8 +1471,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _edits.Remove(e);
                 _edits.Add(e with { Length = info.Length, LastWriteUtc = info.LastWriteTimeUtc });
                 if (_doc.Tree.Resolve(e.ImagePath) is not { Type: FsNodeType.File } node) continue;
-                DialogAnswer a = await _dialogs.AskAsync("Файл изменён во внешней программе",
-                    $"{e.ImagePath} был изменён. Записать новое содержимое в образ?", "Обновить в образе");
+                DialogAnswer a = await _dialogs.AskAsync(L.T("Файл изменён во внешней программе"),
+                    L.F("{0} был изменён. Записать новое содержимое в образ?", e.ImagePath), L.T("Обновить в образе"));
                 if (a != DialogAnswer.Primary || _doc is null || !IsAttached(node)) continue;
                 try
                 {
@@ -1487,7 +1487,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FsException)
                 {
-                    await _dialogs.ShowMessageAsync("Не удалось прочитать изменённый файл", ex.Message, MessageKind.Error);
+                    await _dialogs.ShowMessageAsync(L.T("Не удалось прочитать изменённый файл"), ex.Message, MessageKind.Error);
                 }
             }
         }
@@ -1503,7 +1503,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         IReadOnlyList<string> files = _dialogs.PickFilesToAdd(NullIfEmpty(_settings.LastHostDirectory));
         if (files.Count != 1)
         {
-            if (files.Count > 1) await _dialogs.ShowMessageAsync("Замена содержимого", "Выберите один файл.", MessageKind.Warning);
+            if (files.Count > 1) await _dialogs.ShowMessageAsync(L.T("Замена содержимого"), L.T("Выберите один файл."), MessageKind.Warning);
             return;
         }
         try
@@ -1530,7 +1530,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FsException)
         {
-            await _dialogs.ShowMessageAsync("Замена содержимого", ex.Message, MessageKind.Error);
+            await _dialogs.ShowMessageAsync(L.T("Замена содержимого"), ex.Message, MessageKind.Error);
         }
     }
 
@@ -1547,6 +1547,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void ApplySettings(AppSettings settings)
     {
         bool appearance = settings.Theme != _settings.Theme || settings.Backdrop != _settings.Backdrop;
+        AppLanguage language = L.Resolve(settings.Language);
+        bool languageChanged = language != L.Resolve(_settings.Language);
         _settings = settings;
         SaveSettings();
         RefreshRecent();
@@ -1556,6 +1558,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SortDescending));
         if (_doc is not null) RefreshItems(keepSelection: true);
         if (appearance) AppearanceChanged?.Invoke();
+        // The interface is built once in one language: say so in the language that was chosen.
+        if (languageChanged)
+            _dialogs.Notify(L.T("Язык интерфейса", language), L.T("Новый язык будет использован после перезапуска программы.", language), MessageKind.Info);
     }
 
     public void SaveSettings() => _store.Save(_settings);
@@ -1578,7 +1583,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception
                                        or UnauthorizedAccessException or System.Runtime.InteropServices.ExternalException)
         {
-            _dialogs.Notify("Не удалось выполнить действие", ex.Message, MessageKind.Warning);
+            _dialogs.Notify(L.T("Не удалось выполнить действие"), ex.Message, MessageKind.Warning);
         }
     }
 

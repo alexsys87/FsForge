@@ -32,7 +32,7 @@ internal sealed class FakeDialogs : IDialogService
     public bool LastSaveWasDisk;
     public bool ShowDialog(object viewModel) => OnDialog(viewModel);
 
-    public Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string cancel = "Отмена")
+    public Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string? cancel = null)
     {
         Asked.Add(title);
         return Task.FromResult(Answers.Count > 0 ? Answers.Dequeue() : throw new InvalidOperationException("Unexpected question: " + title + " / " + message));
@@ -709,6 +709,37 @@ internal static class Program
             await vm.HandleDropAsync(new[] { disk });
             Check(d.Asked[^1] == "Что сделать с файлом?", "a dropped disk image was not recognised: " + d.Asked[^1]);
             vm.Dispose();
+        });
+
+        await Test("English interface: texts, numbers, plurals, language change notice", async () =>
+        {
+            try
+            {
+                L.Set(AppLanguage.English);
+                Check(L.IsEnglish && L.T("Отмена") == "Cancel" && L.T("текст без перевода") == "текст без перевода", "translation lookup");
+                Check(Fmt.Size(12_700) == "12.4 KB" && Fmt.Size(500) == "500 B", "sizes: " + Fmt.Size(12_700) + ", " + Fmt.Size(500));
+                Check(Fmt.Bytes(1_234_567) == "1,234,567", "number grouping: " + Fmt.Bytes(1_234_567));
+                Check(Fmt.Plural(1, "файл", "файла", "файлов") == "1 file" && Fmt.Plural(21, "файл", "файла", "файлов") == "21 files", "plurals");
+                Check(L.F("Выбрано: {0} из {1}", 2, 5) == "Selected: 2 of 5", "format strings");
+
+                var (vm, d, _, _) = NewVm();
+                Check(vm.StatusText == "Open an image or drop it onto the window", "start page: " + vm.StatusText);
+                Check(await vm.OpenPathAsync(MakeImage("english.sqfs")), "open failed: " + string.Join("; ", d.Messages));
+                Check(vm.StatusText.EndsWith(" objects") && !vm.StatusText.Any(c => c is >= 'А' and <= 'я'), "status line: " + vm.StatusText);
+                Check(vm.Items.Any(i => i.TypeText == "Folder"), "type column: " + string.Join(", ", vm.Items.Select(i => i.TypeText)));
+                Check(!await vm.OpenPathAsync(Path.Combine(_dir, "missing.img")) && d.Messages.Any(m => m.Contains("File not found")), "missing file: " + string.Join("; ", d.Messages));
+
+                // The notice about a language change is written in the chosen language.
+                AppSettings s = vm.Settings.Clone();
+                s.Language = AppLanguage.Russian;
+                vm.ApplySettings(s);
+                Check(d.Notifications.Any(n => n.Contains("Язык интерфейса") && n.Contains("после перезапуска")), "language notice: " + string.Join("; ", d.Notifications));
+                vm.Dispose();
+            }
+            finally
+            {
+                L.Set(AppLanguage.Russian);
+            }
         });
 
         Console.WriteLine($"{_passed} passed, {_failed} failed");
