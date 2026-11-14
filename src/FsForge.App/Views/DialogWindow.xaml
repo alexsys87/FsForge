@@ -3,6 +3,7 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+    xmlns:l="clr-namespace:FsForge.App.Localization"
     Title="{Binding Title}"
     Width="520"
     MinWidth="380"
@@ -80,7 +81,7 @@
                         x:Name="CancelButton"
                         MinWidth="90"
                         Margin="8,0,0,0"
-                        Content="Отмена"
+                        Content="{l:Tr 'Отмена'}"
                         IsCancel="True" />
                 </StackPanel>
             </Grid>

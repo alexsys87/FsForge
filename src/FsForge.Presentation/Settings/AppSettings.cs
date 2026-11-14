@@ -5,6 +5,7 @@ using FsForge.Core.Host;
 using FsForge.Core.Images;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Presentation.Services;
 
 namespace FsForge.Presentation.Settings;
 
@@ -52,6 +53,8 @@ public enum FileOpenAction
 public sealed class AppSettings
 {
     // ---- appearance
+    /// <summary>Interface language; applied at the next start of the program.</summary>
+    public AppLanguage Language { get; set; } = AppLanguage.System;
     public AppTheme Theme { get; set; } = AppTheme.System;
     public BackdropKind Backdrop { get; set; } = BackdropKind.Mica;
     public bool ShowTreePane { get; set; } = true;

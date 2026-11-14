@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using FsForge.App.Services;
 using FsForge.App.Views;
 using FsForge.Presentation.Mvvm;
+using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
 using FsForge.Presentation.ViewModels;
 
@@ -21,6 +22,8 @@ public partial class App : Application
 
         var store = new SettingsStore();
         AppSettings settings = store.Load();
+        // The language is fixed for the lifetime of the process: every window and list is built in it.
+        L.Set(settings.Language);
 
         MainWindow? window = null;
         var dialogs = new DialogService(() => window, () => window?.SnackbarHost);
@@ -53,7 +56,7 @@ public partial class App : Application
     {
         // The plain system message box works even when the themed windows are the problem.
         MessageBox.Show(
-            "Непредвиденная ошибка. Открытый образ не изменён на диске.\n\n" + ex.GetType().Name + ": " + ex.Message,
+            L.T("Непредвиденная ошибка. Открытый образ не изменён на диске.") + "\n\n" + ex.GetType().Name + ": " + ex.Message,
             "FsForge", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 }

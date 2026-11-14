@@ -32,13 +32,13 @@ public partial class MainWindow
         DataContext = viewModel;
         InitializeComponent();
 
-        _columns[ColName] = ("Name", "Имя");
-        _columns[ColLocation] = ("Location", "Папка");
-        _columns[ColSize] = ("Size", "Размер");
-        _columns[ColMode] = ("Mode", "Права");
-        _columns[ColOwner] = ("Owner", "Владелец : группа");
-        _columns[ColModified] = ("Modified", "Изменён");
-        _columns[ColType] = ("Type", "Тип");
+        _columns[ColName] = ("Name", L.T("Имя"));
+        _columns[ColLocation] = ("Location", L.T("Папка"));
+        _columns[ColSize] = ("Size", L.T("Размер"));
+        _columns[ColMode] = ("Mode", L.T("Права"));
+        _columns[ColOwner] = ("Owner", L.T("Владелец : группа"));
+        _columns[ColModified] = ("Modified", L.T("Изменён"));
+        _columns[ColType] = ("Type", L.T("Тип"));
 
         RestorePlacement();
         ApplyTreePane();

@@ -7,13 +7,14 @@ namespace FsForge.Presentation.Services;
 /// <summary>Text formatting shared by the view models.</summary>
 public static class Fmt
 {
-    private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
     private static readonly string[] Units = { "Б", "КБ", "МБ", "ГБ", "ТБ" };
 
-    /// <summary>"0 Б", "12,3 КБ", "1,05 ГБ" (binary units).</summary>
+    private static CultureInfo Culture => L.Culture;
+
+    /// <summary>"0 Б", "12,3 КБ", "1,05 ГБ" (binary units); "12.3 KB" in English.</summary>
     public static string Size(long bytes)
     {
-        if (bytes < 1024) return bytes.ToString(Ru) + " Б";
+        if (bytes < 1024) return bytes.ToString(Culture) + " " + L.T("Б");
         double v = bytes;
         int u = 0;
         while (v >= 1024 && u < Units.Length - 1)
@@ -22,30 +23,30 @@ public static class Fmt
             u++;
         }
         string fmt = v >= 100 ? "0" : v >= 10 ? "0.#" : "0.##";
-        return v.ToString(fmt, Ru) + " " + Units[u];
+        return v.ToString(fmt, Culture) + " " + L.T(Units[u]);
     }
 
     /// <summary>"12 345 678" with thin grouping.</summary>
-    public static string Bytes(long bytes) => bytes.ToString("#,0", Ru);
+    public static string Bytes(long bytes) => bytes.ToString("#,0", Culture);
 
-    public static string SizeWithBytes(long bytes) => bytes < 1024 ? Size(bytes) : $"{Size(bytes)} ({Bytes(bytes)} байт)";
+    public static string SizeWithBytes(long bytes) => bytes < 1024 ? Size(bytes) : L.F("{0} ({1} байт)", Size(bytes), Bytes(bytes));
 
     /// <summary>What a partition holds: "SquashFS", "FAT32 «BOOT»", "неизвестное содержимое".</summary>
     public static string PartitionContent(PartitionInfo p)
     {
         string kind = p.Content switch
         {
-            Core.Images.PartitionContent.Unknown => "неизвестное содержимое",
-            Core.Images.PartitionContent.Empty => "пусто",
-            Core.Images.PartitionContent.OutsideFile => "за пределами файла",
+            Core.Images.PartitionContent.Unknown => L.T("неизвестное содержимое"),
+            Core.Images.PartitionContent.Empty => L.T("пусто"),
+            Core.Images.PartitionContent.OutsideFile => L.T("за пределами файла"),
             _ => p.ContentName,
         };
         string label = p.Label.Length > 0 ? p.Label : p.Name;
-        return label.Length > 0 ? $"{kind} «{label}»" : kind;
+        return label.Length > 0 ? L.F("{0} «{1}»", kind, label) : kind;
     }
 
     /// <summary>"Раздел 2 — SquashFS, 104 МБ".</summary>
-    public static string Partition(PartitionInfo p) => $"Раздел {p.Number} — {PartitionContent(p)}, {Size(p.Length)}";
+    public static string Partition(PartitionInfo p) => L.F("Раздел {0} — {1}, {2}", p.Number, PartitionContent(p), Size(p.Length));
 
     public static string PartitionScheme(PartitionTable t) => t.Scheme == Core.Images.PartitionScheme.Gpt ? "GPT" : "MBR";
 
@@ -81,23 +82,18 @@ public static class Fmt
 
     public static string TypeName(FsNodeType type) => type switch
     {
-        FsNodeType.Directory => "Папка",
-        FsNodeType.File => "Файл",
-        FsNodeType.Symlink => "Символическая ссылка",
-        FsNodeType.CharDevice => "Символьное устройство",
-        FsNodeType.BlockDevice => "Блочное устройство",
-        FsNodeType.Fifo => "Именованный канал (FIFO)",
-        FsNodeType.Socket => "Сокет",
+        FsNodeType.Directory => L.T("Папка"),
+        FsNodeType.File => L.T("Файл"),
+        FsNodeType.Symlink => L.T("Символическая ссылка"),
+        FsNodeType.CharDevice => L.T("Символьное устройство"),
+        FsNodeType.BlockDevice => L.T("Блочное устройство"),
+        FsNodeType.Fifo => L.T("Именованный канал (FIFO)"),
+        FsNodeType.Socket => L.T("Сокет"),
         _ => type.ToString(),
     };
 
-    /// <summary>Russian plural: Plural(5, "файл", "файла", "файлов").</summary>
-    public static string Plural(long n, string one, string few, string many)
-    {
-        long a = Math.Abs(n) % 100, b = a % 10;
-        string word = a is >= 11 and <= 14 ? many : b == 1 ? one : b is >= 2 and <= 4 ? few : many;
-        return $"{n.ToString("#,0", Ru)} {word}";
-    }
+    /// <summary>"5 файлов" in Russian, "5 files" in English: Plural(5, "файл", "файла", "файлов").</summary>
+    public static string Plural(long n, string one, string few, string many) => L.Plural(n, one, few, many);
 
     /// <summary>Shows an attribute value as text when it is printable, otherwise as "0x..." hex.</summary>
     public static string XattrValue(byte[] value)

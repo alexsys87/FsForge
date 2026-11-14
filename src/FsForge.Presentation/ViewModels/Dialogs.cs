@@ -13,7 +13,7 @@ public abstract class DialogViewModel : ObservableObject
     private string? _error;
 
     public string Title { get; protected set; } = "";
-    public string AcceptText { get; protected set; } = "ОК";
+    public string AcceptText { get; protected set; } = L.T("ОК");
 
     /// <summary>Why the dialog cannot be accepted right now; null when everything is valid.</summary>
     public string? Error
@@ -37,11 +37,11 @@ public sealed class PromptViewModel : DialogViewModel
     private readonly Func<string, string?> _validate;
     private string _text;
 
-    public PromptViewModel(string title, string label, string text, Func<string, string?> validate, string acceptText = "ОК", string? hint = null)
+    public PromptViewModel(string title, string label, string text, Func<string, string?> validate, string? acceptText = null, string? hint = null)
     {
         Title = title;
         Label = label;
-        AcceptText = acceptText;
+        AcceptText = acceptText ?? L.T("ОК");
         Hint = hint ?? "";
         _text = text;
         _validate = validate;
@@ -93,12 +93,12 @@ public sealed class NewItemViewModel : DialogViewModel
         _kind = kind;
         Settings = settings;
         _mode = DefaultMode(kind);
-        Title = "Создать в " + parent.Path;
-        AcceptText = "Создать";
+        Title = L.T("Создать в ") + parent.Path;
+        AcceptText = L.T("Создать");
         _name = kind switch
         {
-            NewItemKind.Folder => FsTree.MakeUniqueName(parent, "Новая папка"),
-            NewItemKind.File => FsTree.MakeUniqueName(parent, "Новый файл"),
+            NewItemKind.Folder => FsTree.MakeUniqueName(parent, L.T("Новая папка")),
+            NewItemKind.File => FsTree.MakeUniqueName(parent, L.T("Новый файл")),
             _ => "",
         };
     }
@@ -107,13 +107,13 @@ public sealed class NewItemViewModel : DialogViewModel
 
     public IReadOnlyList<Choice<NewItemKind>> Kinds { get; } = new[]
     {
-        new Choice<NewItemKind>(NewItemKind.Folder, "Папка"),
-        new Choice<NewItemKind>(NewItemKind.File, "Пустой файл"),
-        new Choice<NewItemKind>(NewItemKind.Symlink, "Символическая ссылка"),
-        new Choice<NewItemKind>(NewItemKind.CharDevice, "Символьное устройство"),
-        new Choice<NewItemKind>(NewItemKind.BlockDevice, "Блочное устройство"),
-        new Choice<NewItemKind>(NewItemKind.Fifo, "Именованный канал (FIFO)"),
-        new Choice<NewItemKind>(NewItemKind.Socket, "Сокет"),
+        new Choice<NewItemKind>(NewItemKind.Folder, L.T("Папка")),
+        new Choice<NewItemKind>(NewItemKind.File, L.T("Пустой файл")),
+        new Choice<NewItemKind>(NewItemKind.Symlink, L.T("Символическая ссылка")),
+        new Choice<NewItemKind>(NewItemKind.CharDevice, L.T("Символьное устройство")),
+        new Choice<NewItemKind>(NewItemKind.BlockDevice, L.T("Блочное устройство")),
+        new Choice<NewItemKind>(NewItemKind.Fifo, L.T("Именованный канал (FIFO)")),
+        new Choice<NewItemKind>(NewItemKind.Socket, L.T("Сокет")),
     };
 
     private string DefaultMode(NewItemKind kind) => kind switch
@@ -163,18 +163,18 @@ public sealed class NewItemViewModel : DialogViewModel
         int mode = 0x1FF;
         if (HasMode && !UnixMode.TryParseOctal(_mode.Trim(), out mode))
         {
-            Error = "Права задаются восьмеричным числом, например 0755.";
+            Error = L.T("Права задаются восьмеричным числом, например 0755.");
             return false;
         }
         uint major = 0, minor = 0;
         if (IsDevice && (!uint.TryParse(_major.Trim(), out major) || !uint.TryParse(_minor.Trim(), out minor)))
         {
-            Error = "Старший и младший номера устройства — целые неотрицательные числа.";
+            Error = L.T("Старший и младший номера устройства — целые неотрицательные числа.");
             return false;
         }
         if (IsSymlink && string.IsNullOrEmpty(_target))
         {
-            Error = "Укажите, на что указывает ссылка.";
+            Error = L.T("Укажите, на что указывает ссылка.");
             return false;
         }
 
@@ -209,24 +209,24 @@ public static class Validation
     /// <summary>Checks a new name for an object in <paramref name="parent"/>; null when it is acceptable.</summary>
     public static string? Name(FsNode parent, string name, FsNode? self)
     {
-        if (string.IsNullOrEmpty(name)) return "Введите имя.";
-        if (name is "." or "..") return "Имена «.» и «..» зарезервированы.";
-        if (name.Contains('/')) return "Имя не может содержать символ «/».";
-        if (name.Contains('\0')) return "Имя не может содержать нулевой символ.";
-        if (PosixName.Encode(name).Length > 255) return "Имя длиннее 255 байт.";
+        if (string.IsNullOrEmpty(name)) return L.T("Введите имя.");
+        if (name is "." or "..") return L.T("Имена «.» и «..» зарезервированы.");
+        if (name.Contains('/')) return L.T("Имя не может содержать символ «/».");
+        if (name.Contains('\0')) return L.T("Имя не может содержать нулевой символ.");
+        if (PosixName.Encode(name).Length > 255) return L.T("Имя длиннее 255 байт.");
         FsNode? existing = parent.Find(name);
-        if (existing is not null && !ReferenceEquals(existing, self)) return "Объект с таким именем уже существует в этой папке.";
+        if (existing is not null && !ReferenceEquals(existing, self)) return L.T("Объект с таким именем уже существует в этой папке.");
         return null;
     }
 
     /// <summary>Russian wording for the most common messages of the core.</summary>
     public static string Translate(string message)
     {
-        if (message.Contains("already exists")) return "Объект с таким именем уже существует.";
-        if (message.Contains("into itself")) return "Нельзя переместить папку внутрь самой себя.";
-        if (message.Contains("not a directory")) return "Целевой объект не является папкой.";
-        if (message.Contains("longer than 4095")) return "Цель ссылки длиннее 4095 байт.";
-        if (message.Contains("namespace prefix")) return "Имя атрибута должно начинаться с пространства имён: user., security., trusted. или system.";
+        if (message.Contains("already exists")) return L.T("Объект с таким именем уже существует.");
+        if (message.Contains("into itself")) return L.T("Нельзя переместить папку внутрь самой себя.");
+        if (message.Contains("not a directory")) return L.T("Целевой объект не является папкой.");
+        if (message.Contains("longer than 4095")) return L.T("Цель ссылки длиннее 4095 байт.");
+        if (message.Contains("namespace prefix")) return L.T("Имя атрибута должно начинаться с пространства имён: user., security., trusted. или system.");
         return message;
     }
 }
@@ -274,8 +274,8 @@ public sealed class PropertiesViewModel : DialogViewModel
         FsNode first = nodes[0];
         FsInode fi = first.Inode;
         IsSingle = nodes.Count == 1;
-        Title = IsSingle ? "Свойства: " + (first.IsRoot ? "/" : first.Name) : $"Свойства: {Fmt.Plural(nodes.Count, "объект", "объекта", "объектов")}";
-        AcceptText = "Применить";
+        Title = IsSingle ? L.T("Свойства: ") + (first.IsRoot ? "/" : first.Name) : L.F("Свойства: {0}", Fmt.Plural(nodes.Count, "объект", "объекта", "объектов"));
+        AcceptText = L.T("Применить");
 
         _name = _initialName = IsSingle && !first.IsRoot ? first.Name : "";
         CanRename = IsSingle && !first.IsRoot;
@@ -298,7 +298,7 @@ public sealed class PropertiesViewModel : DialogViewModel
             {
                 SizeText = fi.Type is FsNodeType.File or FsNodeType.Symlink ? Fmt.SizeWithBytes(fi.Size) : "—";
             }
-            LinksText = first.IsDirectory ? "" : fi.LinkCount > 1 ? $"{fi.LinkCount} (жёсткие ссылки на один файл)" : "1";
+            LinksText = first.IsDirectory ? "" : fi.LinkCount > 1 ? L.F("{0} (жёсткие ссылки на один файл)", fi.LinkCount) : "1";
         }
         else
         {
@@ -310,7 +310,7 @@ public sealed class PropertiesViewModel : DialogViewModel
                 files += st.Files + st.Symlinks + st.Specials;
                 dirs += st.Directories;
             }
-            TypeText = "Несколько объектов";
+            TypeText = L.T("Несколько объектов");
             SizeText = $"{Fmt.SizeWithBytes(bytes)}; {Fmt.Plural(files, "файл", "файла", "файлов")}, {Fmt.Plural(dirs, "папка", "папки", "папок")}";
             LinksText = "";
         }
@@ -328,7 +328,7 @@ public sealed class PropertiesViewModel : DialogViewModel
         _minor = _initialMinor = IsDevice ? fi.DevMinor.ToString() : "";
         UserHint = IsSingle || _initialUid.Length > 0 ? names.User(fi.Uid) ?? "" : "";
         GroupHint = IsSingle || _initialGid.Length > 0 ? names.Group(fi.Gid) ?? "" : "";
-        TimeHint = settings.UtcTimes ? "ГГГГ-ММ-ДД чч:мм:сс, UTC" : "ГГГГ-ММ-ДД чч:мм:сс, местное время";
+        TimeHint = settings.UtcTimes ? L.T("ГГГГ-ММ-ДД чч:мм:сс, UTC") : L.T("ГГГГ-ММ-ДД чч:мм:сс, местное время");
 
         CanEditXattrs = IsSingle;
         if (IsSingle && fi.XAttrs is not null)
@@ -403,7 +403,7 @@ public sealed class PropertiesViewModel : DialogViewModel
     }
 
     /// <summary>"rwxr-xr-x" for the current value.</summary>
-    public string Symbolic => _modeKnown ? UnixMode.Format(FsNodeType.File, _mode)[1..] : "смешанные";
+    public string Symbolic => _modeKnown ? UnixMode.Format(FsNodeType.File, _mode)[1..] : L.T("смешанные");
 
     private void RaiseBits()
     {
@@ -449,9 +449,9 @@ public sealed class PropertiesViewModel : DialogViewModel
 
     public IReadOnlyList<Choice<FsTree.Targets>> RecursiveChoices { get; } = new[]
     {
-        new Choice<FsTree.Targets>(FsTree.Targets.All, "права — ко всем вложенным объектам"),
-        new Choice<FsTree.Targets>(FsTree.Targets.Files, "права — только к файлам"),
-        new Choice<FsTree.Targets>(FsTree.Targets.Directories, "права — только к папкам"),
+        new Choice<FsTree.Targets>(FsTree.Targets.All, L.T("права — ко всем вложенным объектам")),
+        new Choice<FsTree.Targets>(FsTree.Targets.Files, L.T("права — только к файлам")),
+        new Choice<FsTree.Targets>(FsTree.Targets.Directories, L.T("права — только к папкам")),
     };
 
     public FsTree.Targets RecursiveTargets { get => _recursiveTargets; set => SetProperty(ref _recursiveTargets, value); }
@@ -475,37 +475,37 @@ public sealed class PropertiesViewModel : DialogViewModel
         string octal = _octal.Trim();
         if (CanEditMode && octal != _initialOctal || (CanEditMode && _recursive && octal.Length > 0))
         {
-            if (octal.Length == 0) return Fail("Укажите права доступа или верните прежнее значение.");
-            if (!UnixMode.TryParseOctal(octal, out int m)) return Fail("Права задаются восьмеричным числом, например 0755.");
+            if (octal.Length == 0) return Fail(L.T("Укажите права доступа или верните прежнее значение."));
+            if (!UnixMode.TryParseOctal(octal, out int m)) return Fail(L.T("Права задаются восьмеричным числом, например 0755."));
             mode = m;
         }
 
         uint? uid = null, gid = null;
         if (_uid.Trim() != _initialUid || (_recursive && _uid.Trim().Length > 0))
         {
-            if (!uint.TryParse(_uid.Trim(), out uint u)) return Fail("UID — целое число от 0 до 4294967295.");
+            if (!uint.TryParse(_uid.Trim(), out uint u)) return Fail(L.T("UID — целое число от 0 до 4294967295."));
             uid = u;
         }
         if (_gid.Trim() != _initialGid || (_recursive && _gid.Trim().Length > 0))
         {
-            if (!uint.TryParse(_gid.Trim(), out uint g)) return Fail("GID — целое число от 0 до 4294967295.");
+            if (!uint.TryParse(_gid.Trim(), out uint g)) return Fail(L.T("GID — целое число от 0 до 4294967295."));
             gid = g;
         }
 
         long? mtime = null;
         if (_time.Trim() != _initialTime)
         {
-            if (!Fmt.TryParseDate(_time, _settings.UtcTimes, out long t)) return Fail("Время задаётся в виде ГГГГ-ММ-ДД чч:мм:сс.");
+            if (!Fmt.TryParseDate(_time, _settings.UtcTimes, out long t)) return Fail(L.T("Время задаётся в виде ГГГГ-ММ-ДД чч:мм:сс."));
             mtime = t;
         }
 
         bool retarget = IsSymlink && _target != _initialTarget;
-        if (retarget && string.IsNullOrEmpty(_target)) return Fail("Укажите, на что указывает ссылка.");
+        if (retarget && string.IsNullOrEmpty(_target)) return Fail(L.T("Укажите, на что указывает ссылка."));
 
         uint major = 0, minor = 0;
         bool redevice = IsDevice && (_major.Trim() != _initialMajor || _minor.Trim() != _initialMinor);
         if (redevice && (!uint.TryParse(_major.Trim(), out major) || !uint.TryParse(_minor.Trim(), out minor)))
-            return Fail("Старший и младший номера устройства — целые неотрицательные числа.");
+            return Fail(L.T("Старший и младший номера устройства — целые неотрицательные числа."));
 
         SortedDictionary<string, byte[]>? xattrs = null;
         bool rexattr = CanEditXattrs && XattrSignature() != _initialXattrs;
@@ -516,9 +516,9 @@ public sealed class PropertiesViewModel : DialogViewModel
             {
                 string n = row.Name.Trim();
                 if (n.Length == 0 || !n.Contains('.') || n.StartsWith('.') || n.EndsWith('.') || n.Contains('\0'))
-                    return Fail($"Имя атрибута «{n}» должно начинаться с пространства имён: user., security., trusted. или system.");
-                if (xattrs.ContainsKey(n)) return Fail($"Атрибут «{n}» указан дважды.");
-                if (!Fmt.TryParseXattrValue(row.Value, out byte[] v)) return Fail($"Значение атрибута «{n}»: после 0x должны идти пары шестнадцатеричных цифр.");
+                    return Fail(L.F("Имя атрибута «{0}» должно начинаться с пространства имён: user., security., trusted. или system.", n));
+                if (xattrs.ContainsKey(n)) return Fail(L.F("Атрибут «{0}» указан дважды.", n));
+                if (!Fmt.TryParseXattrValue(row.Value, out byte[] v)) return Fail(L.F("Значение атрибута «{0}»: после 0x должны идти пары шестнадцатеричных цифр.", n));
                 xattrs[n] = v;
             }
         }
@@ -577,14 +577,14 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
 
     public PartitionChoiceViewModel(string fileName, PartitionTable table)
     {
-        Title = "Выбор раздела";
-        AcceptText = "Открыть";
-        Summary = $"«{fileName}» — образ диска с таблицей разделов {Fmt.PartitionScheme(table)}. " +
-                  "Файловые системы, которые можно редактировать, есть в нескольких разделах. Какой из них открыть?";
+        Title = L.T("Выбор раздела");
+        AcceptText = L.T("Открыть");
+        Summary = L.F("«{0}» — образ диска с таблицей разделов {1}. ", fileName, Fmt.PartitionScheme(table)) +
+                  L.T("Файловые системы, которые можно редактировать, есть в нескольких разделах. Какой из них открыть?");
         foreach (PartitionInfo p in table.Partitions)
         {
-            string details = $"{Fmt.Size(p.Length)} · {p.TypeName} · смещение 0x{p.Offset:X}" + (p.Bootable ? " · загрузочный" : "");
-            Rows.Add(new Row(p, $"Раздел {p.Number}", Fmt.PartitionContent(p), details, p.IsEditable));
+            string details = L.F("{0} · {1} · смещение 0x{2:X}", Fmt.Size(p.Length), p.TypeName, p.Offset) + (p.Bootable ? L.T(" · загрузочный") : "");
+            Rows.Add(new Row(p, L.F("Раздел {0}", p.Number), Fmt.PartitionContent(p), details, p.IsEditable));
         }
         PartitionInfo? preferred = table.PickDefault();
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Partition, preferred));
@@ -609,12 +609,12 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
     {
         if (_selected is null)
         {
-            Error = "Выберите раздел.";
+            Error = L.T("Выберите раздел.");
             return false;
         }
         if (!_selected.IsEditable)
         {
-            Error = "В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.";
+            Error = L.T("В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
@@ -629,68 +629,68 @@ public sealed class ImageInfoViewModel : DialogViewModel
 
     public ImageInfoViewModel(ImageDocument doc, AppSettings settings)
     {
-        Title = "Сведения об образе";
-        AcceptText = "Закрыть";
+        Title = L.T("Сведения об образе");
+        AcceptText = L.T("Закрыть");
         void Add(string label, string value) => Rows.Add(new Row(label, value));
 
-        Add("Файл", doc.FilePath ?? "(новый образ, ещё не сохранён)");
-        Add("Формат", doc.FormatName);
-        if (doc.FilePath is not null) Add("Размер файла", Fmt.SizeWithBytes(doc.FileSize));
+        Add(L.T("Файл"), doc.FilePath ?? L.T("(новый образ, ещё не сохранён)"));
+        Add(L.T("Формат"), doc.FormatName);
+        if (doc.FilePath is not null) Add(L.T("Размер файла"), Fmt.SizeWithBytes(doc.FileSize));
         if (doc.SquashFs is { } s)
         {
-            Add("Версия", $"{s.VersionMajor}.{s.VersionMinor}");
-            Add("Сжатие", s.Compression.ToString().ToLowerInvariant() + (s.XzFilters.Count > 0 ? " + BCJ " + string.Join(", ", s.XzFilters) : ""));
-            Add("Размер блока", Fmt.Size(s.BlockSize));
-            Add("Инодов", Fmt.Bytes(s.InodeCount));
-            Add("Фрагментов", s.NoFragments ? "не используются" : Fmt.Bytes(s.FragmentCount));
-            Add("Особенности", string.Join(", ", new[]
+            Add(L.T("Версия"), $"{s.VersionMajor}.{s.VersionMinor}");
+            Add(L.T("Сжатие"), s.Compression.ToString().ToLowerInvariant() + (s.XzFilters.Count > 0 ? " + BCJ " + string.Join(", ", s.XzFilters) : ""));
+            Add(L.T("Размер блока"), Fmt.Size(s.BlockSize));
+            Add(L.T("Инодов"), Fmt.Bytes(s.InodeCount));
+            Add(L.T("Фрагментов"), s.NoFragments ? L.T("не используются") : Fmt.Bytes(s.FragmentCount));
+            Add(L.T("Особенности"), string.Join(", ", new[]
             {
-                s.Exportable ? "экспортируемая (NFS)" : null, s.Deduplicated ? "дедупликация" : null, s.HasXattrs ? "расширенные атрибуты" : null,
+                s.Exportable ? L.T("экспортируемая (NFS)") : null, s.Deduplicated ? L.T("дедупликация") : null, s.HasXattrs ? L.T("расширенные атрибуты") : null,
             }.Where(x => x is not null)));
-            if (s.MkfsTime > 0) Add("Создан", Fmt.Date(s.MkfsTime, settings.UtcTimes));
+            if (s.MkfsTime > 0) Add(L.T("Создан"), Fmt.Date(s.MkfsTime, settings.UtcTimes));
         }
         if (doc.Ext is { } e)
         {
-            Add("Размер ФС", $"{Fmt.Size(e.SizeBytes)} ({Fmt.Bytes(e.BlocksCount)} блоков по {e.BlockSize} байт)");
-            Add("Свободно", $"{Fmt.Size(e.FreeBlocks * e.BlockSize)} ({Fmt.Bytes(e.FreeBlocks)} блоков)");
-            Add("Иноды", $"{Fmt.Bytes(e.InodesCount)} по {e.InodeSize} байт, свободно {Fmt.Bytes(e.FreeInodes)}");
-            Add("Журнал", e.HasJournal ? Fmt.Size(e.JournalBytes) : "нет");
-            Add("Метка", e.Label.Length > 0 ? e.Label : "(нет)");
+            Add(L.T("Размер ФС"), L.F("{0} ({1} блоков по {2} байт)", Fmt.Size(e.SizeBytes), Fmt.Bytes(e.BlocksCount), e.BlockSize));
+            Add(L.T("Свободно"), L.F("{0} ({1} блоков)", Fmt.Size(e.FreeBlocks * e.BlockSize), Fmt.Bytes(e.FreeBlocks)));
+            Add(L.T("Иноды"), L.F("{0} по {1} байт, свободно {2}", Fmt.Bytes(e.InodesCount), e.InodeSize, Fmt.Bytes(e.FreeInodes)));
+            Add(L.T("Журнал"), e.HasJournal ? Fmt.Size(e.JournalBytes) : L.T("нет"));
+            Add(L.T("Метка"), e.Label.Length > 0 ? e.Label : L.T("(нет)"));
             Add("UUID", e.Uuid.ToString());
-            Add("Возможности", string.Join(" ", e.FeatureNames));
-            Add("Состояние", e.NeedsRecovery ? "журнал не воспроизведён (требуется восстановление)"
+            Add(L.T("Возможности"), string.Join(" ", e.FeatureNames));
+            Add(L.T("Состояние"), e.NeedsRecovery ? L.T("журнал не воспроизведён (требуется восстановление)")
                 : e.JournalReplayed && e.ReplayedTransactions > 0
-                    ? $"не была корректно размонтирована; журнал воспроизведён при чтении (транзакций: {e.ReplayedTransactions}, блоков: {Fmt.Bytes(e.ReplayedBlocks)}), файл не изменён"
-                : e.JournalReplayed ? "не была корректно размонтирована; журнал пуст"
-                : e.Clean ? "чистая" : "не была корректно размонтирована");
+                    ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (транзакций: {0}, блоков: {1}), файл не изменён", e.ReplayedTransactions, Fmt.Bytes(e.ReplayedBlocks))
+                : e.JournalReplayed ? L.T("не была корректно размонтирована; журнал пуст")
+                : e.Clean ? L.T("чистая") : L.T("не была корректно размонтирована"));
         }
         if (doc.Tar is { } t)
         {
-            Add("Сжатие", t.Compression == Core.Tar.ArchiveCompression.None ? "нет" : t.Compression.ToString().ToLowerInvariant());
-            Add("Записей", Fmt.Bytes(t.Entries));
-            Add("Расширения", string.Join(", ", new[] { t.HasPaxHeaders ? "pax" : null, t.HasGnuExtensions ? "GNU" : null }.Where(x => x is not null).DefaultIfEmpty("нет")));
-            Add("Префикс путей", t.PathPrefix.Length > 0 ? t.PathPrefix : "(нет)");
+            Add(L.T("Сжатие"), t.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : t.Compression.ToString().ToLowerInvariant());
+            Add(L.T("Записей"), Fmt.Bytes(t.Entries));
+            Add(L.T("Расширения"), string.Join(", ", new[] { t.HasPaxHeaders ? "pax" : null, t.HasGnuExtensions ? "GNU" : null }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
+            Add(L.T("Префикс путей"), t.PathPrefix.Length > 0 ? t.PathPrefix : L.T("(нет)"));
         }
         if (doc.Container is { } disk)
         {
-            Add("Образ диска", $"{Fmt.SizeWithBytes(disk.DiskLength)}, таблица разделов {Fmt.PartitionScheme(disk.Table)}");
+            Add(L.T("Образ диска"), L.F("{0}, таблица разделов {1}", Fmt.SizeWithBytes(disk.DiskLength), Fmt.PartitionScheme(disk.Table)));
             foreach (PartitionInfo p in disk.Table.Partitions)
             {
-                string text = $"{Fmt.PartitionContent(p)}, {Fmt.Size(p.Length)}, {p.TypeName}, смещение 0x{p.Offset:X}";
-                if (p.StoredLength < p.Length) text += $", в файле {Fmt.Size(p.StoredLength)}";
-                Add(ReferenceEquals(p, disk.Partition) ? $"▸ Раздел {p.Number} (открыт)" : $"Раздел {p.Number}", text);
+                string text = L.F("{0}, {1}, {2}, смещение 0x{3:X}", Fmt.PartitionContent(p), Fmt.Size(p.Length), p.TypeName, p.Offset);
+                if (p.StoredLength < p.Length) text += L.F(", в файле {0}", Fmt.Size(p.StoredLength));
+                Add(ReferenceEquals(p, disk.Partition) ? L.F("▸ Раздел {0} (открыт)", p.Number) : L.F("Раздел {0}", p.Number), text);
             }
-            Add("Сохранение", "образ диска целиком: заменяется только открытый раздел, таблица разделов и остальные разделы не меняются");
+            Add(L.T("Сохранение"), L.T("образ диска целиком: заменяется только открытый раздел, таблица разделов и остальные разделы не меняются"));
         }
-        else if (doc.EmbeddedOffset > 0) Add("Смещение ФС в файле", $"0x{doc.EmbeddedOffset:X}");
-        if (doc.AndroidSparse) Add("Контейнер", "Android sparse image");
+        else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
+        if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");
         if (doc.OuterCompression is { } outer)
-            Add("Файл сжат", outer.ToString().ToLowerInvariant() + " (распакован во временный файл; при сохранении под тем же именем сжимается снова)");
+            Add(L.T("Файл сжат"), outer.ToString().ToLowerInvariant() + L.T(" (распакован во временный файл; при сохранении под тем же именем сжимается снова)"));
 
         TreeStats st = doc.Tree.GetStats();
-        Add("Содержимое", $"{Fmt.Plural(st.Files, "файл", "файла", "файлов")}, {Fmt.Plural(st.Directories, "папка", "папки", "папок")}, " +
+        Add(L.T("Содержимое"), $"{Fmt.Plural(st.Files, "файл", "файла", "файлов")}, {Fmt.Plural(st.Directories, "папка", "папки", "папок")}, " +
                           $"{Fmt.Plural(st.Symlinks, "ссылка", "ссылки", "ссылок")}, {Fmt.Plural(st.Specials, "специальный файл", "специальных файла", "специальных файлов")}");
-        Add("Объём данных", Fmt.SizeWithBytes(st.DataBytes));
+        Add(L.T("Объём данных"), Fmt.SizeWithBytes(st.DataBytes));
         foreach (string w in doc.Warnings) Warnings.Add(w);
     }
 
@@ -708,7 +708,7 @@ public sealed class MessagesViewModel : DialogViewModel
     {
         Title = title;
         Summary = summary;
-        AcceptText = "Закрыть";
+        AcceptText = L.T("Закрыть");
         foreach (string m in messages) Messages.Add(m);
     }
 

@@ -14,10 +14,14 @@ namespace FsForge.App.Services;
 /// <summary>File pickers, message boxes, modal dialogs and notifications of the application.</summary>
 public sealed class DialogService : IDialogService
 {
-    private const string ImageFilter =
-        "Образы и архивы|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
-        "Образы дисков (SD-карты)|*.img;*.img.gz;*.img.xz;*.img.zst|" +
-        "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|Архивы tar|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|Все файлы|*.*";
+    // File dialog filters: only the descriptions are translated, never the patterns.
+    private static string AllFiles => L.T("Все файлы") + "|*.*";
+
+    private static string ImageFilter =>
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
+        L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
+        "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
+        L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" + AllFiles;
 
     private readonly Func<Window?> _owner;
     private readonly Func<SnackbarPresenter?> _snackbar;
@@ -32,14 +36,14 @@ public sealed class DialogService : IDialogService
 
     public string? PickImageToOpen(string? initialDirectory)
     {
-        var dialog = new OpenFileDialog { Title = "Открыть образ или архив", Filter = ImageFilter, CheckFileExists = true };
+        var dialog = new OpenFileDialog { Title = L.T("Открыть образ или архив"), Filter = ImageFilter, CheckFileExists = true };
         if (ExistingDirectory(initialDirectory) is { } dir) dialog.InitialDirectory = dir;
         return dialog.ShowDialog(_owner()) == true ? dialog.FileName : null;
     }
 
     public IReadOnlyList<string> PickFilesToAdd(string? initialDirectory)
     {
-        var dialog = new OpenFileDialog { Title = "Выберите файлы", Filter = "Все файлы|*.*", Multiselect = true, CheckFileExists = true };
+        var dialog = new OpenFileDialog { Title = L.T("Выберите файлы"), Filter = AllFiles, Multiselect = true, CheckFileExists = true };
         if (ExistingDirectory(initialDirectory) is { } dir) dialog.InitialDirectory = dir;
         return dialog.ShowDialog(_owner()) == true ? dialog.FileNames : Array.Empty<string>();
     }
@@ -53,12 +57,12 @@ public sealed class DialogService : IDialogService
 
     public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory, bool diskImage = false)
     {
-        string filter = diskImage ? "Образ диска|*.img;*.img.gz;*.img.xz;*.img.zst;*.bin|Все файлы|*.*" : format switch
+        string filter = (diskImage ? L.T("Образ диска") + "|*.img;*.img.gz;*.img.xz;*.img.zst;*.bin" : format switch
         {
-            ImageFormat.SquashFs => "SquashFS|*.squashfs;*.sqfs;*.sfs;*.img;*.bin|Все файлы|*.*",
-            ImageFormat.Ext => "Образ ext2/3/4|*.ext4;*.ext3;*.ext2;*.img;*.bin|Все файлы|*.*",
-            _ => $"Архив tar|*{extension}|Все файлы|*.*",
-        };
+            ImageFormat.SquashFs => "SquashFS|*.squashfs;*.sqfs;*.sfs;*.img;*.bin",
+            ImageFormat.Ext => L.T("Образ ext2/3/4") + "|*.ext4;*.ext3;*.ext2;*.img;*.bin",
+            _ => L.T("Архив tar") + "|*" + extension,
+        }) + "|" + AllFiles;
         var dialog = new SaveFileDialog
         {
             Title = title,
@@ -79,14 +83,14 @@ public sealed class DialogService : IDialogService
         return window.ShowDialog() == true;
     }
 
-    public async Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string cancel = "Отмена")
+    public async Task<DialogAnswer> AskAsync(string title, string message, string primary, string? secondary = null, string? cancel = null)
     {
         var box = new MessageBox
         {
             Title = title,
             Content = new System.Windows.Controls.TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 },
             PrimaryButtonText = primary,
-            CloseButtonText = cancel,
+            CloseButtonText = cancel ?? L.T("Отмена"),
             MinWidth = 380,
         };
         if (secondary is not null) box.SecondaryButtonText = secondary;
@@ -117,7 +121,7 @@ public sealed class DialogService : IDialogService
             MaxHeight = 360,
             VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
         };
-        var box = new MessageBox { Title = title, Content = text, CloseButtonText = "Закрыть", MinWidth = 380 };
+        var box = new MessageBox { Title = title, Content = text, CloseButtonText = L.T("Закрыть"), MinWidth = 380 };
         if (_owner() is { IsLoaded: true } owner)
         {
             box.Owner = owner;

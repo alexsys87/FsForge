@@ -25,12 +25,12 @@ public sealed class SettingsViewModel : DialogViewModel
         _dialogs = dialogs;
         _settings = current.Clone();
         SettingsPath = settingsPath;
-        Title = "Настройки";
-        AcceptText = "Сохранить";
+        Title = L.T("Настройки");
+        AcceptText = L.T("Сохранить");
         ResetCommand = new RelayCommand(Reset);
         BrowseTempCommand = new RelayCommand(() =>
         {
-            string? dir = _dialogs.PickFolder("Папка для временных файлов", _settings.TempDirectory);
+            string? dir = _dialogs.PickFolder(L.T("Папка для временных файлов"), _settings.TempDirectory);
             if (dir is null) return;
             _settings.TempDirectory = dir;
             OnPropertyChanged(nameof(Settings));
@@ -52,9 +52,9 @@ public sealed class SettingsViewModel : DialogViewModel
     public RelayCommand ClearRecentCommand { get; }
     public AppSettings? Result { get; private set; }
 
-    public string RecentCountText => $"В списке недавних: {_settings.RecentFiles.Count}";
+    public string RecentCountText => L.F("В списке недавних: {0}", _settings.RecentFiles.Count);
 
-    public string ThreadsHint => $"0 — по числу ядер процессора ({Environment.ProcessorCount})";
+    public string ThreadsHint => L.F("0 — по числу ядер процессора ({0})", Environment.ProcessorCount);
 
     /// <summary>The single BCJ filter of the SquashFS defaults (-1 = none).</summary>
     public int DefaultBcjFilter
@@ -75,44 +75,52 @@ public sealed class SettingsViewModel : DialogViewModel
     }
 
     // ---- choices
+    /// <summary>The languages are named in their own language, so that each can be found whatever the current one is.</summary>
+    public IReadOnlyList<Choice<AppLanguage>> Languages { get; } = new[]
+    {
+        new Choice<AppLanguage>(AppLanguage.System, L.T("как в системе")),
+        new Choice<AppLanguage>(AppLanguage.Russian, L.T("Русский")),
+        new Choice<AppLanguage>(AppLanguage.English, "English"),
+    };
+
     public IReadOnlyList<Choice<AppTheme>> Themes { get; } = new[]
     {
-        new Choice<AppTheme>(AppTheme.System, "как в системе"), new Choice<AppTheme>(AppTheme.Light, "светлая"), new Choice<AppTheme>(AppTheme.Dark, "тёмная"),
+        new Choice<AppTheme>(AppTheme.System, L.T("как в системе")), new Choice<AppTheme>(AppTheme.Light, L.T("светлая")), new Choice<AppTheme>(AppTheme.Dark, L.T("тёмная")),
     };
 
     public IReadOnlyList<Choice<BackdropKind>> Backdrops { get; } = new[]
     {
         new Choice<BackdropKind>(BackdropKind.Mica, "Mica"), new Choice<BackdropKind>(BackdropKind.Tabbed, "Mica Alt"),
-        new Choice<BackdropKind>(BackdropKind.Acrylic, "Acrylic"), new Choice<BackdropKind>(BackdropKind.None, "без эффекта"),
+        new Choice<BackdropKind>(BackdropKind.Acrylic, "Acrylic"), new Choice<BackdropKind>(BackdropKind.None, L.T("без эффекта")),
     };
 
     public IReadOnlyList<Choice<SizeDisplay>> SizeDisplays { get; } = new[]
     {
-        new Choice<SizeDisplay>(SizeDisplay.Units, "в КБ / МБ / ГБ"), new Choice<SizeDisplay>(SizeDisplay.Bytes, "в байтах"),
+        new Choice<SizeDisplay>(SizeDisplay.Units, L.T("в КБ / МБ / ГБ")), new Choice<SizeDisplay>(SizeDisplay.Bytes, L.T("в байтах")),
     };
 
     public IReadOnlyList<Choice<FileOpenAction>> FileOpenActions { get; } = new[]
     {
-        new Choice<FileOpenAction>(FileOpenAction.OpenExternally, "открыть во внешней программе"),
-        new Choice<FileOpenAction>(FileOpenAction.Properties, "показать свойства"),
+        new Choice<FileOpenAction>(FileOpenAction.OpenExternally, L.T("открыть во внешней программе")),
+        new Choice<FileOpenAction>(FileOpenAction.Properties, L.T("показать свойства")),
     };
 
     public IReadOnlyList<Choice<ConflictMode>> ConflictModes { get; } = new[]
     {
-        new Choice<ConflictMode>(ConflictMode.Ask, "спрашивать"), new Choice<ConflictMode>(ConflictMode.Overwrite, "заменять"),
-        new Choice<ConflictMode>(ConflictMode.Skip, "пропускать"), new Choice<ConflictMode>(ConflictMode.Rename, "добавлять под новым именем"),
+        new Choice<ConflictMode>(ConflictMode.Ask, L.T("спрашивать")), new Choice<ConflictMode>(ConflictMode.Overwrite, L.T("заменять")),
+        new Choice<ConflictMode>(ConflictMode.Skip, L.T("пропускать")), new Choice<ConflictMode>(ConflictMode.Rename, L.T("добавлять под новым именем")),
     };
 
     public IReadOnlyList<Choice<SymlinkExtractMode>> SymlinkModes { get; } = new[]
     {
-        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Placeholder, "текстовый файл с целью ссылки"),
-        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Native, "настоящая ссылка Windows (нужен режим разработчика)"),
-        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Skip, "не создавать"),
+        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Placeholder, L.T("текстовый файл с целью ссылки")),
+        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Native, L.T("настоящая ссылка Windows (нужен режим разработчика)")),
+        new Choice<SymlinkExtractMode>(SymlinkExtractMode.Skip, L.T("не создавать")),
     };
 
     public IReadOnlyList<Choice<ImageFormat>> NewFormats { get; } = new[]
     {
-        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Tar, "архив tar"),
+        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Tar, L.T("архив tar")),
     };
 
     public IReadOnlyList<Choice<ExtKind>> ExtKinds { get; } = new[]
@@ -161,23 +169,23 @@ public sealed class SettingsViewModel : DialogViewModel
         AppSettings s = _settings;
         foreach ((string text, string what) in new[]
                  {
-                     (s.DefaultFileMode, "файлов"), (s.DefaultDirectoryMode, "папок"), (s.ExecutableMode, "исполняемых файлов"),
+                     (s.DefaultFileMode, L.T("файлов")), (s.DefaultDirectoryMode, L.T("папок")), (s.ExecutableMode, L.T("исполняемых файлов")),
                  })
         {
             if (!UnixMode.TryParseOctal((text ?? "").Trim(), out _))
             {
-                Error = $"Права для {what} задаются восьмеричным числом, например 0644.";
+                Error = L.F("Права для {0} задаются восьмеричным числом, например 0644.", what);
                 return false;
             }
         }
         if (!string.IsNullOrWhiteSpace(s.TempDirectory) && !Directory.Exists(s.TempDirectory))
         {
-            Error = "Папка для временных файлов не существует.";
+            Error = L.T("Папка для временных файлов не существует.");
             return false;
         }
         if (s.ReservedPercentInvalid())
         {
-            Error = "Резерв для root в ext — число от 0 до 50 процентов.";
+            Error = L.T("Резерв для root в ext — число от 0 до 50 процентов.");
             return false;
         }
         s.DefaultFileMode = s.DefaultFileMode.Trim();
