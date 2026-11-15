@@ -7,6 +7,7 @@ using FsForge.Core.Host;
 using FsForge.Core.Images;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Jffs2;
 using FsForge.Core.Ubifs;
 
 namespace FsForge.Cli;
@@ -42,12 +43,14 @@ internal static class Program
 
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|ext2|ext3|ext4|ubifs|tar      default: by output extension, else the source format
+          format=squashfs|ext2|ext3|ext4|ubifs|jffs2|tar  default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
           ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
+          jffs2:    comp=zlib|lzo|rtime|none endian=little|big erase=<bytes> cleanmarkers=0|1 cmsize=<bytes>
+                    pagesize=<bytes> pad=0|1 xattrs=0|1 allroot=1
           ubi:      ubi=0|1 peb=<bytes> minio=<bytes> subpage=<bytes> volname=<text> volid=<n> volsize=<MiB> autoresize=0|1
         """;
 
@@ -167,6 +170,13 @@ internal static class Program
             Console.WriteLine($"State:       {(u.ReplayedNodes > 0 ? $"not cleanly unmounted, {u.ReplayedNodes} journal nodes from {u.ReplayedBuds} erase blocks replayed" : u.Dirty ? "not cleanly unmounted, journal empty" : "clean")}" +
                               $"{(u.SpaceFixup ? ", space fixup pending" : "")}{(u.Authenticated ? ", authenticated" : "")}");
         }
+        if (doc.Jffs2 is { } j)
+        {
+            Console.WriteLine($"Layout:      {(j.BigEndian ? "big" : "little")}-endian, erase block {j.EraseBlockSize}{(j.EraseBlockSizeKnown ? "" : " (estimated)")}, " +
+                              $"{(j.Cleanmarkers ? $"clean markers of {j.CleanmarkerSize} bytes" : "no clean markers")}{(j.HasSummary ? ", summaries" : "")}");
+            Console.WriteLine($"Nodes:       {j.Nodes} valid, {j.ObsoleteNodes} obsolete, {j.DamagedNodes} damaged; {j.UsedBytes} of {j.ImageBytes} bytes used");
+            Console.WriteLine($"Compression: {string.Join(", ", j.CompressionCounts.OrderByDescending(p => p.Value).Select(p => $"{p.Key.ToString().ToLowerInvariant()} {p.Value}"))}");
+        }
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
         if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
@@ -215,6 +225,8 @@ internal static class Program
             Console.Error.WriteLine($"{e.Kind} bs={e.BlockSize} blocks={e.BlocksCount} inodes={e.InodesCount} isize={e.InodeSize} journal={e.JournalBytes} features={string.Join(',', e.FeatureNames)}");
         if (doc.Ubifs is { } u)
             Console.Error.WriteLine($"ubifs leb={u.LebSize} lebs={u.LebCount} minio={u.MinIoSize} comp={u.DefaultCompression} version={u.FormatVersion} replayed={u.ReplayedNodes}");
+        if (doc.Jffs2 is { } j)
+            Console.Error.WriteLine($"jffs2 endian={(j.BigEndian ? "big" : "little")} erase={j.EraseBlockSize} known={j.EraseBlockSizeKnown} cleanmarkers={j.Cleanmarkers} comp={j.MainCompression} nodes={j.Nodes}");
         if (doc.Tar is { } t)
             Console.Error.WriteLine($"tar comp={t.Compression} entries={t.Entries} pax={t.HasPaxHeaders} gnu={t.HasGnuExtensions} prefix='{t.PathPrefix}' root={t.HasRootEntry}");
         return 0;
@@ -238,6 +250,7 @@ internal static class Program
                 if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
                 else if (name.EndsWith(".ubifs")) f = "ubifs";
+                else if (name.EndsWith(".jffs2")) f = "jffs2";
                 namedFilesystem = f is not null;
             }
         }
@@ -245,6 +258,7 @@ internal static class Program
         {
             case null: break;
             case "ubifs": format = ImageFormat.Ubifs; break;
+            case "jffs2": format = ImageFormat.Jffs2; break;
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
@@ -282,6 +296,7 @@ internal static class Program
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
                     else if (s.Format == ImageFormat.Ubifs) s.Ubifs.Compression = Enum.Parse<UbifsCompression>(value, true);
+                    else if (s.Format == ImageFormat.Jffs2) s.Jffs2.Compression = Enum.Parse<Jffs2Compression>(value, true);
                     else s.SquashFs.Compression = Enum.Parse<SquashCompression>(value, true);
                     break;
                 case "block": s.SquashFs.BlockSize = int.Parse(value); break;
@@ -294,7 +309,20 @@ internal static class Program
                 case "dict": s.SquashFs.XzDictionarySize = int.Parse(value); break;
                 case "nofrag": s.SquashFs.NoFragments = value != "0"; break;
                 case "dedup": s.SquashFs.Deduplicate = value != "0"; break;
-                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = value != "0"; break;
+                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = value != "0"; break;
+                case "endian": s.Jffs2.BigEndian = value.ToLowerInvariant() switch
+                {
+                    "big" or "be" => true,
+                    "little" or "le" => false,
+                    _ => throw new FsException("endian= takes little or big."),
+                };
+                    break;
+                case "erase": s.Jffs2.EraseBlockSize = int.Parse(value); break;
+                case "cleanmarkers": s.Jffs2.Cleanmarkers = value != "0"; break;
+                case "cmsize": s.Jffs2.CleanmarkerSize = int.Parse(value); break;
+                case "pagesize": s.Jffs2.PageSize = int.Parse(value); break;
+                case "pad": s.Jffs2.PadToEraseBlock = value != "0"; break;
+                case "xattrs": s.Jffs2.StoreXattrs = value != "0"; break;
                 case "minio": s.Ubifs.MinIoSize = s.Ubi.MinIoSize = int.Parse(value); break;
                 case "leb": s.Ubifs.LebSize = int.Parse(value); break;
                 case "maxleb": s.Ubifs.MaxLebCount = int.Parse(value); break;

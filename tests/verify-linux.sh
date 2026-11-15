@@ -2,7 +2,8 @@
 # Cross-checks the FsForge core against the reference Linux tools.
 # Needs root (loop mounts, device nodes) and: squashfs-tools, e2fsprogs, tar, attr, python3;
 # optional: libarchive-tools (bsdtar), busybox (also makes the FAT partition of the disk image tests), acl,
-# util-linux partx, mtd-utils (mkfs.ubifs and ubinize for the UBIFS and UBI tests).
+# util-linux partx, mtd-utils (mkfs.ubifs and ubinize for the UBIFS and UBI tests, mkfs.jffs2, jffs2dump and
+# jffs2reader for the JFFS2 tests), jefferson (pip install jefferson: an independent JFFS2 extractor).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -337,6 +338,16 @@ if $F convert img/tree1k.sqfs ubk/bad.ubi format=ext4 ubi=1 2> out/ubk.bad.err; 
 if $F convert img/tree1k.sqfs ubk/bad.ubifs maxleb=40 2> out/ubk.bad.err; then bad "content beyond the maximum size was accepted"; else grep -q "erase blocks" out/ubk.bad.err && [ ! -e ubk/bad.ubifs ] && ok "content that exceeds the maximum size is rejected" || bad "$(cat out/ubk.bad.err)"; fi
 if ubk_modules; then ubk_check; else echo "  --    kernel checks skipped: nandsim, mtdram, ubi or ubifs cannot be loaded (see tests/verify-ubifs-kernel.sh)"; fi
 else echo "UBIFS: skipped (mtd-utils with mkfs.ubifs and ubinize is not installed)"; fi
+
+# ------------------------------------------------------------------- JFFS2
+# See tests/verify-jffs2.sh: mkfs.jffs2 images read by FsForge; FsForge images checked by jffs2dump, jefferson,
+# jffs2reader and, where mtdram and jffs2 can be loaded, mounted by the kernel from a simulated NOR flash.
+if command -v mkfs.jffs2 >/dev/null && command -v jffs2dump >/dev/null; then
+echo "JFFS2"
+. "$HERE/verify-jffs2.sh"
+j2_run
+if j2_modules; then j2_kernel; else echo "  --    kernel checks skipped: mtdram or jffs2 cannot be loaded, or flash_erase is missing"; fi
+else echo "JFFS2: skipped (mtd-utils with mkfs.jffs2 and jffs2dump is not installed)"; fi
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

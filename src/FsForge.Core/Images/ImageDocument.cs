@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Jffs2;
 using FsForge.Core.Ubifs;
 
 namespace FsForge.Core.Images;
@@ -14,6 +15,9 @@ public enum ImageFormat
 
     /// <summary>UBIFS, the filesystem of raw NAND and NOR flash; alone or in a volume of a UBI image.</summary>
     Ubifs,
+
+    /// <summary>JFFS2, the log-structured filesystem of NOR (and older NAND) flash; little- or big-endian.</summary>
+    Jffs2,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -36,6 +40,7 @@ public sealed class SaveOptions
     public ExtOptions Ext { get; set; } = new();
     public TarOptions Tar { get; set; } = new();
     public UbifsOptions Ubifs { get; set; } = new();
+    public Jffs2Options Jffs2 { get; set; } = new();
 
     /// <summary>Geometry and volume of the UBI image that <see cref="NewUbi"/> asks for.</summary>
     public UbiOptions Ubi { get; set; } = new();
@@ -69,6 +74,7 @@ public sealed class SaveOptions
         Ext = Ext.Clone(),
         Tar = Tar.Clone(),
         Ubifs = Ubifs.Clone(),
+        Jffs2 = Jffs2.Clone(),
         Ubi = Ubi.Clone(),
         NewUbi = NewUbi,
         Verify = Verify,
@@ -107,6 +113,7 @@ public sealed class ImageDocument : IDisposable
     public ExtInfo? Ext { get; private init; }
     public TarInfo? Tar { get; private init; }
     public UbifsInfo? Ubifs { get; private init; }
+    public Jffs2Info? Jffs2 { get; private init; }
 
     /// <summary>
     /// The UBI image and the volume the filesystem was opened from; null when the file is not a UBI image.
@@ -169,6 +176,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.SquashFs => "SquashFS",
         ImageFormat.Ext => Ext?.Kind.ToString().ToLowerInvariant() ?? "ext4",
         ImageFormat.Ubifs => "UBIFS",
+        ImageFormat.Jffs2 => "JFFS2",
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
 
@@ -220,7 +228,8 @@ public sealed class ImageDocument : IDisposable
     private static ImageFormat? FilesystemAt(IBlockSource src) =>
         SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs
         : UbifsReader.IsUbifs(src) ? ImageFormat.Ubifs
-        : ExtReader.IsExt(src) ? ImageFormat.Ext : null;
+        : ExtReader.IsExt(src) ? ImageFormat.Ext
+        : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
 
     private static ImageFormat FormatOf(UbiVolumeInfo volume) => volume.Content switch
     {
@@ -419,6 +428,18 @@ public sealed class ImageDocument : IDisposable
                     doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
                                       $"Saving uses {SquashFsOptions.FromInfo(r.Info).Compression.ToString().ToLowerInvariant()} unless another method is chosen.");
             }
+            else if (!ExtReader.IsExt(fs) && Jffs2Reader.IsJffs2(fs))
+            {
+                Jffs2Reader r = Jffs2Reader.Open(fs, ownsSource: true, progress, ct);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Jffs2, path)
+                {
+                    Jffs2 = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
             else
             {
                 ExtReader r = ExtReader.Open(fs);
@@ -600,6 +621,7 @@ public sealed class ImageDocument : IDisposable
         SaveOptions o = defaults?.Clone() ?? new SaveOptions();
         o.Format = format ?? Format;
         if (Ubifs is not null) o.Ubifs = UbifsOptions.FromInfo(Ubifs);
+        if (Jffs2 is not null) o.Jffs2 = Jffs2Options.FromInfo(Jffs2);
         // A filesystem that goes into a UBI image is made for the erase blocks of that image.
         if (Ubifs is null && Ubi is not null)
         {
@@ -614,7 +636,7 @@ public sealed class ImageDocument : IDisposable
 
     /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
-        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format != ImageFormat.Tar;
+        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Jffs2);
 
     /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
     public bool WritesUbi(SaveOptions options) =>
@@ -628,6 +650,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.SquashFs => SquashFsWriter.Write(tree, output, options.SquashFs, progress, ct),
         ImageFormat.Ext => ExtWriter.Write(tree, output, options.Ext, progress, ct),
         ImageFormat.Ubifs => UbifsWriter.Write(tree, output, options.Ubifs, progress, ct),
+        ImageFormat.Jffs2 => Jffs2Writer.Write(tree, output, options.Jffs2, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -664,7 +687,7 @@ public sealed class ImageDocument : IDisposable
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar)
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
@@ -1202,6 +1225,13 @@ public static class TreeComparer
         {
             IgnoreOwners = o.Ubifs.AllRoot,
             IgnoreXattrs = true,                    // only the user/trusted/security namespaces exist in UBIFS
+        },
+        ImageFormat.Jffs2 => new Rules
+        {
+            IgnoreOwners = o.Jffs2.AllRoot,
+            IgnoreXattrs = true,                    // written only on request, and only the user/security/trusted/ACL ones
+            MinTime = 0,
+            MaxTime = uint.MaxValue,
         },
         ImageFormat.Ext => new Rules
         {

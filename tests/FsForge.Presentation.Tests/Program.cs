@@ -870,6 +870,58 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("JFFS2: open a big-endian image, keep its layout on saving, convert it", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            // A big-endian JFFS2 image with 16 KiB erase blocks (stored uncompressed, so that it spans several), made from the test tree.
+            string jffs2 = Path.Combine(_dir, "rootfs_data.jffs2");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("j.sqfs"), _dir))
+            using (var fs = new FileStream(jffs2, FileMode.Create))
+                ImageDocument.WriteTo(source.Tree, fs, new SaveOptions
+                {
+                    Format = ImageFormat.Jffs2,
+                    Jffs2 = new FsForge.Core.Jffs2.Jffs2Options { BigEndian = true, EraseBlockSize = 16 * 1024, Compression = FsForge.Core.Jffs2.Jffs2Compression.None },
+                });
+            Check(await vm.OpenPathAsync(jffs2), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Jffs2, Jffs2.BigEndian: true } && vm.DocumentInfo.Contains("JFFS2") && vm.DocumentInfo.Contains("big-endian"),
+                "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Порядок байтов" && r.Value == "big-endian")
+                                                                    && i.Rows.Any(r => r.Label == "Блок стирания" && r.Value == "16 КБ");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a JFFS2 image");
+
+            // "Save as" starts with the layout of the source; the format cannot go into a container.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsJffs2 && s.Jffs2BigEndian && s.Jffs2EraseBlockSize == 16 * 1024 && s.Jffs2Cleanmarkers && s.Extension == ".jffs2"
+                      && !s.ShowCommonXattrs && !s.WritesDisk && !s.HasJffs2Note, "the dialog does not start with the layout of the source");
+                s.Jffs2Compression = FsForge.Core.Jffs2.Jffs2Compression.Lzo;
+                s.Jffs2EraseBlockSize = 64 * 1024;
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "rootfs_data-lzo.jffs2");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as JFFS2 failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Jffs2, Jffs2: { BigEndian: true, EraseBlockSize: 65536, MainCompression: FsForge.Core.Jffs2.Jffs2Compression.Lzo } },
+                "saved image: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+
+            // Converting to SquashFS.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.SquashFs;
+                Check(s.ShowCommonXattrs && s.Extension == ".squashfs", "SquashFS after JFFS2");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "rootfs_data.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as SquashFS failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.SquashFs && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
         await Test("English interface: texts, numbers, plurals, language change notice", async () =>
         {
             try
