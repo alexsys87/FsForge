@@ -528,6 +528,45 @@
                 </Border>
             </StackPanel>
 
+            <!--  FAT  -->
+            <StackPanel Visibility="{Binding IsFat, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="FAT" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Тип'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="220"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding FatTypes}"
+                                SelectedValue="{Binding FatType}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Размер кластера'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="220"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding FatClusterSizes}"
+                                SelectedValue="{Binding FatClusterSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Размер, МиБ'}"
+                            IsEnabled="{Binding FatSizeEditable}"
+                            Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding FatSizeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding FatSizeNote}"
+                            Visibility="{Binding HasFatSizeNote, Converter={StaticResource BoolToVisibility}}" />
+                        <HeaderedContentControl Header="{l:Tr 'Метка тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding FatLabel, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  JFFS2  -->
             <StackPanel Visibility="{Binding IsJffs2, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="JFFS2" />
@@ -805,7 +844,10 @@
                         Visibility="{Binding ShowCommonXattrs, Converter={StaticResource BoolToVisibility}}">
                         <ui:ToggleSwitch IsChecked="{Binding StoreXattrs}" />
                     </HeaderedContentControl>
-                    <HeaderedContentControl Header="{l:Tr 'Сделать владельцем всех объектов root (0:0)'}" Style="{StaticResource Row}">
+                    <HeaderedContentControl
+                        Header="{l:Tr 'Сделать владельцем всех объектов root (0:0)'}"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding ShowAllRoot, Converter={StaticResource BoolToVisibility}}">
                         <ui:ToggleSwitch IsChecked="{Binding AllRoot}" />
                     </HeaderedContentControl>
                     <HeaderedContentControl

@@ -3,7 +3,8 @@
 # Needs root (loop mounts, device nodes) and: squashfs-tools, e2fsprogs, tar, attr, python3;
 # optional: libarchive-tools (bsdtar), busybox (also makes the FAT partition of the disk image tests), acl,
 # util-linux partx, mtd-utils (mkfs.ubifs and ubinize for the UBIFS and UBI tests, mkfs.jffs2, jffs2dump and
-# jffs2reader for the JFFS2 tests), jefferson (pip install jefferson: an independent JFFS2 extractor).
+# jffs2reader for the JFFS2 tests), jefferson (pip install jefferson: an independent JFFS2 extractor),
+# dosfstools and mtools (mkfs.fat, fsck.fat, fatlabel, mcopy, mdir, mtype for the FAT tests).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -348,6 +349,16 @@ echo "JFFS2"
 j2_run
 if j2_modules; then j2_kernel; else echo "  --    kernel checks skipped: mtdram or jffs2 cannot be loaded, or flash_erase is missing"; fi
 else echo "JFFS2: skipped (mtd-utils with mkfs.jffs2 and jffs2dump is not installed)"; fi
+
+# --------------------------------------------------------------------- FAT
+# See tests/verify-fat.sh: mkfs.fat images read by FsForge; FsForge images checked by fsck.fat and mtools and
+# mounted by the kernel; the FAT boot partition of an SD card image edited in place.
+if command -v mkfs.fat >/dev/null && command -v fsck.fat >/dev/null && command -v mcopy >/dev/null; then
+echo "FAT"
+. "$HERE/verify-fat.sh"
+fat_run
+if grep -qw vfat /proc/filesystems || modprobe vfat 2>/dev/null; then fat_kernel; else echo "  --    kernel checks skipped: vfat cannot be loaded"; fi
+else echo "FAT: skipped (dosfstools and mtools are not installed)"; fi
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

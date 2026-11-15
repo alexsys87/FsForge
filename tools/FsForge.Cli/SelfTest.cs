@@ -89,6 +89,7 @@ internal static partial class SelfTest
             JournalTests();
             UbifsTests(tree, reference);
             Jffs2Tests();
+            FatTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -251,6 +252,14 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Ext && f[0] == "/lost+found") continue;
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
             if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
+            if (o.Format == ImageFormat.Fat)
+            {
+                // FAT: files and directories only, no owners or permissions, times in 2-second steps from 1980.
+                if (f[1] is not ("f" or "d")) continue;
+                f[2] = "*"; f[3] = f[4] = "0"; f[7] = f[8] = "-";
+                long t = long.Parse(f[5]);
+                f[5] = f[0] == "/" ? "*" : (Math.Clamp(t, 315532800, 4354819198) & ~1L).ToString();
+            }
             if (noRoot && f[0] == "/") f[5] = "*";
             if (inode128 && long.Parse(f[5]) > int.MaxValue) f[5] = int.MaxValue.ToString();   // 32-bit timestamps are clamped
             sb.Append(string.Join('\t', f)).Append('\n');

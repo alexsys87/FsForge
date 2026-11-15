@@ -922,6 +922,96 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            // MBR, a FAT16 boot partition at 1 MiB (8 MiB) and the SquashFS of the test image as the root partition.
+            const int mib = 1 << 20;
+            long p1 = mib, slot1 = 8 * mib, p2 = p1 + slot1;
+            using var boot = new FsTree(0x1ED, 1700000000);
+            boot.CreateFile(boot.Root, "config.txt", new MemoryFileData(Encoding.ASCII.GetBytes("dtparam=audio=on\n")), 0x1A4, 0, 0, 1700000000);
+            boot.CreateFile(boot.Root, "cmdline.txt", new MemoryFileData(Encoding.ASCII.GetBytes("console=serial0,115200 root=/dev/mmcblk0p2 rootwait\n")), 0x1A4, 0, 0, 1700000000);
+            boot.CreateFile(boot.CreateDirectory(boot.Root, "overlays"), "Long Overlay Name.dtbo", new MemoryFileData(new byte[5000]), 0x1A4, 0, 0, 1700000000);
+            var bootImage = new MemoryStream();
+            ImageDocument.WriteTo(boot, bootImage, new SaveOptions
+            {
+                Format = ImageFormat.Fat,
+                Fat = new Core.Fat.FatOptions { Type = Core.Fat.FatType.Fat16, SizeBytes = slot1, Label = "BOOTFS", VolumeId = 0x1234ABCD, HiddenSectors = (uint)(p1 / 512) },
+            });
+            byte[] root = File.ReadAllBytes(MakeImage("fatsd.root"));
+            byte[] disk = new byte[p2 + (root.Length + 0xFFFF) / 0x10000 * 0x10000];
+            void Entry(int slot, byte type, long offset, long length)
+            {
+                Span<byte> e = disk.AsSpan(446 + 16 * slot, 16);
+                e[4] = type;
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e[8..], (uint)(offset / 512));
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e[12..], (uint)(length / 512));
+            }
+            Entry(0, 0x0E, p1, slot1);
+            Entry(1, 0x83, p2, disk.Length - p2);
+            disk[510] = 0x55; disk[511] = 0xAA;
+            bootImage.ToArray().CopyTo(disk, p1);
+            root.CopyTo(disk, p2);
+            string path = Path.Combine(_dir, "card.img");
+            File.WriteAllBytes(path, disk);
+
+            // The root filesystem is preselected; the boot partition can be chosen and edited.
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                Check(c.Rows.Count == 2 && c.Selected is { Partition.Number: 2 }, "the root partition is not preselected: " + c.Selected?.Name);
+                Check(c.Rows[0] is { Content: "FAT16 «BOOTFS»", IsEditable: true }, "boot partition row: " + c.Rows[0].Content);
+                c.Selected = c.Rows[0];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(path), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Fat, Container.Partition.Number: 1, Fat: { Type: Core.Fat.FatType.Fat16, Label: "BOOTFS", HiddenSectors: 2048 } }, "the boot partition was not opened");
+            Check(vm.DocumentInfo.StartsWith("образ диска MBR · раздел 1 из 2 · FAT16 · кластер ") && vm.DocumentInfo.Contains("свободно"), "status line: " + vm.DocumentInfo);
+            Check(!vm.IsInfoOpen, "a FAT partition must open without warnings: " + vm.InfoMessage);
+            Check(vm.Items.Select(i => i.Name).OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(new[] { "cmdline.txt", "config.txt", "overlays" }), "root of the partition");
+
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Тип" && r.Value == "FAT16") && i.Rows.Any(r => r.Label == "Метка" && r.Value == "BOOTFS")
+                                                                    && i.Rows.Any(r => r.Label == "Серийный номер" && r.Value == "1234-ABCD") && i.Rows.Any(r => r.Label == "Состояние" && r.Value == "чистая");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a FAT partition");
+
+            // config.txt is replaced, cmdline.txt removed.
+            string repl = Path.Combine(_dir, "config-new.txt");
+            File.WriteAllText(repl, "dtparam=audio=on\nenable_uart=1\n");
+            Select(vm, "config.txt");
+            d.FilePicks.Enqueue(new[] { repl });
+            await vm.ReplaceContentCommand.ExecuteAsync();
+            Select(vm, "cmdline.txt");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+
+            // "Save as" offers the disk image; the size of the filesystem is that of the partition.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFat && s.WritesDisk && !s.FatSizeEditable && s.HasFatSizeNote && s.FatLabel == "BOOTFS" && s.Extension == ".img" && !s.ShowCommonXattrs && !s.ShowAllRoot,
+                    "FAT inside the disk image in the save dialog: " + s.Extension + " / " + s.FatSizeNote);
+                s.KeepContainer = false;
+                Check(!s.WritesDisk && s.FatSizeEditable && s.Extension == ".vfat", "FAT alone: " + s.Extension);
+                return false;
+            };
+            Check(!await vm.SaveAsAsync(), "a cancelled save dialog saved");
+
+            // Ctrl+S writes the partition back in place: everything else stays byte for byte.
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog on save: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] after = File.ReadAllBytes(path);
+            Check(after.Length == disk.Length && after.AsSpan(0, (int)p1).SequenceEqual(disk.AsSpan(0, (int)p1)) && after.AsSpan((int)p2).SequenceEqual(disk.AsSpan((int)p2)),
+                "the partition table or the root partition changed");
+            Check(vm.Document is { Format: ImageFormat.Fat, Container.Partition.Number: 1, Fat: { Type: Core.Fat.FatType.Fat16, Label: "BOOTFS", VolumeId: 0x1234ABCD, HiddenSectors: 2048, SizeBytes: 8 * mib } } && !vm.IsModified,
+                "the saved partition: " + vm.DocumentInfo);
+            using (var r = new StreamReader(vm.Document!.Tree.Resolve("/config.txt")!.Inode.Data!.OpenRead()))
+                Check(r.ReadToEnd() == "dtparam=audio=on\nenable_uart=1\n", "config.txt was not replaced");
+            Check(vm.Document.Tree.Resolve("/cmdline.txt") is null && vm.Document.Tree.Resolve("/overlays/Long Overlay Name.dtbo")!.Inode.Size == 5000, "content of the saved partition");
+            vm.Dispose();
+        });
+
         await Test("English interface: texts, numbers, plurals, language change notice", async () =>
         {
             try

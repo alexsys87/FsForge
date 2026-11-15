@@ -17,6 +17,7 @@ public enum SaveFormat
     Ext2,
     Ubifs,
     Jffs2,
+    Fat,
     Tar,
 }
 
@@ -44,6 +45,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Ext2, "ext2"),
         new Choice<SaveFormat>(SaveFormat.Ubifs, L.T("UBIFS (NAND- и NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Jffs2, L.T("JFFS2 (NOR-флеш)")),
+        new Choice<SaveFormat>(SaveFormat.Fat, L.T("FAT (загрузочные разделы, флешки)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
     };
 
@@ -116,6 +118,19 @@ public static class OptionLists
     public static IReadOnlyList<Choice<int>> Jffs2EraseBlockSizes { get; } =
         new[] { 4, 8, 16, 32, 64, 128, 256, 512, 1024 }.Select(k => new Choice<int>(k * 1024, k < 1024 ? L.F("{0} КБ", k) : L.T("1 МБ"))).ToArray();
 
+    public static IReadOnlyList<Choice<FsForge.Core.Fat.FatType>> FatTypes { get; } = new[]
+    {
+        new Choice<FsForge.Core.Fat.FatType>(FsForge.Core.Fat.FatType.Auto, L.T("по размеру (как mkfs.fat)")),
+        new Choice<FsForge.Core.Fat.FatType>(FsForge.Core.Fat.FatType.Fat12, "FAT12"),
+        new Choice<FsForge.Core.Fat.FatType>(FsForge.Core.Fat.FatType.Fat16, "FAT16"),
+        new Choice<FsForge.Core.Fat.FatType>(FsForge.Core.Fat.FatType.Fat32, "FAT32"),
+    };
+
+    public static IReadOnlyList<Choice<int>> FatClusterSizes { get; } =
+        new[] { new Choice<int>(0, L.T("автоматически")) }
+            .Concat(new[] { 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536 }.Select(b => new Choice<int>(b, b < 1024 ? L.F("{0} байт", b) : L.F("{0} КБ", b / 1024))))
+            .ToArray();
+
     public static IReadOnlyList<Choice<ArchiveCompression>> TarCompressions { get; } = new[]
     {
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.tar.gz)"),
@@ -165,6 +180,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ImageFormat.SquashFs => SaveFormat.SquashFs,
             ImageFormat.Ubifs => SaveFormat.Ubifs,
             ImageFormat.Jffs2 => SaveFormat.Jffs2,
+            ImageFormat.Fat => SaveFormat.Fat,
             ImageFormat.Tar => SaveFormat.Tar,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
@@ -191,6 +207,9 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         if (!eraseSizes.Any(c => c.Value == _o.Jffs2.EraseBlockSize))
             eraseSizes.Add(new Choice<int>(_o.Jffs2.EraseBlockSize, Fmt.Size(_o.Jffs2.EraseBlockSize)));
         Jffs2EraseBlockSizes = eraseSizes;
+
+        _fatSize = _o.Fat.SizeBytes > 0 ? (_o.Fat.SizeBytes >> 20).ToString() : "";
+        _fatLabel = _o.Fat.Label;
 
         _ubifsLeb = _o.Ubifs.LebSize.ToString();
         _ubifsMinIo = _o.Ubifs.MinIoSize.ToString();
@@ -243,7 +262,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
-    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsJffs2;
+    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsJffs2 && !(IsFat && IsUbiContainer);
 
     public string ContainerNote
     {
@@ -251,6 +270,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (IsJffs2 && HasContainer)
                 return L.T("JFFS2 сохраняется отдельным файлом: в раздел образа диска или том UBI он не записывается.");
+            if (IsFat && IsUbiContainer)
+                return L.T("FAT сохраняется отдельным файлом: в том UBI он не записывается.");
             if (_doc.Ubi is { } ubi)
             {
                 if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ UBI при этом не меняется.");
@@ -283,7 +304,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     private void RaiseContainer()
     {
         foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote), nameof(WritesUbi), nameof(ShowNewUbi),
-                     nameof(ShowUbiOptions), nameof(CanEditUbifsGeometry), nameof(UbifsGeometryNote), nameof(Extension) }) OnPropertyChanged(p);
+                     nameof(ShowUbiOptions), nameof(CanEditUbifsGeometry), nameof(UbifsGeometryNote), nameof(Extension),
+                     nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote) }) OnPropertyChanged(p);
     }
 
     public bool FormatLocked { get; }
@@ -315,7 +337,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(IsJffs2), nameof(ShowCommonXattrs), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -326,6 +348,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsTar => _format == SaveFormat.Tar;
     public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool IsJffs2 => _format == SaveFormat.Jffs2;
+    public bool IsFat => _format == SaveFormat.Fat;
     public bool HasJournalOption => _format is SaveFormat.Ext3 or SaveFormat.Ext4;
 
     public string FormatNote => _format switch
@@ -334,6 +357,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
         SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
         SaveFormat.Ext2 => L.T("ext2: без журнала, карты блоков."),
+        SaveFormat.Fat => L.T("FAT12/16/32 с длинными именами: загрузочные разделы карт памяти, раздел EFI, флешки. Хранит только файлы и папки — без владельцев, прав и ссылок; время с точностью до 2 секунд."),
         SaveFormat.Jffs2 => L.T("Журналируемая файловая система для NOR-флеш (и старых NAND). Порядок байтов и размер блока стирания должны совпадать с устройством; для NAND маркеры очистки выключают."),
         SaveFormat.Ubifs => L.T("Файловая система для «сырой» флеш-памяти. Образ делается под конкретную память: размер блока стирания и страницы должны совпадать с её параметрами."),
         _ => L.T("Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами."),
@@ -507,7 +531,28 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- common to all formats
     /// <summary>JFFS2 has its own switch for attributes (a kernel without xattr support refuses such an image).</summary>
-    public bool ShowCommonXattrs => !IsJffs2;
+    public bool ShowCommonXattrs => !IsJffs2 && !IsFat;
+
+    /// <summary>FAT has no owners: the "everything belongs to root" switch means nothing there.</summary>
+    public bool ShowAllRoot => !IsFat;
+
+    // ---- FAT
+    private string _fatSize, _fatLabel;
+    public IReadOnlyList<Choice<FsForge.Core.Fat.FatType>> FatTypes => OptionLists.FatTypes;
+    public IReadOnlyList<Choice<int>> FatClusterSizes => OptionLists.FatClusterSizes;
+    public FsForge.Core.Fat.FatType FatType { get => _o.Fat.Type; set { _o.Fat.Type = value; OnPropertyChanged(); Error = null; } }
+    public int FatClusterSize { get => _o.Fat.ClusterSize; set { _o.Fat.ClusterSize = value; OnPropertyChanged(); Error = null; } }
+    public string FatSizeMiB { get => _fatSize; set { if (SetProperty(ref _fatSize, value)) Error = null; } }
+    public string FatLabel { get => _fatLabel; set { if (SetProperty(ref _fatLabel, value)) Error = null; } }
+
+    /// <summary>In a disk image the filesystem fills its partition.</summary>
+    public bool FatSizeEditable => !WritesDisk;
+
+    public string FatSizeNote => WritesDisk && _doc.Container is { } disk
+        ? L.F("В образе диска FAT занимает раздел целиком ({0}).", Fmt.Size(disk.Partition.Length))
+        : L.T("Пусто — наименьший размер, в который помещается содержимое.");
+
+    public bool HasFatSizeNote => FatSizeNote.Length > 0;
 
     public bool StoreXattrs
     {
@@ -533,6 +578,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.SquashFs => ".squashfs",
         SaveFormat.Ubifs => ".ubifs",
         SaveFormat.Jffs2 => ".jffs2",
+        SaveFormat.Fat => ".vfat",
         SaveFormat.Ext4 => ".ext4",
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
@@ -560,6 +606,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             SaveFormat.SquashFs => ImageFormat.SquashFs,
             SaveFormat.Ubifs => ImageFormat.Ubifs,
             SaveFormat.Jffs2 => ImageFormat.Jffs2,
+            SaveFormat.Fat => ImageFormat.Fat,
             SaveFormat.Tar => ImageFormat.Tar,
             _ => ImageFormat.Ext,
         };
@@ -597,6 +644,16 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 o.Ubifs.JournalBytes = 0;
                 o.Ubifs.LogLebs = 0;
             }
+        }
+
+        if (IsFat)
+        {
+            if (WritesDisk) o.Fat.SizeBytes = 0;          // the partition decides
+            else if (_fatSize.Trim().Length == 0) o.Fat.SizeBytes = 0;
+            else if (!long.TryParse(_fatSize.Trim(), out long mib) || mib < 1 || mib > 2L << 20)
+                return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
+            else o.Fat.SizeBytes = mib << 20;
+            o.Fat.Label = _fatLabel.Trim();
         }
 
         o.SquashFs.XzFilters.Clear();
@@ -650,6 +707,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.Ext: o.Ext.Validate(); break;
                 case ImageFormat.Ubifs: o.Ubifs.Validate(); break;
                 case ImageFormat.Jffs2: o.Jffs2.Validate(); break;
+                case ImageFormat.Fat: o.Fat.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }

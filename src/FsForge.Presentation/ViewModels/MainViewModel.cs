@@ -457,6 +457,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc.SquashFs is { } s) info += L.F(" · {0} · блок {1}", s.Compression.ToString().ToLowerInvariant(), Fmt.Size(s.BlockSize));
         if (_doc.Ext is { } e) info += L.F(" · {0} · свободно {1}", Fmt.Size(e.SizeBytes), Fmt.Size(e.FreeBlocks * e.BlockSize));
         if (_doc.Ubifs is { } u) info += L.F(" · {0} · блок стирания {1}", u.DefaultCompression.ToString().ToLowerInvariant(), Fmt.Size(u.LebSize));
+        if (_doc.Fat is { } fat)
+            info += L.F(" · кластер {0} · свободно {1}", Fmt.Size(fat.ClusterSize), Fmt.Size(fat.FreeClusters * fat.ClusterSize));
         if (_doc.Jffs2 is { } j)
             info += L.F(" · {0} · {1} · блок стирания {2}", j.BigEndian ? "big-endian" : "little-endian", j.MainCompression.ToString().ToLowerInvariant(), Fmt.Size(j.EraseBlockSize));
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";

@@ -643,7 +643,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         {
             Error = _volumes
                 ? L.T("В этом томе нет UBIFS или SquashFS — его нельзя открыть.")
-                : L.T("В этом разделе нет SquashFS или ext2/3/4 — его нельзя открыть для редактирования.");
+                : L.T("В этом разделе нет SquashFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
@@ -710,6 +710,16 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Состояние"), u.ReplayedNodes > 0
                 ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
                 : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
+        }
+        if (doc.Fat is { } fat)
+        {
+            Add(L.T("Тип"), fat.TypeName);
+            Add(L.T("Размер ФС"), L.F("{0} ({1} кластеров по {2})", Fmt.Size(fat.SizeBytes), Fmt.Bytes(fat.Clusters), Fmt.Size(fat.ClusterSize)));
+            Add(L.T("Свободно"), L.F("{0} ({1} кластеров)", Fmt.Size(fat.FreeClusters * fat.ClusterSize), Fmt.Bytes(fat.FreeClusters)));
+            Add(L.T("Метка"), fat.Label.Length > 0 ? fat.Label : L.T("(нет)"));
+            Add(L.T("Серийный номер"), $"{fat.VolumeId >> 16:X4}-{fat.VolumeId & 0xFFFF:X4}");
+            Add(L.T("Устройство"), L.F("сектор {0} байт, копий FAT: {1}, скрытых секторов: {2}, OEM «{3}»", fat.SectorSize, fat.Fats, Fmt.Bytes(fat.HiddenSectors), fat.OemName));
+            Add(L.T("Состояние"), fat.Dirty ? L.T("не была корректно размонтирована") : L.T("чистая"));
         }
         if (doc.Jffs2 is { } j)
         {
