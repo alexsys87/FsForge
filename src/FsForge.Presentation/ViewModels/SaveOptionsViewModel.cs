@@ -15,6 +15,7 @@ public enum SaveFormat
     Ext4,
     Ext3,
     Ext2,
+    Ubifs,
     Tar,
 }
 
@@ -40,6 +41,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Ext4, "ext4"),
         new Choice<SaveFormat>(SaveFormat.Ext3, "ext3"),
         new Choice<SaveFormat>(SaveFormat.Ext2, "ext2"),
+        new Choice<SaveFormat>(SaveFormat.Ubifs, L.T("UBIFS (NAND- и NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
     };
 
@@ -85,6 +87,14 @@ public static class OptionLists
     public static IReadOnlyList<Choice<int>> ExtInodeSizes { get; } = new[]
     {
         new Choice<int>(256, L.T("256 байт (время после 2038 года)")), new Choice<int>(128, L.T("128 байт (компактнее)")),
+    };
+
+    public static IReadOnlyList<Choice<FsForge.Core.Ubifs.UbifsCompression>> UbifsCompressions { get; } = new[]
+    {
+        new Choice<FsForge.Core.Ubifs.UbifsCompression>(FsForge.Core.Ubifs.UbifsCompression.Lzo, L.T("lzo — как у mkfs.ubifs по умолчанию")),
+        new Choice<FsForge.Core.Ubifs.UbifsCompression>(FsForge.Core.Ubifs.UbifsCompression.Zlib, L.T("zlib — плотнее, медленнее")),
+        new Choice<FsForge.Core.Ubifs.UbifsCompression>(FsForge.Core.Ubifs.UbifsCompression.Zstd, L.T("zstd — нужно ядро Linux 5.3 или новее")),
+        new Choice<FsForge.Core.Ubifs.UbifsCompression>(FsForge.Core.Ubifs.UbifsCompression.None, L.T("без сжатия")),
     };
 
     public static IReadOnlyList<Choice<ArchiveCompression>> TarCompressions { get; } = new[]
@@ -134,6 +144,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         _format = _o.Format switch
         {
             ImageFormat.SquashFs => SaveFormat.SquashFs,
+            ImageFormat.Ubifs => SaveFormat.Ubifs,
             ImageFormat.Tar => SaveFormat.Tar,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
@@ -155,10 +166,15 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, L.T("заданный, МиБ")));
         SizeModes = sizeModes;
 
-        if (doc.Format == ImageFormat.Ubifs)
-            SourceNote = L.T("Исходный образ — UBIFS. Этот формат программа только читает, поэтому содержимое сохраняется в другом формате и в новом файле; исходный файл не меняется.");
-        else if (doc.Ubi is { } ubi)
-            SourceNote = L.F("Файловая система открыта из тома {0} образа UBI. Образы UBI программа не записывает: будет сохранена только файловая система, отдельным файлом.", Fmt.VolumeName(ubi.Volume));
+        _ubifsLeb = _o.Ubifs.LebSize.ToString();
+        _ubifsMinIo = _o.Ubifs.MinIoSize.ToString();
+        _ubifsMaxLeb = _o.Ubifs.MaxLebCount.ToString();
+        _ubiPeb = _o.Ubi.PebSize.ToString();
+        _ubiSubPage = _o.Ubi.SubPageSize.ToString();
+        _ubiVolumeName = _o.Ubi.VolumeName;
+        if (doc.Ubi is { } ubi)
+            ContainerSummary = L.F("{0} — образ UBI (блоки стирания по {1}, томов: {2}). ", Path.GetFileName(doc.FilePath), Fmt.Size(ubi.Image.PebSize), ubi.Image.Volumes.Count) +
+                               L.F("Открыт том {0}: {1}, {2}.", Fmt.VolumeName(ubi.Volume), Fmt.VolumeContent(ubi.Volume), Fmt.Size(ubi.Volume.Length));
 
         if (doc.Container is { } disk)
         {
@@ -169,18 +185,22 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     // ---- disk image the filesystem was opened from
-    /// <summary>The document came from a partition of a disk image.</summary>
-    public bool HasContainer => _doc.Container is not null;
+    /// <summary>The document came from a partition of a disk image or from a volume of a UBI image.</summary>
+    public bool HasContainer => _doc.Container is not null || _doc.Ubi is not null;
+
+    /// <summary>The container is a UBI image (volumes) and not a disk image (partitions).</summary>
+    public bool IsUbiContainer => _doc.Ubi is not null;
+
+    public string ContainerTitle => IsUbiContainer ? L.T("Образ UBI") : L.T("Образ диска");
+
+    public string ContainerToggleText => IsUbiContainer
+        ? L.T("Сохранить образ UBI целиком: остальные тома остаются как были")
+        : L.T("Сохранить образ диска целиком: таблица разделов и остальные разделы остаются как были");
 
     /// <summary>The choice between the disk image and the filesystem alone is offered (not when exporting an archive).</summary>
     public bool ShowContainerOptions => HasContainer && !FormatLocked;
 
     public string ContainerSummary { get; } = "";
-
-    /// <summary>Why the result cannot go back where the content came from (a read-only format, a UBI image); empty otherwise.</summary>
-    public string SourceNote { get; } = "";
-
-    public bool HasSourceNote => SourceNote.Length > 0;
 
     /// <summary>Write the whole disk image again (true) or the filesystem alone (false).</summary>
     public bool KeepContainer
@@ -203,6 +223,15 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         get
         {
+            if (_doc.Ubi is { } ubi)
+            {
+                if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ UBI при этом не меняется.");
+                if (!_o.KeepContainer)
+                    return L.T("Будет записана только файловая система — без образа UBI и остальных томов. Такой файл записывают в том командой ubiupdatevol или передают ubinize.");
+                return L.F("Образ UBI записывается заново: том {0} заменяется, остальные тома переносятся без изменений. Пустые блоки и старые копии блоков в новый образ не попадают. ", Fmt.VolumeName(ubi.Volume)) +
+                       (IsUbifs ? L.T("Размер блока стирания UBIFS берётся из образа UBI. ") : "") +
+                       L.T("Если файловая система перестанет помещаться в том, том будет увеличен.");
+            }
             if (_doc.Container is not { } disk) return "";
             PartitionInfo p = disk.Partition;
             if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ диска при этом не меняется.");
@@ -225,7 +254,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     private void RaiseContainer()
     {
-        foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote) }) OnPropertyChanged(p);
+        foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote), nameof(WritesUbi), nameof(ShowNewUbi),
+                     nameof(ShowUbiOptions), nameof(CanEditUbifsGeometry), nameof(UbifsGeometryNote), nameof(Extension) }) OnPropertyChanged(p);
     }
 
     public bool FormatLocked { get; }
@@ -257,7 +287,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -266,6 +296,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsSquash => _format == SaveFormat.SquashFs;
     public bool IsExt => _format is SaveFormat.Ext2 or SaveFormat.Ext3 or SaveFormat.Ext4;
     public bool IsTar => _format == SaveFormat.Tar;
+    public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool HasJournalOption => _format is SaveFormat.Ext3 or SaveFormat.Ext4;
 
     public string FormatNote => _format switch
@@ -274,6 +305,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
         SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
         SaveFormat.Ext2 => L.T("ext2: без журнала, карты блоков."),
+        SaveFormat.Ubifs => L.T("Файловая система для «сырой» флеш-памяти. Образ делается под конкретную память: размер блока стирания и страницы должны совпадать с её параметрами."),
         _ => L.T("Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами."),
     };
 
@@ -325,6 +357,49 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         get => IsTar ? _o.Tar.ZstdLevel : _o.SquashFs.ZstdLevel;
         set { if (IsTar) _o.Tar.ZstdLevel = value; else _o.SquashFs.ZstdLevel = value; OnPropertyChanged(); }
     }
+
+    // ---- UBIFS and a new UBI image
+    private string _ubifsLeb, _ubifsMinIo, _ubifsMaxLeb, _ubiPeb, _ubiSubPage, _ubiVolumeName;
+
+    public IReadOnlyList<Choice<FsForge.Core.Ubifs.UbifsCompression>> UbifsCompressions => OptionLists.UbifsCompressions;
+    public FsForge.Core.Ubifs.UbifsCompression UbifsCompression { get => _o.Ubifs.Compression; set { _o.Ubifs.Compression = value; OnPropertyChanged(); } }
+    public string UbifsLebSize { get => _ubifsLeb; set { if (SetProperty(ref _ubifsLeb, value)) Error = null; } }
+    public string UbifsMinIoSize { get => _ubifsMinIo; set { if (SetProperty(ref _ubifsMinIo, value)) Error = null; } }
+    public string UbifsMaxLebCount { get => _ubifsMaxLeb; set { if (SetProperty(ref _ubifsMaxLeb, value)) Error = null; } }
+    public bool SpaceFixup { get => _o.Ubifs.SpaceFixup; set { _o.Ubifs.SpaceFixup = value; OnPropertyChanged(); } }
+
+    /// <summary>Wrap the filesystem into a new UBI image (offered for UBIFS and SquashFS that are not going into an existing container).</summary>
+    public bool NewUbi
+    {
+        get => _o.NewUbi;
+        set
+        {
+            if (_o.NewUbi == value) return;
+            _o.NewUbi = value;
+            Error = null;
+            OnPropertyChanged();
+            RaiseContainer();
+        }
+    }
+
+    public bool ShowNewUbi => (IsUbifs || IsSquash) && !WritesDisk && !FormatLocked;
+    public bool ShowUbiOptions => ShowNewUbi && _o.NewUbi;
+
+    /// <summary>The result is a UBI image: the one the document came from, or a new one.</summary>
+    public bool WritesUbi => IsUbiContainer && WritesDisk || ShowUbiOptions;
+
+    /// <summary>Inside a UBI image the erase block of UBIFS is the one of the image, not a free choice.</summary>
+    public bool CanEditUbifsGeometry => !WritesUbi;
+
+    public string UbifsGeometryNote => IsUbiContainer && WritesDisk
+        ? L.T("Размер блока стирания задаёт образ UBI, в который сохраняется файловая система.")
+        : ShowUbiOptions ? L.T("Размер блока стирания и страницы берутся из параметров образа UBI ниже.")
+        : L.T("NAND 128 КБ со страницей 2048: блок 126976 (с подстраницами 512 — 129024). NAND 256 КБ со страницей 4096: 253952. NOR 64 КБ: блок 65408, страница 1.");
+
+    public string UbiPebSize { get => _ubiPeb; set { if (SetProperty(ref _ubiPeb, value)) Error = null; } }
+    public string UbiSubPageSize { get => _ubiSubPage; set { if (SetProperty(ref _ubiSubPage, value)) Error = null; } }
+    public string UbiVolumeName { get => _ubiVolumeName; set { if (SetProperty(ref _ubiVolumeName, value)) Error = null; } }
+    public bool UbiAutoResize { get => _o.Ubi.AutoResize; set { _o.Ubi.AutoResize = value; OnPropertyChanged(); } }
 
     // ---- ext
     public ExtSizeMode SizeMode
@@ -386,13 +461,13 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool StoreXattrs
     {
         get => _o.SquashFs.StoreXattrs;
-        set { _o.SquashFs.StoreXattrs = _o.Ext.StoreXattrs = _o.Tar.StoreXattrs = value; OnPropertyChanged(); }
+        set { _o.SquashFs.StoreXattrs = _o.Ext.StoreXattrs = _o.Tar.StoreXattrs = _o.Ubifs.StoreXattrs = value; OnPropertyChanged(); }
     }
 
     public bool AllRoot
     {
         get => _o.SquashFs.AllRoot;
-        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = value; OnPropertyChanged(); }
+        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = value; OnPropertyChanged(); }
     }
 
     public VerifyLevel Verify { get => _o.Verify; set { _o.Verify = value; OnPropertyChanged(); } }
@@ -402,9 +477,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public SaveOptions? Result { get; private set; }
 
     /// <summary>File extension that fits the chosen format (".squashfs", ".ext4", ".tar.gz"...); for a disk image, the one it had.</summary>
-    public string Extension => WritesDisk ? DiskExtension(_doc.FilePath) : _format switch
+    public string Extension => WritesDisk ? DiskExtension(_doc.FilePath) : ShowUbiOptions ? ".ubi" : _format switch
     {
         SaveFormat.SquashFs => ".squashfs",
+        SaveFormat.Ubifs => ".ubifs",
         SaveFormat.Ext4 => ".ext4",
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
@@ -430,9 +506,45 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         o.Format = _format switch
         {
             SaveFormat.SquashFs => ImageFormat.SquashFs,
+            SaveFormat.Ubifs => ImageFormat.Ubifs,
             SaveFormat.Tar => ImageFormat.Tar,
             _ => ImageFormat.Ext,
         };
+        o.NewUbi = ShowUbiOptions;
+
+        if (o.NewUbi)
+        {
+            if (!int.TryParse(_ubiPeb.Trim(), out int peb) || !int.TryParse(_ubiSubPage.Trim().Length == 0 ? "0" : _ubiSubPage.Trim(), out int subPage))
+                return Fail(L.T("Размер блока стирания и подстраницы образа UBI — целые числа байт."));
+            if (!int.TryParse(_ubifsMinIo.Trim(), out int page)) return Fail(L.T("Размер страницы (мин. единицы ввода-вывода) — целое число байт."));
+            o.Ubi.PebSize = peb;
+            o.Ubi.SubPageSize = subPage;
+            o.Ubi.MinIoSize = page;
+            o.Ubi.VolumeName = _ubiVolumeName.Trim();
+            try { o.Ubi.Validate(); }
+            catch (FsException ex) { return Fail(ex.Message); }
+            o.Ubifs.LebSize = o.Ubi.LebSize;
+            o.Ubifs.MinIoSize = page;
+        }
+        if (IsUbifs)
+        {
+            if (!o.NewUbi && CanEditUbifsGeometry)
+            {
+                if (!int.TryParse(_ubifsLeb.Trim(), out int leb) || !int.TryParse(_ubifsMinIo.Trim(), out int minIo))
+                    return Fail(L.T("Размер блока стирания и страницы UBIFS — целые числа байт."));
+                o.Ubifs.LebSize = leb;
+                o.Ubifs.MinIoSize = minIo;
+            }
+            if (!int.TryParse(_ubifsMaxLeb.Trim().Length == 0 ? "0" : _ubifsMaxLeb.Trim(), out int maxLeb) || maxLeb < 0)
+                return Fail(L.T("Максимальное число блоков стирания — целое неотрицательное число (0 — выбрать автоматически)."));
+            o.Ubifs.MaxLebCount = maxLeb;
+            // A changed geometry makes the journal and log of the source meaningless: let the writer size them again.
+            if (_doc.Ubifs is not { } source || source.LebSize != o.Ubifs.LebSize || source.MaxLebCount != maxLeb)
+            {
+                o.Ubifs.JournalBytes = 0;
+                o.Ubifs.LogLebs = 0;
+            }
+        }
 
         o.SquashFs.XzFilters.Clear();
         if (_bcj >= 0) o.SquashFs.XzFilters.Add((BcjFilter)_bcj);
@@ -483,6 +595,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             {
                 case ImageFormat.SquashFs: o.SquashFs.Validate(); break;
                 case ImageFormat.Ext: o.Ext.Validate(); break;
+                case ImageFormat.Ubifs: o.Ubifs.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }

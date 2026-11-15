@@ -29,7 +29,12 @@ public sealed class UbifsInfo
     public int MaxLebCount { get; init; }
 
     public int LogLebs { get; init; }
+    public int LptLebs { get; init; }
+    public int OrphanLebs { get; init; }
     public int Fanout { get; init; }
+
+    /// <summary>Upper limit of the journal (the "buds"), in bytes.</summary>
+    public long JournalBytes { get; init; }
 
     /// <summary>Compressor used for new data; every data block records its own.</summary>
     public UbifsCompression DefaultCompression { get; init; }
@@ -78,7 +83,7 @@ public sealed class UbifsReader : IDisposable
     private const int InoNodeSize = 160, DentNodeSize = 56, DataNodeSize = 48, IdxNodeSize = 28, TrunNodeSize = 56;
     private const int MaxDataNodeSize = DataNodeSize + 2 * BlockSize;
     private const uint RootInode = 1;
-    private const int MasterLeb = 1, LogLeb = 3;
+    private const int MasterLeb = 1, LogLeb = 3, MinMainLebs = 9;
 
     private const int NodeIno = 0, NodeData = 1, NodeDent = 2, NodeXent = 3, NodeTrun = 4, NodePad = 5,
         NodeSb = 6, NodeMst = 7, NodeRef = 8, NodeIdx = 9, NodeCs = 10;
@@ -142,6 +147,20 @@ public sealed class UbifsReader : IDisposable
         source.ReadExactly(0, head);
         if (Le.U32(head, 0) != NodeMagic || head[20] != NodeSb || Le.U32(head, 16) != SuperblockSize) return false;
         return ValidNode(source.ReadBytes(0, SuperblockSize));
+    }
+
+    /// <summary>
+    /// The smallest volume, in erase blocks, that the kernel mounts this filesystem in: the filesystem itself,
+    /// and a main area that can hold its journal. 0 when the data does not start with a UBIFS superblock.
+    /// </summary>
+    public static int MinimumVolumeLebs(IBlockSource source)
+    {
+        if (!IsUbifs(source)) return 0;
+        byte[] sb = source.ReadBytes(0, SuperblockSize);
+        long lebSize = Le.U32(sb, 36), lebCount = Le.U32(sb, 40), journal = (long)Le.U64(sb, 48);
+        long fixedLebs = LogLeb + Le.U32(sb, 56) + Le.U32(sb, 60) + Le.U32(sb, 64);
+        long main = Math.Max(MinMainLebs, (journal + lebSize - 1) / lebSize);
+        return (int)Math.Min(int.MaxValue, Math.Max(lebCount, fixedLebs + main));
     }
 
     public static UbifsReader Open(IBlockSource source, bool ownsSource = true)
@@ -267,6 +286,9 @@ public sealed class UbifsReader : IDisposable
             LebCount = _lebCount,
             MaxLebCount = (int)Le.U32(sb, 44),
             LogLebs = _logLebs,
+            LptLebs = (int)Le.U32(sb, 60),
+            OrphanLebs = (int)Le.U32(sb, 64),
+            JournalBytes = (long)Le.U64(sb, 48),
             Fanout = (int)Le.U32(sb, 72),
             DefaultCompression = (UbifsCompression)Le.U16(sb, 84),
             KeyHash = sb[26] == 0 ? "r5" : "test",

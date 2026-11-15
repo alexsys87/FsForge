@@ -21,7 +21,7 @@ public sealed class DialogService : IDialogService
         L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
         L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
-        L.T("UBI и UBIFS (только чтение)") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
+        L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
         L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" + AllFiles;
 
     private readonly Func<Window?> _owner;
@@ -62,6 +62,7 @@ public sealed class DialogService : IDialogService
         {
             ImageFormat.SquashFs => "SquashFS|*.squashfs;*.sqfs;*.sfs;*.img;*.bin",
             ImageFormat.Ext => L.T("Образ ext2/3/4") + "|*.ext4;*.ext3;*.ext2;*.img;*.bin",
+            ImageFormat.Ubifs => L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.img;*.bin",
             _ => L.T("Архив tar") + "|*" + extension,
         }) + "|" + AllFiles;
         var dialog = new SaveFileDialog

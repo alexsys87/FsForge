@@ -711,11 +711,11 @@ internal static class Program
             vm.Dispose();
         });
 
-        await Test("UBI image and UBIFS: volume choice, read-only source, saving in another format", async () =>
+        await Test("UBI image and UBIFS: volume choice, saving the UBI image, a volume alone, a new UBI image", async () =>
         {
             var (vm, d, _, _) = NewVm();
             // The tree of the usual test image as the UBIFS root volume, next to a kernel and a small data volume.
-            byte[] root, data;
+            byte[] root, data, kernel = new byte[200000].Select((_, i) => (byte)(i * 7 + 1)).ToArray();
             using (ImageDocument source = ImageDocument.Open(MakeImage("u.root"), _dir))
                 root = FsForge.Cli.UbifsImageBuilder.FromTree(source.Tree).ToArray();
             using (var small = new FsTree(0x1ED, 1700000000))
@@ -726,11 +726,10 @@ internal static class Program
             string ubi = Path.Combine(_dir, "nand.ubi");
             File.WriteAllBytes(ubi, FsForge.Cli.UbifsImageBuilder.WrapUbi(new[]
             {
-                new FsForge.Cli.UbifsImageBuilder.Volume("kernel", new byte[200000].Select((_, i) => (byte)(i * 7 + 1)).ToArray(), Static: true),
+                new FsForge.Cli.UbifsImageBuilder.Volume("kernel", kernel, Static: true),
                 new FsForge.Cli.UbifsImageBuilder.Volume("rootfs", root),
                 new FsForge.Cli.UbifsImageBuilder.Volume("rootfs_data", data),
             }));
-            byte[] before = File.ReadAllBytes(ubi);
 
             // Two volumes can be opened: the user is asked, the root filesystem is preselected.
             int asked = 0;
@@ -749,76 +748,120 @@ internal static class Program
                 return c.Accept();
             };
             Check(await vm.OpenPathAsync(ubi), "open failed: " + string.Join("; ", d.Messages));
-            Check(asked == 1 && vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume.Name: "rootfs", SavesFilesystemOnly: true }, "the chosen volume was not opened");
-            Check(vm.DocumentInfo.StartsWith("образ UBI · том «rootfs» (1) из 3 · UBIFS · zlib · только чтение"), "status line: " + vm.DocumentInfo);
-            Check(vm.IsInfoOpen && vm.InfoTitle.Contains("предупрежден") && vm.InfoMessage.Contains("reading only"), "the read-only warning was not shown: " + vm.InfoTitle + " / " + vm.InfoMessage);
+            Check(asked == 1 && vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume.Name: "rootfs", SavesFilesystemOnly: false }, "the chosen volume was not opened");
+            Check(vm.DocumentInfo.StartsWith("образ UBI · том «rootfs» (1) из 3 · UBIFS · zlib · блок стирания 124 КБ"), "status line: " + vm.DocumentInfo);
+            Check(!vm.IsInfoOpen, "a UBI image must open without warnings: " + vm.InfoMessage);
             vm.CurrentPath = "/etc";
             Check(vm.Items.Count == 4 && vm.Document!.Tree.Resolve("/bin/ash")!.Inode.LinkCount == 2, "content of the volume");
 
             d.OnDialog = o => o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "▸ Том «rootfs» (1) (открыт)") && i.Rows.Any(r => r.Label == "Том «kernel» (0)")
-                                  && i.Rows.Any(r => r.Label == "Состояние" && r.Value == "чистая") && i.Rows.Any(r => r.Label == "Сохранение" && r.Value.Contains("только для чтения"));
+                                  && i.Rows.Any(r => r.Label == "Состояние" && r.Value == "чистая") && i.Rows.Any(r => r.Label == "Сохранение" && r.Value.Contains("образ UBI целиком"));
             vm.ImageInfoCommand.Execute(null);
 
-            // Ctrl+S cannot write UBIFS back: it asks for a format and a new file, SquashFS by default.
+            // Ctrl+S: no questions, the file stays a UBI image with the other volumes as they were.
             Select(vm, "Banner");
             d.Answers.Enqueue(DialogAnswer.Primary);
             await vm.DeleteCommand.ExecuteAsync();
-            int dialogs = 0;
-            d.OnDialog = o =>
-            {
-                var s = (SaveOptionsViewModel)o;
-                dialogs++;
-                Check(s.HasSourceNote && s.SourceNote.Contains("UBIFS") && !s.ShowContainerOptions && !s.WritesDisk, "source note: " + s.SourceNote);
-                Check(s.Format == SaveFormat.SquashFs && s.Extension == ".squashfs" && !s.Formats.Any(f => f.Title.Contains("UBI")), "default target format: " + s.Format);
-                return s.Accept();
-            };
-            string target = Path.Combine(_dir, "nand-root.squashfs");
-            d.SavePicks.Enqueue(target);
+            d.OnDialog = o => o is PartitionChoiceViewModel ? throw new InvalidOperationException("the volume was asked for again") : throw new InvalidOperationException("unexpected dialog on save: " + o.GetType().Name);
             Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
-            Check(dialogs == 1 && d.LastSuggestedName == "nand.squashfs" && !d.LastSaveWasDisk, "suggested name: " + d.LastSuggestedName);
-            Check(vm.Document is { Format: ImageFormat.SquashFs, Ubi: null, SavesFilesystemOnly: false } && vm.Document.FilePath == target, "the saved document: " + vm.Document?.FormatName);
-            Check(vm.Document!.Tree.Resolve("/etc/Banner") is null && vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.CurrentPath == "/etc", "the edit was not saved");
-            Check(File.ReadAllBytes(ubi).AsSpan().SequenceEqual(before), "the UBI image was changed");
-            Check(!vm.DocumentInfo.Contains("UBI"), "status line of the saved image: " + vm.DocumentInfo);
+            Check(vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume.Name: "rootfs" } && vm.Document.FilePath == ubi && vm.Document.Ubi.Image.Volumes.Count == 3, "the saved file is not the UBI image");
+            Check(vm.CurrentPath == "/etc" && vm.Items.Count == 3 && !vm.IsModified && vm.Document.Tree.Resolve("/etc/Banner") is null, "view after saving");
+            FsForge.Core.Ubifs.UbiImage image = vm.Document.Ubi.Image;
+            Check(image.OpenVolume(image.Volumes[0]).ReadBytes(0, kernel.Length).AsSpan().SequenceEqual(kernel) && image.Volumes[0].IsStatic, "the kernel volume changed");
+            Check(image.Volumes[2] is { Name: "rootfs_data", IsReadable: true }, "the data volume: " + image.Volumes[2]);
 
-            // The format for new images is also where the content of a read-only image goes by default.
-            AppSettings settings = vm.Settings.Clone();
-            settings.NewImageFormat = ImageFormat.Ext;
-            vm.ApplySettings(settings);
-            d.OnDialog = o => o is PartitionChoiceViewModel c && c.Accept();
-            Check(await vm.OpenPathAsync(ubi), "reopen failed: " + string.Join("; ", d.Messages));
+            // Save as: the dialog explains the UBI image; the filesystem alone and a tar archive are separate files.
             d.OnDialog = o =>
             {
                 var s = (SaveOptionsViewModel)o;
-                Check(s.Format == SaveFormat.Ext4 && s.Extension == ".ext4", "target format from the settings: " + s.Format);
+                Check(s.ShowContainerOptions && s.IsUbiContainer && s.KeepContainer && s.WritesDisk && s.WritesUbi && s.Extension == ".ubi", "UBI options in the save dialog: " + s.Extension);
+                Check(s.ContainerTitle == "Образ UBI" && s.ContainerToggleText.Contains("образ UBI целиком") && s.ContainerSummary.Contains("nand.ubi") && s.ContainerSummary.Contains("том «rootfs» (1)")
+                      && s.ContainerNote.Contains("остальные тома переносятся"), "texts: " + s.ContainerSummary + " / " + s.ContainerNote);
+                Check(s.Format == SaveFormat.Ubifs && s.IsUbifs && !s.CanEditUbifsGeometry && s.UbifsLebSize == "126976" && s.UbifsMinIoSize == "2048" && !s.ShowNewUbi, "UBIFS fields: " + s.UbifsLebSize);
                 s.Format = SaveFormat.Tar;
+                Check(!s.WritesDisk && !s.WritesUbi && s.Extension == ".tar.gz" && s.ContainerNote.Contains("образ UBI при этом не меняется"), "a tar archive is never a UBI image");
+                s.Format = SaveFormat.Ubifs;
+                s.KeepContainer = false;
+                Check(!s.WritesDisk && s.Extension == ".ubifs" && s.CanEditUbifsGeometry && s.ShowNewUbi && s.ContainerNote.Contains("только файловая система"), "filesystem-only mode: " + s.ContainerNote);
+                s.UbifsLebSize = "abc";
+                Check(!s.Accept() && s.HasError, "a bad erase block size was accepted");
+                s.UbifsLebSize = "100000";
+                Check(!s.Accept() && s.Error!.Contains("multiple"), "an erase block that is no multiple of the page was accepted: " + s.Error);
+                s.UbifsLebSize = "126976";
                 return s.Accept();
             };
-            d.SavePicks.Enqueue(Path.Combine(_dir, "nand-root.tar.gz"));
-            Check(await vm.SaveAsAsync(), "save as tar failed: " + string.Join("; ", d.Messages));
-            Check(vm.Document is { Format: ImageFormat.Tar } && vm.Document.Tree.Resolve("/etc/Banner") is not null, "tar from UBIFS");
+            string alone = Path.Combine(_dir, "nand-root.ubifs");
+            d.SavePicks.Enqueue(alone);
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "nand.ubifs" && !d.LastSaveWasDisk && vm.Document is { Format: ImageFormat.Ubifs, Ubi: null } && vm.Document.FilePath == alone, "filesystem saved alone: " + d.LastSuggestedName);
+            Check(vm.DocumentInfo.StartsWith("UBIFS · zlib · блок стирания"), "status line of a plain UBIFS image: " + vm.DocumentInfo);
 
-            // A plain UBIFS image opens without questions; a cancelled volume choice leaves the document alone.
-            string plain = Path.Combine(_dir, "rootfs.ubifs");
-            File.WriteAllBytes(plain, root);
+            // A plain UBIFS image is edited and saved in place like any other image.
+            vm.CurrentPath = "/etc";
+            Select(vm, "group");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
             d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
-            Check(await vm.OpenPathAsync(plain) && vm.Document is { Format: ImageFormat.Ubifs, Ubi: null }, "plain UBIFS image");
-            Check(vm.DocumentInfo.StartsWith("UBIFS · zlib · только чтение"), "status line: " + vm.DocumentInfo);
-            d.OnDialog = o => o is PartitionChoiceViewModel ? false : throw new InvalidOperationException("unexpected dialog");
-            Check(!await vm.OpenPathAsync(ubi) && vm.Document!.FilePath == plain, "a cancelled choice changed the document");
+            Check(await vm.SaveAsync() && vm.Document is { Format: ImageFormat.Ubifs } && vm.Document.Tree.Resolve("/etc/group") is null && !vm.IsModified, "UBIFS saved in place: " + string.Join("; ", d.Messages));
 
-            // A dropped UBI image is recognised as an image.
+            // A new UBI image around it: the erase block follows the flash parameters given in the dialog.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.ShowNewUbi && !s.NewUbi && !s.ShowUbiOptions && s.Extension == ".ubifs", "the new UBI switch");
+                s.NewUbi = true;
+                Check(s.ShowUbiOptions && s.WritesUbi && s.Extension == ".ubi" && !s.CanEditUbifsGeometry, "new UBI mode: " + s.Extension);
+                s.UbiPebSize = "1000";
+                Check(!s.Accept() && s.HasError, "a bad UBI erase block was accepted");
+                s.UbiPebSize = "131072";
+                s.UbiSubPageSize = "512";
+                s.UbiVolumeName = "system";
+                s.UbiAutoResize = false;
+                return s.Accept();
+            };
+            string made = Path.Combine(_dir, "made.ubi");
+            d.SavePicks.Enqueue(made);
+            Check(await vm.SaveAsAsync(), "new UBI failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "nand-root.ubi" && vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume: { Name: "system", AutoResize: false } } && vm.Document.Ubifs!.LebSize == 129024
+                  && vm.Document.Ubi.Image.VidHeaderOffset == 512, "the new UBI image: " + vm.Document?.Ubifs?.LebSize);
+            Check(vm.Document!.Tree.Resolve("/etc/group") is null && vm.Document.Tree.Resolve("/etc/passwd") is not null, "content of the new UBI image");
+
+            // SquashFS can be converted to UBIFS, and UBIFS is among the formats of new images.
+            Check(await vm.OpenPathAsync(MakeImage("to-ubifs.sqfs")), "open failed");
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.Formats.Any(f => f.Value == SaveFormat.Ubifs) && !s.IsUbifs, "UBIFS is offered as a target");
+                s.Format = SaveFormat.Ubifs;
+                Check(s.IsUbifs && s.Extension == ".ubifs" && s.UbifsCompression == FsForge.Core.Ubifs.UbifsCompression.Lzo && s.UbifsMaxLebCount == "0", "defaults of a new UBIFS image");
+                s.UbifsCompression = FsForge.Core.Ubifs.UbifsCompression.Zstd;
+                s.UbifsLebSize = "65408";
+                s.UbifsMinIoSize = "1";
+                s.SpaceFixup = true;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "from-squash.ubifs"));
+            Check(await vm.SaveAsAsync(), "SquashFS -> UBIFS failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "to-ubifs.ubifs" && vm.Document is { Format: ImageFormat.Ubifs } && vm.Document.Ubifs is { LebSize: 65408, MinIoSize: 8, SpaceFixup: true, DefaultCompression: FsForge.Core.Ubifs.UbifsCompression.Zstd },
+                "the converted image: " + vm.Document?.Ubifs?.LebSize);
+            Check(new SettingsViewModel(vm.Settings.Clone(), d, Path.Combine(_dir, "s.json")).NewFormats.Any(f => f.Value == ImageFormat.Ubifs), "UBIFS as the format of new images");
+            Check(SettingsStore.Sanitize(new AppSettings { Ubifs = new FsForge.Core.Ubifs.UbifsOptions { LebSize = 5 } }).Ubifs.LebSize == 126976, "bad UBIFS defaults are repaired");
+
+            // A cancelled volume choice leaves the document alone; a dropped UBI image is recognised as an image.
+            d.OnDialog = o => o is PartitionChoiceViewModel ? false : throw new InvalidOperationException("unexpected dialog");
+            Check(!await vm.OpenPathAsync(ubi) && vm.Document!.FilePath!.EndsWith("from-squash.ubifs"), "a cancelled choice changed the document");
             d.Answers.Enqueue(DialogAnswer.Cancel);
             await vm.HandleDropAsync(new[] { ubi });
             Check(d.Asked[^1] == "Что сделать с файлом?", "a dropped UBI image was not recognised: " + d.Asked[^1]);
 
-            Check(SettingsStore.Sanitize(new AppSettings { NewImageFormat = ImageFormat.Ubifs }).NewImageFormat == ImageFormat.SquashFs, "UBIFS as the format of new images");
             try
             {
                 L.Set(AppLanguage.English);
                 using ImageDocument doc = ImageDocument.Open(ubi, _dir);
                 var c = new PartitionChoiceViewModel("nand.ubi", doc.Ubi!.Image);
                 Check(c.Title == "Choose a volume" && c.Rows[1] is { Name: "Volume “rootfs” (1)" } && c.Rows[0].Details.EndsWith("static"), "English volume dialog: " + c.Rows[1].Name + " / " + c.Rows[0].Details);
+                var s = new SaveOptionsViewModel(doc, vm.Settings.DefaultSaveOptions(doc));
+                Check(s.ContainerTitle == "UBI image" && s.ContainerNote.Contains("carried over unchanged") && !s.ContainerNote.Any(ch => ch is >= 'А' and <= 'я'), "English save dialog: " + s.ContainerNote);
             }
             finally
             {

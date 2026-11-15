@@ -28,6 +28,15 @@ public sealed class UbiVolumeInfo
     /// <summary>The volume grows to fill the flash on first attach (the "autoresize" flag).</summary>
     public bool AutoResize { get; init; }
 
+    /// <summary>Number of logical erase blocks the volume table reserves for the volume; 0 when the table has no record for it.</summary>
+    public int ReservedLebs { get; init; }
+
+    /// <summary>Usable size of a logical erase block of this volume (the erase block without headers and alignment padding).</summary>
+    public int LebSize { get; init; }
+
+    internal int Alignment { get; init; } = 1;
+    internal byte Flags { get; init; }
+
     public PartitionContent Content { get; init; }
 
     /// <summary>Exact kind of the content when known ("UBIFS", "SquashFS"...).</summary>
@@ -67,7 +76,7 @@ public sealed class UbiImage
     private const int InternalVolumeStart = 0x7FFFEFFF;
     private const int VtblRecordSize = 172;
     private const int MaxVolumes = 128;
-    private const int MinPebSize = 4096, MaxPebSize = 16 << 20;
+    private const int MinPebSize = 4096, MaxPebSize = 16 << 20, MaxLebNumber = 1 << 22;
 
     private readonly IBlockSource _source;
     private readonly int _dataOffset;
@@ -77,6 +86,25 @@ public sealed class UbiImage
         _source = source;
         PebSize = pebSize;
         _dataOffset = dataOffset;
+    }
+
+    /// <summary>Offset of the volume identifier header in an erase block (the sub-page size on NAND with sub-pages).</summary>
+    public int VidHeaderOffset { get; private set; }
+
+    /// <summary>Offset of the data in an erase block.</summary>
+    public int DataOffset => _dataOffset;
+
+    /// <summary>Number that all erase blocks of one image share.</summary>
+    public uint ImageSequence { get; private set; }
+
+    /// <summary>
+    /// The min. I/O unit a filesystem in this image has to be made for, as far as the header offsets tell:
+    /// the page size of NAND, 1 for NOR flash.
+    /// </summary>
+    public int GuessMinIoSize()
+    {
+        if (VidHeaderOffset == HeaderSize) return 1;                            // NOR: the headers follow each other
+        return _dataOffset == 2 * VidHeaderOffset ? VidHeaderOffset : _dataOffset;   // without and with sub-pages
     }
 
     /// <summary>Size of a physical erase block.</summary>
@@ -191,6 +219,7 @@ public sealed class UbiImage
 
     private void Scan(int vidOffset, CancellationToken ct)
     {
+        VidHeaderOffset = vidOffset;
         PebCount = (int)Math.Min(int.MaxValue, _source.Length / PebSize);
         if (_source.Length % PebSize != 0)
             Warnings.Add($"The size of the UBI image is not a multiple of its erase block size ({PebSize} bytes); the incomplete last block was ignored.");
@@ -213,7 +242,7 @@ public sealed class UbiImage
             // Every block of one UBI image carries the same sequence number. Blocks with another one belong
             // to a different image in the same dump (a second firmware slot) and must not be mixed in.
             uint seq = BinaryPrimitives.ReadUInt32BigEndian(ec[24..]);
-            if (peb == 0) imageSeq = seq;
+            if (peb == 0) ImageSequence = imageSeq = seq;
             else if (seq != imageSeq)
             {
                 foreign++;
@@ -233,7 +262,8 @@ public sealed class UbiImage
             int volId = (int)BinaryPrimitives.ReadUInt32BigEndian(vid[8..]);
             int lnum = (int)BinaryPrimitives.ReadUInt32BigEndian(vid[12..]);
             ulong sqnum = BinaryPrimitives.ReadUInt64BigEndian(vid[40..]);
-            if (lnum < 0 || lnum >= PebCount) { badBlocks++; continue; }
+            // A volume can have more logical blocks than the image has physical ones: blank blocks are not stored.
+            if (lnum < 0 || lnum >= MaxLebNumber) { badBlocks++; continue; }
             if (!volumes.TryGetValue(volId, out RawVolume? v)) volumes[volId] = v = new RawVolume();
             v.Static = vid[5] == 2;
             v.DataPad = (int)BinaryPrimitives.ReadUInt32BigEndian(vid[28..]);
@@ -260,7 +290,7 @@ public sealed class UbiImage
         if (badBlocks > 0)
             Warnings.Add($"{badBlocks} erase block(s) of the UBI image have damaged headers and were ignored.");
 
-        Dictionary<int, (string Name, long Reserved, bool AutoResize, bool Static)> table = ReadVolumeTable(volumes);
+        Dictionary<int, (string Name, long Reserved, bool AutoResize, bool Static, int Alignment, byte Flags)> table = ReadVolumeTable(volumes);
         var list = new List<UbiVolumeInfo>();
         foreach (int id in volumes.Keys.Where(k => k < InternalVolumeStart).Union(table.Keys).Order())
         {
@@ -285,6 +315,10 @@ public sealed class UbiImage
                 Name = rec.Name ?? "",
                 IsStatic = raw.Static,
                 ReservedBytes = rec.Reserved * lebSize,
+                ReservedLebs = (int)rec.Reserved,
+                LebSize = lebSize,
+                Alignment = Math.Max(1, rec.Alignment),
+                Flags = rec.Flags,
                 Length = length,
                 StoredBlocks = raw.Blocks.Count,
                 AutoResize = rec.AutoResize,
@@ -305,9 +339,9 @@ public sealed class UbiImage
         return HeaderCrc(data) == dataCrc;
     }
 
-    private Dictionary<int, (string Name, long Reserved, bool AutoResize, bool Static)> ReadVolumeTable(Dictionary<int, RawVolume> volumes)
+    private Dictionary<int, (string Name, long Reserved, bool AutoResize, bool Static, int Alignment, byte Flags)> ReadVolumeTable(Dictionary<int, RawVolume> volumes)
     {
-        var result = new Dictionary<int, (string, long, bool, bool)>();
+        var result = new Dictionary<int, (string, long, bool, bool, int, byte)>();
         if (!volumes.TryGetValue(LayoutVolumeId, out RawVolume? layout) || layout.Blocks.Count == 0)
         {
             Warnings.Add("The UBI image has no volume table; the names of its volumes are unknown.");
@@ -328,7 +362,7 @@ public sealed class UbiImage
                 if (reserved == 0) continue;                 // an empty slot
                 int nameLength = Math.Min(127, (int)BinaryPrimitives.ReadUInt16BigEndian(r[14..]));
                 string name = PosixName.Decode(r.Slice(16, nameLength));
-                result[i] = (name, reserved, (r[144] & 1) != 0, r[12] == 2);
+                result[i] = (name, reserved, (r[144] & 1) != 0, r[12] == 2, (int)BinaryPrimitives.ReadUInt32BigEndian(r[4..]), r[144]);
             }
             if (valid) return result;
         }
@@ -352,6 +386,9 @@ public sealed class UbiImage
         }
         return (content, name);
     }
+
+    /// <summary>True when the erase block of a volume is present in the image (false: it reads as erased flash).</summary>
+    public bool IsStored(UbiVolumeInfo volume, int lnum) => lnum >= 0 && lnum < volume.Map.Length && volume.Map[lnum] >= 0;
 
     /// <summary>The content of a volume as one run of bytes. Blocks that are not in the image read as erased flash (0xFF).</summary>
     public IBlockSource OpenVolume(UbiVolumeInfo volume) => new VolumeSource(this, volume);

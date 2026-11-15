@@ -456,7 +456,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         string info = _doc.FormatName;
         if (_doc.SquashFs is { } s) info += L.F(" · {0} · блок {1}", s.Compression.ToString().ToLowerInvariant(), Fmt.Size(s.BlockSize));
         if (_doc.Ext is { } e) info += L.F(" · {0} · свободно {1}", Fmt.Size(e.SizeBytes), Fmt.Size(e.FreeBlocks * e.BlockSize));
-        if (_doc.Ubifs is { } u) info += L.F(" · {0} · только чтение", u.DefaultCompression.ToString().ToLowerInvariant());
+        if (_doc.Ubifs is { } u) info += L.F(" · {0} · блок стирания {1}", u.DefaultCompression.ToString().ToLowerInvariant(), Fmt.Size(u.LebSize));
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
         if (_doc.Ubi is { } ubi)
             info = L.F("образ UBI · том {0} из {1} · ", Fmt.VolumeName(ubi.Volume), ubi.Image.Volumes.Count) + info;
@@ -679,12 +679,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         string baseName = _doc.FilePath is null ? "rootfs" : StripExtensions(Path.GetFileName(_doc.FilePath));
         // The file keeps its name when it stays what it was: the same disk image, or the same kind of plain image.
+        // "disk" stands for either container: a disk image with partitions, or a UBI image with volumes.
         bool disk = _doc.WritesContainer(vm.Result);
+        bool ubi = _doc.WritesUbi(vm.Result);
         bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.SavesFilesystemOnly && _doc.Container is null
+                          && _doc.Ubi is null && !ubi
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
         string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string? path = _dialogs.PickSaveFile(disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ"), suggested, vm.Result.Format, vm.Extension, dir, disk);
+        string title = ubi ? L.T("Сохранить образ UBI") : disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ");
+        string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && !ubi);
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
     }

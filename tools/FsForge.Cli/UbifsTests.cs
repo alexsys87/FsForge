@@ -7,8 +7,9 @@ using FsForge.Core.Ubifs;
 namespace FsForge.Cli;
 
 /// <summary>
-/// UBIFS and UBI are read-only formats: the tests make their own images with
-/// <see cref="UbifsImageBuilder"/>, read them back, replay a journal and convert the content.
+/// UBIFS and UBI. The writers are tested by writing and reading back, like the other formats; an
+/// independent, test-only writer (<see cref="UbifsImageBuilder"/>) provides images with a journal,
+/// with damaged nodes and with UBI layouts the product itself does not produce.
 /// </summary>
 internal static partial class SelfTest
 {
@@ -16,9 +17,25 @@ internal static partial class SelfTest
     {
         foreach (UbifsCompression c in new[] { UbifsCompression.None, UbifsCompression.Zlib, UbifsCompression.Zstd })
             Test($"ubifs {c}: read", () => UbifsRead(tree, reference, c, c == UbifsCompression.Zlib ? 3 : 8));
-        Test("ubifs: saved as SquashFS, ext4 and tar; writing UBIFS is refused", () => UbifsConvert(tree, reference));
+        Test("lzo and deflate compressors", UbifsCodecs);
+        foreach (UbifsCompression c in Enum.GetValues<UbifsCompression>())
+            Test($"ubifs {c}: write", () => RoundTrip(tree, reference, $"w_{c}.ubifs", new SaveOptions { Format = ImageFormat.Ubifs, Ubifs = new UbifsOptions { Compression = c } }));
+        Test("ubifs NOR geometry, fanout 3, space fixup", () => RoundTrip(tree, reference, "w_nor.ubifs", new SaveOptions
+        {
+            Format = ImageFormat.Ubifs,
+            Ubifs = new UbifsOptions { LebSize = 65408, MinIoSize = 1, Fanout = 3, SpaceFixup = true, Compression = UbifsCompression.Zlib },
+        }));
+        Test("ubifs 4 KiB pages, large maximum size (big LPT)", () => RoundTrip(tree, reference, "w_big.ubifs", new SaveOptions
+        {
+            Format = ImageFormat.Ubifs,
+            Ubifs = new UbifsOptions { LebSize = 253952, MinIoSize = 4096, MaxLebCount = 500000, Compression = UbifsCompression.Zstd },
+        }));
+        Test("ubifs: geometry is kept on saving, invalid options and oversized content are rejected", () => UbifsWriteOptions(tree));
+        Test("ubifs: saved as SquashFS, ext4 and tar, and back as UBIFS in place", () => UbifsConvert(tree, reference));
+        Test("ubi: a new UBI image around UBIFS and around SquashFS", () => UbiNew(tree, reference));
+        Test("ubi: a volume is replaced, the other volumes are carried over", () => UbiRewrite(tree, reference));
         Test("ubi: volumes, choice of a volume, scrambled blocks, image inside a firmware file", () => UbiVolumes(tree, reference));
-        Test("ubi: a SquashFS volume is opened and saved as the filesystem alone", () => UbiSquashFs(tree, reference));
+        Test("ubi: a SquashFS volume is opened and, on request, saved as the filesystem alone", () => UbiSquashFs(tree, reference));
         Test("ubifs: an unreplayed journal is replayed while reading", UbifsJournal);
         Test("ubifs: stale and foreign logs are not followed", UbifsLogEdges);
         Test("ubifs: a damaged node costs one file, not the image", UbifsDamagedNode);
@@ -44,8 +61,7 @@ internal static partial class SelfTest
                   && u.Fanout == fanout && u.FormatVersion == 4 && u.ReplayedNodes == 0 && !u.Dirty && u.CommitNumber == 7,
                 $"info: leb={u.LebSize} minio={u.MinIoSize} comp={u.DefaultCompression} fanout={u.Fanout} commit={u.CommitNumber}");
             Check(u.Uuid == Guid.Parse("a0a1a2a3-a4a5-a6a7-a8a9-aaabacadaeaf"), "uuid: " + u.Uuid);
-            Check(doc.SavesFilesystemOnly && !ImageDocument.CanWrite(doc.Format), "a UBIFS document must not be saved in place");
-            Check(doc.Warnings.Count == 1 && doc.Warnings[0].Contains("reading only"), "warnings: " + string.Join("; ", doc.Warnings));
+            Check(!doc.SavesFilesystemOnly && doc.Warnings.Count == 0, "warnings: " + string.Join("; ", doc.Warnings));
             Same(reference, Program.DumpToString(doc.Tree), "ubifs " + compression);
             var rules = new TreeComparer.Rules();
             List<string> diff = TreeComparer.Compare(tree, doc.Tree, rules, content: true);
@@ -62,9 +78,8 @@ internal static partial class SelfTest
             ImageDocument doc = ImageDocument.Open(path, _dir);
             try
             {
-                // Without a choice the content of a read-only format goes to SquashFS.
                 SaveOptions o = doc.CreateSaveOptions();
-                Check(o.Format == ImageFormat.SquashFs, "default target format: " + o.Format);
+                Check(o.Format == ImageFormat.Ubifs && o.Ubifs.Compression == UbifsCompression.Zlib, "default target format: " + o.Format);
                 o = doc.CreateSaveOptions(format);
                 o.Verify = VerifyLevel.Content;
                 o.SquashFs.XzEffort = 0;
@@ -79,13 +94,249 @@ internal static partial class SelfTest
             }
         }
 
-        using ImageDocument source = ImageDocument.Open(path, _dir);
-        var refused = new SaveOptions { Format = ImageFormat.Ubifs };
-        ExpectFs(() => source.Save(Path.Combine(_dir, "refused.ubifs"), refused));
-        ExpectFs(() => ImageDocument.WriteTo(source.Tree, new MemoryStream(), refused));
-        Check(!File.Exists(Path.Combine(_dir, "refused.ubifs")) && !source.IsDisposed, "a refused save had side effects");
-        using ImageDocument fresh = ImageDocument.CreateNew(ImageFormat.Ubifs);
-        Check(fresh.Format == ImageFormat.SquashFs, "a new image cannot be UBIFS");
+        // Edited and saved over itself, with a backup: the file stays UBIFS with the same identity.
+        ImageDocument own = ImageDocument.Open(path, _dir);
+        try
+        {
+            Guid uuid = own.Ubifs!.Uuid;
+            own.Tree.Remove(own.Tree.Resolve("/etc/passwd")!);
+            SaveOptions o = own.CreateSaveOptions();
+            o.Verify = VerifyLevel.Content;
+            o.KeepBackup = true;
+            own = own.Save(path, o).Document;
+            Check(own.Format == ImageFormat.Ubifs && own.Ubifs!.Uuid == uuid && own.Ubifs.DefaultCompression == UbifsCompression.Zlib && own.Ubifs.Fanout == 8,
+                "identity after saving in place: " + own.Ubifs!.Uuid);
+            Check(own.Tree.Resolve("/etc/passwd") is null && own.Tree.Resolve("/bin/busybox") is not null && own.Warnings.Count == 0, "the edit was not saved");
+            using ImageDocument backup = ImageDocument.Open(path + ".bak", _dir);
+            Same(reference, Program.DumpToString(backup.Tree), "backup of the UBIFS image");
+        }
+        finally
+        {
+            own.Dispose();
+        }
+    }
+
+    private static void UbifsCodecs()
+    {
+        var rnd = new Random(8);
+        var lzo = new FsForge.Core.Compression.LzoCodec();
+        byte[] text = Bytes(rnd, 70000, compressible: true), mixed = new byte[9000];
+        Bytes(rnd, 3000).CopyTo(mixed, 2000);
+        foreach (byte[] data in new[] { text, mixed, Bytes(rnd, 5000), new byte[4096], new byte[1], Array.Empty<byte>(), text.AsSpan(0, 4096).ToArray(), text.AsSpan(1, 127).ToArray() })
+        {
+            byte[] packed = new byte[data.Length * 2 + 64], back = new byte[data.Length];
+            int n = lzo.Compress(data, packed);
+            Check(n > 0 && lzo.Decompress(packed.AsSpan(0, n), back) == data.Length && back.AsSpan().SequenceEqual(data), $"lzo round trip of {data.Length} bytes");
+            Check(data.Length < 4096 || data == mixed || rnd.Next() >= 0 && (data.Any(b => b != data[0]) && data != text ? true : n < data.Length / 2), $"lzo ratio of {data.Length} bytes: {n}");
+
+            foreach (int window in new[] { 8, 11, 15 })
+            {
+                n = new FsForge.Core.Compression.RawDeflate(window).Compress(data, packed);
+                Check(n > 0, "deflate did not fit");
+                using var inflate = new System.IO.Compression.DeflateStream(new MemoryStream(packed, 0, n), System.IO.Compression.CompressionMode.Decompress);
+                var plain = new MemoryStream();
+                inflate.CopyTo(plain);
+                Check(plain.ToArray().AsSpan().SequenceEqual(data), $"deflate round trip of {data.Length} bytes, window 2^{window}");
+            }
+        }
+        Check(lzo.Compress(text, new byte[100]) == -1 && new FsForge.Core.Compression.RawDeflate(11).Compress(Bytes(rnd, 5000), new byte[100]) == -1, "an output that does not fit must be reported");
+    }
+
+    private static void UbifsWriteOptions(FsTree tree)
+    {
+        var o = new SaveOptions
+        {
+            Format = ImageFormat.Ubifs,
+            Ubifs = new UbifsOptions { LebSize = 129024, MinIoSize = 2048, MaxLebCount = 3000, Fanout = 16, Compression = UbifsCompression.Zstd, SpaceFixup = true, Uuid = Guid.Parse("01020304-0506-0708-090a-0b0c0d0e0f10") },
+        };
+        string path = WriteFile("geometry.ubifs", WriteImage(tree, o));
+        using (ImageDocument doc = ImageDocument.Open(path, _dir))
+        {
+            UbifsInfo u = doc.Ubifs!;
+            Check(u is { LebSize: 129024, MinIoSize: 2048, MaxLebCount: 3000, Fanout: 16, DefaultCompression: UbifsCompression.Zstd, SpaceFixup: true, FormatVersion: 4, Dirty: false, ReplayedNodes: 0 }
+                  && u.Uuid == o.Ubifs.Uuid && u.LebCount * (long)u.LebSize == new FileInfo(path).Length, $"written geometry: {u.LebSize}/{u.MinIoSize}/{u.MaxLebCount}/{u.Fanout} {u.Uuid}");
+            UbifsOptions again = doc.CreateSaveOptions().Ubifs;
+            Check(again is { LebSize: 129024, MinIoSize: 2048, MaxLebCount: 3000, Fanout: 16, Compression: UbifsCompression.Zstd, SpaceFixup: true } && again.Uuid == o.Ubifs.Uuid
+                  && again.JournalBytes == u.JournalBytes && again.LogLebs == u.LogLebs, "options taken from the image");
+            Check(UbifsReader.MinimumVolumeLebs(new FileBlockSource(path)) >= u.LebCount, "minimum volume size");
+        }
+
+        foreach (Action<UbifsOptions> spoil in new Action<UbifsOptions>[]
+                 {
+                     x => x.LebSize = 10000, x => x.LebSize = 126977, x => x.MinIoSize = 3000, x => x.LebSize = 3 << 20, x => x.Fanout = 2,
+                     x => x.MaxLebCount = 10, x => x.OrphanLebs = 0, x => x.Compression = (UbifsCompression)9, x => x.LogLebs = 1,
+                 })
+        {
+            var bad = new UbifsOptions();
+            spoil(bad);
+            ExpectFs(() => ImageDocument.WriteTo(tree, new MemoryStream(), new SaveOptions { Format = ImageFormat.Ubifs, Ubifs = bad }));
+        }
+        // More content than the filesystem is allowed to take.
+        try
+        {
+            ImageDocument.WriteTo(tree, new MemoryStream(), new SaveOptions { Format = ImageFormat.Ubifs, Ubifs = new UbifsOptions { MaxLebCount = 40 } });
+            throw new TestFailure("content beyond the maximum size was accepted");
+        }
+        catch (FsNoSpaceException) { /* expected */ }
+
+        // Attributes of namespaces UBIFS does not have are dropped with a warning; an empty tree is a valid image.
+        using var t = new FsTree(0x1ED, 1700000000);
+        FsNode f = t.CreateFile(t.Root, "acl", new MemoryFileData(new byte[] { 1 }), mtime: 1700000000);
+        f.Inode.XAttrs = new(StringComparer.Ordinal) { ["system.posix_acl_access"] = new byte[] { 2, 0, 0, 0 }, ["user.kept"] = new byte[] { 7 } };
+        var ms = new MemoryStream();
+        IReadOnlyList<string> warnings = ImageDocument.WriteTo(t, ms, new SaveOptions { Format = ImageFormat.Ubifs });
+        Check(warnings.Count == 1 && warnings[0].Contains("system.posix_acl_access"), "warnings: " + string.Join("; ", warnings));
+        using (ImageDocument doc = ImageDocument.Open(WriteFile("xattr.ubifs", ms.ToArray()), _dir))
+            Check(doc.Tree.Resolve("/acl")!.Inode.XAttrs is { Count: 1 } x && x.ContainsKey("user.kept"), "attributes after writing");
+        using var empty = new FsTree(0x1C0, 5);
+        using (ImageDocument doc = ImageDocument.Open(WriteFile("empty.ubifs", WriteImage(empty, new SaveOptions { Format = ImageFormat.Ubifs })), _dir))
+            Check(doc.Tree.Root.ChildCount == 0 && doc.Tree.Root.Inode is { Mode: 0x1C0, MTime: 5 }, "empty UBIFS image");
+    }
+
+    private static void UbiNew(FsTree tree, string reference)
+    {
+        byte[] plain = WriteImage(tree, new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Gzip, GzipLevel = 6 } });
+        foreach ((ImageFormat format, UbiOptions ubi) in new[]
+                 {
+                     (ImageFormat.Ubifs, new UbiOptions()),
+                     (ImageFormat.Ubifs, new UbiOptions { SubPageSize = 512, VolumeName = "root fs", VolumeId = 4, AutoResize = false, VolumeBytes = 64 << 20 }),
+                     (ImageFormat.Ubifs, new UbiOptions { PebSize = 65536, MinIoSize = 1 }),
+                     (ImageFormat.SquashFs, new UbiOptions { PebSize = 262144, MinIoSize = 4096, VolumeName = "rootfs" }),
+                 })
+        {
+            string path = Path.Combine(_dir, $"new_{format}_{ubi.PebSize}_{ubi.SubPageSize}.ubi");
+            // The test tree comes in through a plain image of it, as it would in a conversion.
+            ImageDocument doc = ImageDocument.Open(WriteFile("ubi-source.sqfs", plain), _dir);
+            try
+            {
+                SaveOptions o = doc.CreateSaveOptions(format);
+                o.NewUbi = true;
+                o.Ubi = ubi;
+                o.Verify = VerifyLevel.Content;
+                o.SquashFs.XzEffort = 0;
+                Check(doc.WritesUbi(o) && !doc.WritesContainer(o), "a new UBI image was not announced");
+                doc = doc.Save(path, o).Document;
+                UbiContainer c = doc.Ubi ?? throw new TestFailure("the saved file is not a UBI image");
+                Check(doc.Format == format && c.Volume.Name == ubi.VolumeName && c.Volume.Id == ubi.VolumeId && c.Volume.AutoResize == ubi.AutoResize && !c.Volume.IsStatic,
+                    "volume: " + c.Volume);
+                Check(c.Image.PebSize == ubi.PebSize && c.Image.LebSize == ubi.LebSize && c.Image.VidHeaderOffset == ubi.VidHeaderOffset && c.Image.Volumes.Count == 1
+                      && c.Image.Warnings.Count == 0, $"geometry: {c.Image.PebSize}/{c.Image.LebSize}/{c.Image.VidHeaderOffset}");
+                Check(c.Image.GuessMinIoSize() == ubi.MinIoSize, "guessed min. I/O unit: " + c.Image.GuessMinIoSize());
+                if (format == ImageFormat.Ubifs)
+                {
+                    Check(doc.Ubifs is { } u && u.LebSize == ubi.LebSize && u.MinIoSize == Math.Max(8, ubi.MinIoSize), "UBIFS geometry follows the UBI image");
+                    Check(c.Volume.ReservedLebs >= Math.Max(doc.Ubifs!.LebCount, (int)(ubi.VolumeBytes / ubi.LebSize)), "reserved size: " + c.Volume.ReservedLebs);
+                }
+                Same(Normalize(reference, o), Normalize(Program.DumpToString(doc.Tree), o), "new UBI image");
+                Check(!doc.SavesFilesystemOnly && doc.WritesContainer(doc.CreateSaveOptions()), "the saved UBI image must be saved as a UBI image again");
+            }
+            finally
+            {
+                doc.Dispose();
+            }
+        }
+        using ImageDocument ext = ImageDocument.CreateNew(ImageFormat.Ext);
+        ExpectFs(() => ext.Save(Path.Combine(_dir, "ext.ubi"), new SaveOptions { Format = ImageFormat.Ext, NewUbi = true }));
+        foreach (Action<UbiOptions> spoil in new Action<UbiOptions>[] { x => x.PebSize = 1000, x => x.MinIoSize = 3, x => x.SubPageSize = 4096, x => x.VolumeName = "", x => x.VolumeId = 200 })
+        {
+            var bad = new UbiOptions();
+            spoil(bad);
+            ExpectFs(bad.Validate);
+        }
+    }
+
+    /// <summary>
+    /// A UBI image as ubinize or a device leaves it - a static kernel volume, the root filesystem and a
+    /// data volume, blocks in scrambled order - is edited and saved in place, one volume at a time.
+    /// </summary>
+    private static void UbiRewrite(FsTree tree, string reference)
+    {
+        using FsTree small = SmallTree("rootfs_data\n");
+        string smallReference = Program.DumpToString(small);
+        byte[] kernel = Bytes(new Random(5), 300000);
+        byte[] squash = WriteImage(tree, new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Gzip, GzipLevel = 6 } });
+        foreach (bool squashRoot in new[] { false, true })
+        {
+            string path = WriteFile(squashRoot ? "device-sq.ubi" : "device.ubi", UbifsImageBuilder.WrapUbi(new[]
+            {
+                new UbifsImageBuilder.Volume("kernel", kernel, Static: true),
+                new UbifsImageBuilder.Volume("rootfs", squashRoot ? squash : UbifsImageBuilder.FromTree(tree, UbifsCompression.Zstd).ToArray()),
+                new UbifsImageBuilder.Volume("rootfs_data", UbifsImageBuilder.FromTree(small).ToArray(), Id: 5),
+            }, shuffle: new Random(3)));
+
+            // The root volume: one file removed, saved over the same file.
+            ImageDocument doc = ImageDocument.Open(path, _dir);
+            try
+            {
+                SaveOptions o = doc.CreateSaveOptions();
+                Check(doc.WritesContainer(o) && doc.WritesUbi(o) && o.Format == (squashRoot ? ImageFormat.SquashFs : ImageFormat.Ubifs), "the UBI image must be kept by default");
+                doc.Tree.Remove(doc.Tree.Resolve("/etc/passwd")!);
+                o.Verify = VerifyLevel.Content;
+                ImageDocument.SaveResult r = doc.Save(path, o);
+                doc = r.Document;
+                UbiContainer c = doc.Ubi ?? throw new TestFailure("the saved file is not a UBI image");
+                Check(c.Volume is { Name: "rootfs", Id: 1 } && c.Image.Volumes.Count == 3 && c.Image.Warnings.Count == 0, "volumes after saving: " + string.Join("; ", c.Image.Volumes));
+                Check(c.Image.Volumes[0] is { Name: "kernel", IsStatic: true } k && k.Length == kernel.Length
+                      && c.Image.OpenVolume(k).ReadBytes(0, kernel.Length).AsSpan().SequenceEqual(kernel), "the static volume changed");
+                Check(c.Image.Volumes[2] is { Name: "rootfs_data", Id: 5 }, "the data volume: " + c.Image.Volumes[2]);
+                Check(doc.Tree.Resolve("/etc/passwd") is null && doc.Tree.Resolve("/bin/busybox") is not null, "the edit was not saved");
+                if (!squashRoot) Check(doc.Ubifs is { DefaultCompression: UbifsCompression.Zstd, LebSize: UbifsImageBuilder.LebSize, MinIoSize: UbifsImageBuilder.MinIo }, "UBIFS parameters of the volume");
+            }
+            finally
+            {
+                doc.Dispose();
+            }
+
+            // The data volume next: it grows, the others stay.
+            doc = ImageDocument.Open(path, _dir, volume: "rootfs_data");
+            try
+            {
+                Same(smallReference, Program.DumpToString(doc.Tree), "data volume after the root volume was replaced");
+                doc.Tree.CreateFile(doc.Tree.Resolve("/upper")!, "big.bin", new MemoryFileData(Bytes(new Random(9), 3 << 20)), mtime: 1700000001);
+                string expected = Program.DumpToString(doc.Tree);
+                SaveOptions o = doc.CreateSaveOptions();
+                o.Verify = VerifyLevel.Content;
+                ImageDocument.SaveResult r = doc.Save(path, o);
+                doc = r.Document;
+                Check(doc.Ubi!.Volume.Name == "rootfs_data" && r.Warnings.Any(w => w.Contains("enlarged")), "warnings: " + string.Join("; ", r.Warnings));
+                Same(expected, Program.DumpToString(doc.Tree), "data volume after growing");
+            }
+            finally
+            {
+                doc.Dispose();
+            }
+            using (ImageDocument root = ImageDocument.Open(path, _dir, volume: "rootfs"))
+                Check(root.Ubi!.Volume.Name == "rootfs" && root.Tree.Resolve("/etc/passwd") is null && root.Tree.Resolve("/var/sparse") is not null, "the root volume after the data volume was replaced");
+
+            // The filesystem alone on request, and a tar archive: neither touches the UBI image.
+            byte[] before = File.ReadAllBytes(path);
+            doc = ImageDocument.Open(path, _dir, volume: "rootfs");
+            try
+            {
+                SaveOptions o = doc.CreateSaveOptions();
+                o.KeepContainer = false;
+                Check(!doc.WritesContainer(o) && !doc.WritesUbi(o), "filesystem alone");
+                string alone = Path.Combine(_dir, squashRoot ? "alone.sqfs" : "alone.ubifs");
+                doc = doc.Save(alone, o).Document;
+                Check(doc.Ubi is null && doc.Format == (squashRoot ? ImageFormat.SquashFs : ImageFormat.Ubifs) && doc.FilePath == alone, "saved alone: " + doc.FormatName);
+                // A SquashFS volume becomes a UBIFS volume when the format is changed and the image kept.
+                if (squashRoot)
+                {
+                    doc.Dispose();
+                    doc = ImageDocument.Open(path, _dir, volume: "rootfs");
+                    SaveOptions u = doc.CreateSaveOptions(ImageFormat.Ubifs);
+                    string converted = Path.Combine(_dir, "device-converted.ubi");
+                    doc = doc.Save(converted, u).Document;
+                    Check(doc.Format == ImageFormat.Ubifs && doc.Ubi is { Volume.Name: "rootfs" } && doc.Ubifs is { LebSize: UbifsImageBuilder.LebSize, MinIoSize: UbifsImageBuilder.MinIo },
+                        "SquashFS volume converted to UBIFS: " + doc.FormatName);
+                }
+            }
+            finally
+            {
+                doc.Dispose();
+            }
+            Check(File.ReadAllBytes(path).AsSpan().SequenceEqual(before), "saving elsewhere changed the UBI image");
+        }
     }
 
     private static FsTree SmallTree(string marker)
@@ -121,7 +372,7 @@ internal static partial class SelfTest
                 Check(ubi.Image.PebSize == 131072 && ubi.Image.LebSize == UbifsImageBuilder.LebSize && ubi.Image.Volumes.Count == 3, $"geometry: {ubi.Image.PebSize}/{ubi.Image.LebSize}, {ubi.Image.Volumes.Count} volumes");
                 Check(ubi.Image.Volumes[0] is { Name: "kernel", Id: 0, IsStatic: true, IsReadable: false } k && k.Length == kernel.Length, "kernel volume: " + ubi.Image.Volumes[0]);
                 Check(ubi.Image.Volumes[2] is { Name: "rootfs_data", Id: 5, IsReadable: true }, "data volume: " + ubi.Image.Volumes[2]);
-                Check(doc.SavesFilesystemOnly && doc.EmbeddedOffset == 0, "a UBI volume must be saved as a filesystem alone");
+                Check(!doc.SavesFilesystemOnly && doc.EmbeddedOffset == 0, "a UBI image can be saved in place");
                 Same(reference, Program.DumpToString(doc.Tree), "rootfs volume");
                 // The static volume reads back exactly, including its short last block.
                 using IBlockSource raw = ubi.Image.OpenVolume(ubi.Image.Volumes[0]);
@@ -192,13 +443,13 @@ internal static partial class SelfTest
         try
         {
             Check(doc.Format == ImageFormat.SquashFs && doc.Ubi?.Volume.Name == "rootfs" && doc.Ubi.Volume.Content == PartitionContent.SquashFs, "volume: " + doc.Ubi?.Volume);
-            Check(doc.SavesFilesystemOnly && doc.Container is null, "a UBI volume must be saved as a filesystem alone");
-            Check(doc.Warnings.Any(w => w.Contains("UBI images cannot be written")), "warnings: " + string.Join("; ", doc.Warnings));
+            Check(!doc.SavesFilesystemOnly && doc.Container is null, "a UBI image can be saved in place");
             Same(Normalize(reference, o), Normalize(Program.DumpToString(doc.Tree), o), "SquashFS volume");
 
             doc.Tree.Remove(doc.Tree.Resolve("/etc/passwd")!);
             string target = Path.Combine(_dir, "openwrt-root.sqfs");
             SaveOptions save = doc.CreateSaveOptions();
+            save.KeepContainer = false;
             save.Verify = VerifyLevel.Content;
             doc = doc.Save(target, save).Document;
             Check(doc.Format == ImageFormat.SquashFs && doc.Ubi is null && !doc.SavesFilesystemOnly && doc.SquashFs!.Compression == SquashCompression.Gzip,

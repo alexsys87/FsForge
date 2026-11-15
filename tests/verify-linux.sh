@@ -250,7 +250,8 @@ if command -v busybox >/dev/null; then rm -rf tx; mkdir tx; busybox tar -xzp -C 
   python3 scan.py tx | cut -f1-5,7-8 | grep -v "	l	0777	" | cmp -s - <(cut -f1-5,7-8 tree.tar.nox.ref | grep -v "	l	0777	") && ok "busybox extracts the .tar.gz identically" || bad "busybox extraction differs"; rm -rf tx; fi
 
 # ---------------------------------------------------------- UBIFS and UBI
-# Read only: images made by mkfs.ubifs and ubinize are read and compared, then converted to the writable formats.
+# Images made by mkfs.ubifs and ubinize are read and compared, then converted to the other formats; images written
+# by FsForge are read back and, where the kernel has the modules, attached to a simulated flash and mounted.
 # (mkfs.ubifs cannot store the 3000-byte attribute, hence the tree without it.)
 if command -v mkfs.ubifs >/dev/null && command -v ubinize >/dev/null; then
 echo "UBIFS: images made by mkfs.ubifs"
@@ -320,9 +321,21 @@ if $F convert img/zlib.ubifs img/w_ubifs.tar.gz verify=content 2> out/w.ubi3.err
   python3 scan.py tx | cmp -s - <(grep -v "^/dev/sock" tree1k.ref) && ok "UBIFS -> tar.gz (GNU tar)" || bad "UBIFS -> tar.gz differs"; rm -rf tx; else bad "UBIFS -> tar.gz: $(cat out/w.ubi3.err)"; fi
 if $F edit img/sq.ubi img/w_ubi_edit.sqfs rm:/bigtext mkdir:/newdir 2> out/w.ubi4.err && $F ls img/w_ubi_edit.sqfs / | grep -q " newdir$" && ! $F ls img/w_ubi_edit.sqfs / | grep -q " bigtext$"; then
   ok "edit of a SquashFS volume is saved as the filesystem alone"; else bad "edit of a UBI volume: $(cat out/w.ubi4.err)"; fi
-for t in "img/lzo.ubifs img/w_x.ubifs" "img/lzo.ubifs img/w_x.img format=ubifs" "img/nand.ubi img/w_x.ubi"; do
-  if $F convert $t 2> out/w.ubi5.err; then bad "writing UBIFS was accepted ($t)"; else grep -q "read but not written" out/w.ubi5.err && ok "writing ${t##* } is refused" || bad "refusal of $t: $(cat out/w.ubi5.err)"; fi; done
-cmp -s img/lzo.ubifs <(cat img/lzo.ubifs) && [ ! -e img/w_x.ubifs ] && ok "nothing was written for the refused formats" || bad "a refused conversion left a file"
+
+echo "UBIFS and UBI: images written by FsForge"
+. "$HERE/verify-ubifs-kernel.sh"
+ubk_prepare
+# What FsForge wrote is read back by FsForge itself, here from the files; the kernel follows below.
+for n in lzo zlib zstd none fanout3 biglpt tight nor; do cmpdump "FsForge reads its own $n.ubifs" ubk/$n.ubifs tree1k.ref; done
+for n in nand sub fixed sq nor sq2ubifs; do cmpdump "FsForge reads its own $n.ubi" ubk/$n.ubi tree1k.ref; done
+cut -f1-5,7- ubk/tiny.ref | cmp -s - <(cut -f1-5,7- data.ref) && ok "read  FsForge reads its own tiny.ubi" || bad "tiny.ubi differs from its folder"
+[ "$(stat -c %s ubk/zlib.ubifs)" = "$(stat -c %s img/zlib.ubifs)" ] && [ "$(stat -c %s ubk/none.ubifs)" = "$(stat -c %s img/none.ubifs)" ] \
+  && ok "same image size as mkfs.ubifs for the same content (zlib, none)" || bad "image size differs from mkfs.ubifs: $(stat -c %s ubk/zlib.ubifs ubk/none.ubifs img/zlib.ubifs img/none.ubifs | tr '\n' ' ')"
+$F info ubk/edited.ubi > out/ubk.info 2>&1; grep -q '0: "kernel".*static' out/ubk.info && grep -q '\* 1: "rootfs", UBIFS' out/ubk.info && grep -q '2: "rootfs_data", UBIFS.*autoresize' out/ubk.info \
+  && ok "the edited UBI image keeps its volume table" || bad "volume table of edited.ubi: $(cat out/ubk.info)"
+if $F convert img/tree1k.sqfs ubk/bad.ubi format=ext4 ubi=1 2> out/ubk.bad.err; then bad "ext4 in a new UBI image was accepted"; else ok "only UBIFS and SquashFS go into a new UBI image"; fi
+if $F convert img/tree1k.sqfs ubk/bad.ubifs maxleb=40 2> out/ubk.bad.err; then bad "content beyond the maximum size was accepted"; else grep -q "erase blocks" out/ubk.bad.err && [ ! -e ubk/bad.ubifs ] && ok "content that exceeds the maximum size is rejected" || bad "$(cat out/ubk.bad.err)"; fi
+if ubk_modules; then ubk_check; else echo "  --    kernel checks skipped: nandsim, mtdram, ubi or ubifs cannot be loaded (see tests/verify-ubifs-kernel.sh)"; fi
 else echo "UBIFS: skipped (mtd-utils with mkfs.ubifs and ubinize is not installed)"; fi
 
 # ------------------------------------------------------ folders and ACLs

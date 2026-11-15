@@ -103,6 +103,12 @@ public sealed class AppSettings
     public ExtOptions Ext { get; set; } = new();
     public TarOptions Tar { get; set; } = new();
 
+    /// <summary>Defaults of a new UBIFS image: the geometry of the flash it is made for, and the compressor.</summary>
+    public FsForge.Core.Ubifs.UbifsOptions Ubifs { get; set; } = new();
+
+    /// <summary>Defaults of a new UBI image.</summary>
+    public FsForge.Core.Ubifs.UbiOptions Ubi { get; set; } = new();
+
     /// <summary>Free space added to an ext image whose size is chosen automatically, in MiB.</summary>
     public int ExtExtraFreeMiB { get; set; }
 
@@ -165,10 +171,10 @@ public sealed class AppSettings
             SquashFs = SquashFs.Clone(),
             Ext = Ext.Clone(),
             Tar = Tar.Clone(),
+            Ubifs = Ubifs.Clone(),
+            Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
-        // Where the content of a read-only format (UBIFS) goes unless the user chooses otherwise.
-        defaults.Format = NewImageFormat;
         SaveOptions o = doc.CreateSaveOptions(format, defaults);
         ApplyCommon(o);
         return o;
@@ -278,7 +284,16 @@ public sealed class SettingsStore
         s.WindowWidth = Math.Clamp(s.WindowWidth, 640, 10000);
         s.WindowHeight = Math.Clamp(s.WindowHeight, 420, 10000);
         s.ExtExtraFreeMiB = Math.Clamp(s.ExtExtraFreeMiB, 0, 1 << 20);
-        if (!ImageDocument.CanWrite(s.NewImageFormat) || !Enum.IsDefined(s.NewImageFormat)) s.NewImageFormat = ImageFormat.SquashFs;
+        if (!Enum.IsDefined(s.NewImageFormat)) s.NewImageFormat = ImageFormat.SquashFs;
+        s.Ubifs ??= new();
+        s.Ubi ??= new();
+        try { s.Ubifs.Validate(); } catch (FsForge.Core.FsException) { s.Ubifs = new(); }
+        try { s.Ubi.Validate(); } catch (FsForge.Core.FsException) { s.Ubi = new(); }
+        // Like the other defaults: nothing of a particular image, or of the volume it lived in.
+        s.Ubifs.Uuid = null;
+        s.Ubifs.VolumeLebCount = 0;
+        s.Ubifs.JournalBytes = 0;
+        s.Ubifs.LogLebs = 0;
         s.TextEditor ??= "";
         s.TempDirectory ??= "";
         try { s.SquashFs.Validate(); } catch (FsForge.Core.FsException) { s.SquashFs = new SquashFsOptions(); }

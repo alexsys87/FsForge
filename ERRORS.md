@@ -111,15 +111,14 @@
 
 ## 4. Чтение UBIFS и UBI
 
-UBIFS и UBI открываются **только для чтения**: содержимое можно просмотреть, извлечь, изменить в
-памяти и сохранить в другом формате (SquashFS, ext2/3/4, tar). Исходный файл при этом не меняется.
+UBIFS и UBI читаются и записываются (запись — в разделе 7). Образ UBI всегда сохраняется целиком,
+с заменой открытого тома.
 
 ### Образы UBI (тома)
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| Предупреждение: `The <формат> filesystem was read from volume '<имя>' (<N>) of a UBI image. UBI images cannot be written yet: saving writes the filesystem alone.` | Открыта SquashFS (или ext) из тома образа UBI. Собрать образ UBI заново программа не умеет. | «Сохранить как» запишет файловую систему отдельным файлом. Образ UBI из неё собирает `ubinize` в Linux. |
-| Предупреждение: `The UBI image was found inside the file at offset 0x<…>.` | Образ UBI лежит в файле прошивки не с начала (перед ним ядро или заголовок производителя). | Ничего делать не нужно. |
+| Предупреждение: `The UBI image was found inside the file at offset 0x<…>. Saving writes the UBI image alone, without the data in front of it.` | Образ UBI лежит в файле прошивки не с начала (перед ним ядро или заголовок производителя). Заголовок и контрольные суммы прошивки программа не пересобирает. | Сохраните под новым именем и соберите прошивку заново средствами производителя. |
 | `None of the volumes of this UBI image holds UBIFS or SquashFS. Its volumes: <список>.`, `The UBI image holds no volumes.` | В образе нет тома с файловой системой, которую программа читает (например, только ядро). | Проверьте, тот ли это файл: корневая файловая система может быть в другом разделе флеш-памяти. |
 | `The UBI image has no volume '<имя>'. Its volumes: <список>.` | Параметр `vol=` в `fsforge-cli` называет том, которого нет. | Возьмите имя или номер из списка в сообщении (или из `fsforge-cli info`). |
 | `Volume '<имя>' (<N>) holds <формат>, not UBIFS or SquashFS, and cannot be opened.` | Выбран том без читаемой файловой системы (ядро, пустой том). | Выберите другой том. |
@@ -137,7 +136,6 @@ UBIFS и UBI открываются **только для чтения**: сод
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| Предупреждение: `UBIFS images are opened for reading only: they cannot be written yet. Changes can be saved in another format - SquashFS, ext2/3/4 or tar.` | Показывается при каждом открытии UBIFS. | «Сохранить» и «Сохранить как» предложат выбрать другой формат и новый файл. |
 | `The UBIFS image is encrypted (fscrypt). Names and contents of its files cannot be read without the keys, so encrypted images are not supported.` | Файловая система создана с шифрованием. | Не поддерживается. |
 | Предупреждение: `'<путь>' is encrypted and was skipped.` | Отдельный объект зашифрован. | Его содержимое недоступно без ключа. |
 | Предупреждение: `The UBIFS image is authenticated (signed). The signatures are not verified.` | Образ подписан (`mkfs.ubifs --hash-algo … --auth-key …`). | Содержимое читается как обычно; подлинность не проверяется. |
@@ -204,7 +202,6 @@ UBIFS и UBI открываются **только для чтения**: сод
 | `The image could not be written: <текст системы>` | Нет места на диске, нет прав, ошибка ввода-вывода. | Освободите место (нужно не меньше размера нового образа плюс место под проверку), выберите другую папку. Для сжатых образов дополнительно нужно место во временной папке (Настройки → «Папка для временных файлов»). |
 | `The image could not be saved as '<путь>': <текст системы>` | Временный файл записан, но переименовать его не удалось. | Проверьте права на папку и что файл не занят; повторите. |
 | `The new image was written to '<путь>.fsforge-tmp' but could not replace '<путь>': <текст>. Rename the temporary file manually.` | Перезапись исходного файла: исходник уже закрыт, новый образ готов, но заменить файл не удалось. | Новый образ цел и проверен — он в `<путь>.fsforge-tmp`. Закройте программу, которая держит файл, и переименуйте временный файл вручную. Прежний файл, если включено «оставлять .bak», лежит в `<путь>.bak`. |
-| `UBIFS images can be read but not written. Choose SquashFS, ext2/3/4 or tar as the format to save in.`; в `fsforge-cli` — `UBIFS and UBI images can be read but not written. Use format=squashfs, ext2, ext3, ext4 or tar.` | Для сохранения выбран формат UBIFS (в `fsforge-cli` — имя файла на `.ubifs` / `.ubi` или `format=ubifs`). В окне программы этого формата в списке нет. | Выберите другой формат: `fsforge-cli convert образ.ubi rootfs.squashfs`. |
 | «Отменено» | Операция отменена кнопкой «Отмена». | Исходный файл не изменён, временный удалён. |
 
 ### Проверка после записи
@@ -256,6 +253,27 @@ UBIFS и UBI открываются **только для чтения**: сод
 | `SquashFS supports at most 65536 distinct user and group ids.` | Слишком много разных владельцев. | Включите в параметрах сохранения «Сделать владельцем всех объектов root (0:0)» (`allroot=1` в `fsforge-cli`) или уменьшите число разных UID/GID. |
 | `The inode table is too large for SquashFS.`, `The directory table is too large for SquashFS.` | Предел формата (сотни миллионов объектов). | Разделите содержимое на несколько образов. |
 | Предупреждение: `<путь>: extended attribute '<имя>' cannot be stored in SquashFS and was skipped.` | SquashFS хранит только `user.`, `trusted.` и `security.`. | Атрибут потерян; если нужен — ext или tar pax. |
+
+### Запись UBIFS и UBI
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The UBIFS min. I/O unit size must be a power of two.`, `The UBIFS erase block (LEB) size must be at least <N> bytes.` / `at most <N> bytes.`, `…must be a multiple of the min. I/O unit size and of 8.` | Неверные размеры страницы или блока стирания UBIFS. | Возьмите значения у вашей флеш-памяти (`mtdinfo -a`, `cat /proc/mtd`): размер логического блока = размер блока стирания минус заголовки UBI (для NAND 128 КБ со страницей 2048 — 126976, с подстраницами 512 — 129024, для NOR 64 КБ — 65408). |
+| `The maximum number of UBIFS erase blocks must be at least <N>.`, `The maximum number of UBIFS erase blocks is too low for the fixed areas of the filesystem.` | Задан слишком малый предел размера файловой системы. | Увеличьте «Макс. число блоков стирания» или оставьте 0. |
+| `The UBIFS index fanout must be between 3 and <N>.`, `UBIFS needs at least one erase block for orphans.`, `Unknown UBIFS compressor.`, `UBIFS sizes cannot be negative.` | Неверные параметры. | Верните значения по умолчанию. |
+| `The UBIFS log is too small for the journal: at least <N> erase blocks are needed.` | Заданный журнал не помещается в лог. | Уберите свои размеры журнала и лога. |
+| `The content needs <N> erase blocks, more than the maximum of <M> set for the filesystem.` | Содержимое не помещается в заданный предел. | Увеличьте «Макс. число блоков стирания» или удалите файлы. |
+| `The UBIFS geometry is not usable: the table of LEB properties does not fit into an erase block.` | Слишком малый блок стирания для заданного максимального размера. | Уменьшите максимальный размер или возьмите больший блок. |
+| `The target of the symbolic link '<путь>' cannot be stored in UBIFS: it must be 1 to 4095 bytes long.` | Цель ссылки слишком длинная. | Сократите цель или удалите ссылку. |
+| Предупреждение: `'<путь>': the extended attribute '<имя>' was not stored. UBIFS keeps only the user, trusted and security namespaces.`, `…is too large for UBIFS (4096 bytes at most) and was not stored.` | У атрибута пространство имён, которого нет в UBIFS (например, `system.posix_acl_access`), или он слишком велик. | Атрибут потерян в сохранённом образе. |
+| `'<путь>' is too large for UBIFS.`, `The content of '<путь>' changed while the image was being written.` | Файл больше 16 ТБ; либо исходный файл изменился во время записи. | Повторите сохранение. |
+| `The UBIFS erase block size (<N>) must stay the erase block size of the UBI volume (<M>).` | Для файловой системы в томе UBI указан иной блок стирания, чем у образа. | Верните размер блока из образа: ядро не смонтирует иначе. |
+| Предупреждение: `The filesystem no longer fits into volume <том> (<N> erase blocks): the volume was enlarged to <M> erase blocks. The flash must have room for it.` | Файловая система выросла. Том в образе UBI увеличен. | Проверьте, что в флеш-памяти хватит блоков; иначе удалите файлы. |
+| `Only UBIFS and SquashFS can be wrapped into a UBI image.` | Для нового образа UBI выбрана ext или tar. | Выберите UBIFS или SquashFS. |
+| `The UBI min. I/O unit size must be a power of two.`, `The UBI sub-page size must be a power of two that is not larger than the min. I/O unit.`, `The UBI erase block size must be between 4 KiB and 16 MiB and a multiple of the min. I/O unit.`, `The UBI erase block is too small for the headers.` | Неверная геометрия образа UBI. | См. выше: размеры берутся из параметров флеш-памяти. |
+| `The UBI volume name must be 1 to 127 bytes long.`, `The UBI volume number is out of range.`, `The UBI volume number <N> is used twice.`, `The UBI volume name '<имя>' is used twice.`, `A UBI volume name is longer than 127 bytes.` | Неверное имя или номер тома. | Исправьте. |
+| `Invalid UBI geometry.` | Внутренняя проверка заголовков. | Сообщите об ошибке. |
+| `The written image does not match the source and was discarded; …` с `Volume <том> of the UBI image is missing or differs in the written image.`, `The content of volume <том> differs from the source UBI image.`, `The written file is not a UBI image.` | Проверка после записи: остальные тома образа UBI в новом файле не совпали с исходными. | Исходный файл не изменён. Если повторяется — это ошибка программы. |
 
 ### Запись tar
 

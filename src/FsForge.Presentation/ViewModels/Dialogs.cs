@@ -710,7 +710,6 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Состояние"), u.ReplayedNodes > 0
                 ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
                 : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
-            Add(L.T("Сохранение"), L.T("UBIFS открывается только для чтения; содержимое сохраняется в SquashFS, ext2/3/4 или tar"));
         }
         if (doc.Tar is { } t)
         {
@@ -740,7 +739,7 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 Add(ReferenceEquals(v, ubi.Volume) ? L.F("▸ Том {0} (открыт)", Fmt.VolumeName(v)) : L.F("Том {0}", Fmt.VolumeName(v)), text);
             }
             if (doc.EmbeddedOffset > 0) Add(L.T("Смещение образа UBI в файле"), $"0x{doc.EmbeddedOffset:X}");
-            if (doc.Ubifs is null) Add(L.T("Сохранение"), L.T("только файловая система, отдельным файлом: образы UBI не записываются"));
+            Add(L.T("Сохранение"), L.T("образ UBI целиком: заменяется только открытый том, остальные тома переносятся без изменений"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");
