@@ -7,6 +7,7 @@ using FsForge.Core.Host;
 using FsForge.Core.Images;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Fat;
 using FsForge.Core.Jffs2;
 using FsForge.Core.Ubifs;
 
@@ -43,7 +44,7 @@ internal static class Program
 
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|ext2|ext3|ext4|ubifs|jffs2|tar  default: by output extension, else the source format
+          format=squashfs|ext2|ext3|ext4|ubifs|jffs2|fat|tar  default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
@@ -51,6 +52,8 @@ internal static class Program
           ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
           jffs2:    comp=zlib|lzo|rtime|none endian=little|big erase=<bytes> cleanmarkers=0|1 cmsize=<bytes>
                     pagesize=<bytes> pad=0|1 xattrs=0|1 allroot=1
+          fat:      fattype=12|16|32 cluster=<bytes> size=<MiB> free=<MiB> label=<text> serial=<hex>
+                    (in a disk image the size is that of the partition)
           ubi:      ubi=0|1 peb=<bytes> minio=<bytes> subpage=<bytes> volname=<text> volid=<n> volsize=<MiB> autoresize=0|1
         """;
 
@@ -170,6 +173,12 @@ internal static class Program
             Console.WriteLine($"State:       {(u.ReplayedNodes > 0 ? $"not cleanly unmounted, {u.ReplayedNodes} journal nodes from {u.ReplayedBuds} erase blocks replayed" : u.Dirty ? "not cleanly unmounted, journal empty" : "clean")}" +
                               $"{(u.SpaceFixup ? ", space fixup pending" : "")}{(u.Authenticated ? ", authenticated" : "")}");
         }
+        if (doc.Fat is { } fat)
+        {
+            Console.WriteLine($"FAT:         {fat.TypeName}, {fat.Clusters} clusters of {fat.ClusterSize} bytes ({fat.FreeClusters} free), {fat.Fats} FATs of {fat.FatSectors} sectors");
+            Console.WriteLine($"Layout:      {fat.TotalSectors} sectors of {fat.SectorSize}, {fat.ReservedSectors} reserved, {fat.RootEntries} root entries, hidden sectors {fat.HiddenSectors}");
+            Console.WriteLine($"Label/ID:    '{fat.Label}' {fat.VolumeId >> 16:X4}-{fat.VolumeId & 0xFFFF:X4}, OEM '{fat.OemName}'{(fat.Dirty ? ", not cleanly unmounted" : "")}");
+        }
         if (doc.Jffs2 is { } j)
         {
             Console.WriteLine($"Layout:      {(j.BigEndian ? "big" : "little")}-endian, erase block {j.EraseBlockSize}{(j.EraseBlockSizeKnown ? "" : " (estimated)")}, " +
@@ -225,6 +234,8 @@ internal static class Program
             Console.Error.WriteLine($"{e.Kind} bs={e.BlockSize} blocks={e.BlocksCount} inodes={e.InodesCount} isize={e.InodeSize} journal={e.JournalBytes} features={string.Join(',', e.FeatureNames)}");
         if (doc.Ubifs is { } u)
             Console.Error.WriteLine($"ubifs leb={u.LebSize} lebs={u.LebCount} minio={u.MinIoSize} comp={u.DefaultCompression} version={u.FormatVersion} replayed={u.ReplayedNodes}");
+        if (doc.Fat is { } fi)
+            Console.Error.WriteLine($"fat type={fi.TypeName} cluster={fi.ClusterSize} clusters={fi.Clusters} size={fi.SizeBytes} label='{fi.Label}' hidden={fi.HiddenSectors}");
         if (doc.Jffs2 is { } j)
             Console.Error.WriteLine($"jffs2 endian={(j.BigEndian ? "big" : "little")} erase={j.EraseBlockSize} known={j.EraseBlockSizeKnown} cleanmarkers={j.Cleanmarkers} comp={j.MainCompression} nodes={j.Nodes}");
         if (doc.Tar is { } t)
@@ -251,6 +262,7 @@ internal static class Program
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
                 else if (name.EndsWith(".ubifs")) f = "ubifs";
                 else if (name.EndsWith(".jffs2")) f = "jffs2";
+                else if (name.EndsWith(".vfat") || name.EndsWith(".fat")) f = "fat";
                 namedFilesystem = f is not null;
             }
         }
@@ -259,6 +271,7 @@ internal static class Program
             case null: break;
             case "ubifs": format = ImageFormat.Ubifs; break;
             case "jffs2": format = ImageFormat.Jffs2; break;
+            case "fat" or "vfat" or "msdos": format = ImageFormat.Fat; break;
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
@@ -336,12 +349,20 @@ internal static class Program
                 case "volsize": s.Ubi.VolumeBytes = long.Parse(value) << 20; break;
                 case "autoresize": s.Ubi.AutoResize = value != "0"; break;
                 case "bs": s.Ext.BlockSize = int.Parse(value); break;
-                case "size": s.Ext.SizeBytes = long.Parse(value) << 20; break;
-                case "free": s.Ext.ExtraFreeBytes = long.Parse(value) << 20; break;
+                case "size": s.Ext.SizeBytes = s.Fat.SizeBytes = long.Parse(value) << 20; break;
+                case "free": s.Ext.ExtraFreeBytes = s.Fat.ExtraFreeBytes = long.Parse(value) << 20; break;
                 case "isize": s.Ext.InodeSize = int.Parse(value); break;
                 case "inodes": s.Ext.InodeCount = uint.Parse(value); break;
                 case "journal": s.Ext.Journal = value != "0"; break;
-                case "label": s.Ext.Label = value; break;
+                case "label": s.Ext.Label = s.Fat.Label = value; break;
+                case "fattype": s.Fat.Type = value switch
+                {
+                    "12" => FatType.Fat12, "16" => FatType.Fat16, "32" => FatType.Fat32, "auto" => FatType.Auto,
+                    _ => throw new FsException("fattype= takes 12, 16, 32 or auto."),
+                };
+                    break;
+                case "cluster": s.Fat.ClusterSize = int.Parse(value); break;
+                case "serial": s.Fat.VolumeId = System.Convert.ToUInt32(value.Replace("-", ""), 16); break;
                 case "reserved": s.Ext.ReservedPercent = double.Parse(value, System.Globalization.CultureInfo.InvariantCulture); break;
                 case "dialect": s.Tar.Dialect = Enum.Parse<TarDialect>(value, true); break;
                 case "prefix": s.Tar.PathPrefix = value; break;

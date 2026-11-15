@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.Fat;
 using FsForge.Core.Jffs2;
 using FsForge.Core.Ubifs;
 
@@ -18,6 +19,9 @@ public enum ImageFormat
 
     /// <summary>JFFS2, the log-structured filesystem of NOR (and older NAND) flash; little- or big-endian.</summary>
     Jffs2,
+
+    /// <summary>FAT12/16/32 with long names: boot partitions of SD cards, EFI system partitions, USB sticks.</summary>
+    Fat,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -41,6 +45,7 @@ public sealed class SaveOptions
     public TarOptions Tar { get; set; } = new();
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
+    public FatOptions Fat { get; set; } = new();
 
     /// <summary>Geometry and volume of the UBI image that <see cref="NewUbi"/> asks for.</summary>
     public UbiOptions Ubi { get; set; } = new();
@@ -75,6 +80,7 @@ public sealed class SaveOptions
         Tar = Tar.Clone(),
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
+        Fat = Fat.Clone(),
         Ubi = Ubi.Clone(),
         NewUbi = NewUbi,
         Verify = Verify,
@@ -114,6 +120,7 @@ public sealed class ImageDocument : IDisposable
     public TarInfo? Tar { get; private init; }
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
+    public FatInfo? Fat { get; private init; }
 
     /// <summary>
     /// The UBI image and the volume the filesystem was opened from; null when the file is not a UBI image.
@@ -177,6 +184,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ext => Ext?.Kind.ToString().ToLowerInvariant() ?? "ext4",
         ImageFormat.Ubifs => "UBIFS",
         ImageFormat.Jffs2 => "JFFS2",
+        ImageFormat.Fat => Fat?.TypeName ?? "FAT",
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
 
@@ -229,6 +237,7 @@ public sealed class ImageDocument : IDisposable
         SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs
         : UbifsReader.IsUbifs(src) ? ImageFormat.Ubifs
         : ExtReader.IsExt(src) ? ImageFormat.Ext
+        : FatReader.IsFat(src) ? ImageFormat.Fat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
 
     private static ImageFormat FormatOf(UbiVolumeInfo volume) => volume.Content switch
@@ -428,6 +437,18 @@ public sealed class ImageDocument : IDisposable
                     doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
                                       $"Saving uses {SquashFsOptions.FromInfo(r.Info).Compression.ToString().ToLowerInvariant()} unless another method is chosen.");
             }
+            else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
+            {
+                FatReader r = FatReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Fat, path)
+                {
+                    Fat = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
             else if (!ExtReader.IsExt(fs) && Jffs2Reader.IsJffs2(fs))
             {
                 Jffs2Reader r = Jffs2Reader.Open(fs, ownsSource: true, progress, ct);
@@ -487,7 +508,7 @@ public sealed class ImageDocument : IDisposable
                 ?? throw new FsException($"The disk image has no partition {wanted}. Its partitions: {ListPartitions(table)}.");
             if (!p.IsEditable)
                 throw new FsException($"Partition {wanted} holds {(p.ContentName.Length > 0 ? p.ContentName : "an unknown format")}, " +
-                                      "not SquashFS or ext2/3/4, and cannot be edited.");
+                                      "not SquashFS, ext2/3/4 or FAT, and cannot be edited.");
             return p;
         }
         IReadOnlyList<PartitionInfo> editable = table.Editable;
@@ -495,7 +516,7 @@ public sealed class ImageDocument : IDisposable
         if (editable.Count == 1 || ask is null) return table.PickDefault();
         PartitionInfo? answer = ask(table) ?? throw new OperationCanceledException();
         if (!answer.IsEditable || !table.Partitions.Contains(answer))
-            throw new FsException("The selected partition does not hold SquashFS or ext2/3/4.");
+            throw new FsException("The selected partition does not hold SquashFS, ext2/3/4 or FAT.");
         return answer;
     }
 
@@ -540,12 +561,12 @@ public sealed class ImageDocument : IDisposable
     private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
     {
         if (table is not null)
-            return "None of the partitions of this disk image holds SquashFS or ext2/3/4. Its partitions: " + ListPartitions(table) + ".";
+            return "None of the partitions of this disk image holds SquashFS, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
         byte[] head = new byte[8];
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, ext2/3/4 or UBIFS image, UBI image, disk image with such a partition, or tar archive." + hint;
+        return "The file is not a SquashFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -622,6 +643,7 @@ public sealed class ImageDocument : IDisposable
         o.Format = format ?? Format;
         if (Ubifs is not null) o.Ubifs = UbifsOptions.FromInfo(Ubifs);
         if (Jffs2 is not null) o.Jffs2 = Jffs2Options.FromInfo(Jffs2);
+        if (Fat is not null) o.Fat = FatOptions.FromInfo(Fat);
         // A filesystem that goes into a UBI image is made for the erase blocks of that image.
         if (Ubifs is null && Ubi is not null)
         {
@@ -636,7 +658,8 @@ public sealed class ImageDocument : IDisposable
 
     /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
-        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Jffs2);
+        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Jffs2)
+        && !(Ubi is not null && options.Format == ImageFormat.Fat);
 
     /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
     public bool WritesUbi(SaveOptions options) =>
@@ -651,6 +674,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ext => ExtWriter.Write(tree, output, options.Ext, progress, ct),
         ImageFormat.Ubifs => UbifsWriter.Write(tree, output, options.Ubifs, progress, ct),
         ImageFormat.Jffs2 => Jffs2Writer.Write(tree, output, options.Jffs2, progress, ct),
+        ImageFormat.Fat => FatWriter.Write(tree, output, options.Fat, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -687,7 +711,7 @@ public sealed class ImageDocument : IDisposable
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2)
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2 or ImageFormat.Fat)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
@@ -922,7 +946,18 @@ public sealed class ImageDocument : IDisposable
         CopyRange(disk, 0, part.Offset, fs, progress, ct);
 
         SaveOptions o = options;
-        if (!squash)
+        bool fat = options.Format == ImageFormat.Fat;
+        if (fat)
+        {
+            o = options.Clone();
+            // FAT fills its partition and knows where the partition starts (the "hidden sectors" of its boot sector).
+            if (o.Fat.SizeBytes == 0) o.Fat.SizeBytes = slot / o.Fat.SectorSize * o.Fat.SectorSize;
+            else if (o.Fat.SizeBytes > slot && !canGrow)
+                throw new FsException($"The requested filesystem size of {DiskText.Size(o.Fat.SizeBytes)} exceeds {partName} " +
+                                      $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
+            o.Fat.HiddenSectors = (uint)Math.Min(uint.MaxValue, part.Offset / o.Fat.SectorSize);
+        }
+        else if (!squash)
         {
             o = options.Clone();
             long bs = o.Ext.BlockSize;
@@ -935,6 +970,14 @@ public sealed class ImageDocument : IDisposable
         fs.Position = part.Offset;
         try
         {
+            warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
+        }
+        catch (FsNoSpaceException) when (fat && canGrow)
+        {
+            o.Fat.SizeBytes = 0;
+            o.Fat.ExtraFreeBytes = Math.Max(o.Fat.ExtraFreeBytes, slot / 10);
+            fs.SetLength(part.Offset);
+            fs.Position = part.Offset;
             warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
         }
         catch (FsNoSpaceException) when (!squash && canGrow)
@@ -1208,6 +1251,15 @@ public static class TreeComparer
     {
         public bool IgnoreOwners, IgnoreXattrs, IgnoreSockets, IgnoreLostFound, IgnoreRootAttributes;
 
+        /// <summary>Permissions are not stored (FAT): only the type is compared.</summary>
+        public bool IgnoreModes;
+
+        /// <summary>Only files and directories exist in the target (FAT): other objects are not looked for, hard links become copies.</summary>
+        public bool FilesAndDirectoriesOnly;
+
+        /// <summary>Times are stored in steps of this many seconds (2 in FAT) and compared rounded down to them.</summary>
+        public long TimeStep = 1;
+
         /// <summary>Timestamps outside this range cannot be represented and are not compared.</summary>
         public long MinTime = long.MinValue, MaxTime = long.MaxValue;
     }
@@ -1225,6 +1277,18 @@ public static class TreeComparer
         {
             IgnoreOwners = o.Ubifs.AllRoot,
             IgnoreXattrs = true,                    // only the user/trusted/security namespaces exist in UBIFS
+        },
+        ImageFormat.Fat => new Rules
+        {
+            // Only files and directories, without owners, permissions or attributes; times in 2-second steps.
+            IgnoreOwners = true,
+            IgnoreModes = true,
+            IgnoreXattrs = true,
+            IgnoreRootAttributes = true,
+            FilesAndDirectoriesOnly = true,
+            TimeStep = 2,
+            MinTime = FatFormat.MinTime,
+            MaxTime = FatFormat.MaxTime,
         },
         ImageFormat.Jffs2 => new Rules
         {
@@ -1275,11 +1339,11 @@ public static class TreeComparer
             }
             if (!(root && rules.IgnoreRootAttributes))
             {
-                if (x.Type != FsNodeType.Symlink && (x.Mode & 0xFFF) != (y.Mode & 0xFFF))
+                if (!rules.IgnoreModes && x.Type != FsNodeType.Symlink && (x.Mode & 0xFFF) != (y.Mode & 0xFFF))
                     problems.Add($"{path}: mode is {UnixMode.ToOctal(y.Mode)}, expected {UnixMode.ToOctal(x.Mode)}.");
                 if (!rules.IgnoreOwners && (x.Uid != y.Uid || x.Gid != y.Gid))
                     problems.Add($"{path}: owner is {y.Uid}:{y.Gid}, expected {x.Uid}:{x.Gid}.");
-                if (x.MTime != y.MTime && x.MTime >= rules.MinTime && x.MTime <= rules.MaxTime)
+                if (x.MTime - (x.MTime % rules.TimeStep + rules.TimeStep) % rules.TimeStep != y.MTime && x.MTime >= rules.MinTime && x.MTime <= rules.MaxTime)
                     problems.Add($"{path}: modification time is {y.MTime}, expected {x.MTime}.");
             }
             if (!rules.IgnoreXattrs && !XattrsEqual(x.XAttrs, y.XAttrs)) problems.Add($"{path}: extended attributes differ.");
@@ -1300,7 +1364,7 @@ public static class TreeComparer
                         break;
                     }
                     // Hard links must stay hard links of the same group.
-                    if (x.LinkCount > 1)
+                    if (x.LinkCount > 1 && !rules.FilesAndDirectoriesOnly)
                     {
                         if (linkMap.TryGetValue(x, out FsInode? mapped))
                         {
@@ -1321,6 +1385,7 @@ public static class TreeComparer
                     foreach (FsNode ca in a.SortedChildren())
                     {
                         if (rules.IgnoreSockets && ca.Type == FsNodeType.Socket) continue;
+                        if (rules.FilesAndDirectoriesOnly && ca.Type is not (FsNodeType.File or FsNodeType.Directory)) continue;
                         FsNode? cb = b.Find(ca.Name);
                         if (cb is null) problems.Add($"{ca.Path}: missing in the written image.");
                         else Visit(ca, cb);

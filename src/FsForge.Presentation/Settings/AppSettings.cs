@@ -109,6 +109,9 @@ public sealed class AppSettings
     /// <summary>Defaults of a new JFFS2 image: byte order and erase block size of the target, compressor.</summary>
     public FsForge.Core.Jffs2.Jffs2Options Jffs2 { get; set; } = new();
 
+    /// <summary>Defaults of a new FAT image: type, cluster size, label.</summary>
+    public FsForge.Core.Fat.FatOptions Fat { get; set; } = new();
+
     /// <summary>Defaults of a new UBI image.</summary>
     public FsForge.Core.Ubifs.UbiOptions Ubi { get; set; } = new();
 
@@ -176,6 +179,7 @@ public sealed class AppSettings
             Tar = Tar.Clone(),
             Ubifs = Ubifs.Clone(),
             Jffs2 = Jffs2.Clone(),
+            Fat = Fat.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -291,6 +295,13 @@ public sealed class SettingsStore
         if (!Enum.IsDefined(s.NewImageFormat)) s.NewImageFormat = ImageFormat.SquashFs;
         s.Ubifs ??= new();
         s.Jffs2 ??= new();
+        s.Fat ??= new();
+        try { s.Fat.Validate(); } catch (FsForge.Core.FsException) { s.Fat = new(); }
+        // Defaults never carry the size, serial, position or boot code of a particular volume.
+        s.Fat.SizeBytes = 0;
+        s.Fat.VolumeId = null;
+        s.Fat.HiddenSectors = 0;
+        s.Fat.BootCode = null;
         s.Ubi ??= new();
         try { s.Jffs2.Validate(); } catch (FsForge.Core.FsException) { s.Jffs2 = new(); }
         try { s.Ubifs.Validate(); } catch (FsForge.Core.FsException) { s.Ubifs = new(); }

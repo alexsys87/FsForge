@@ -74,7 +74,7 @@ public sealed class PartitionInfo
     internal long SizeFieldOffset { get; init; } = -1;
 
     /// <summary>The partition holds a filesystem this program can edit.</summary>
-    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext;
+    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat;
 
     public override string ToString()
     {
@@ -105,13 +105,18 @@ public sealed class PartitionTable
     /// <summary>All partitions in the order of their numbers. Extended containers are not listed.</summary>
     public IReadOnlyList<PartitionInfo> Partitions { get; }
 
-    /// <summary>Partitions that hold SquashFS or ext2/3/4.</summary>
+    /// <summary>Partitions that hold SquashFS, ext2/3/4 or FAT.</summary>
     public IReadOnlyList<PartitionInfo> Editable => Partitions.Where(p => p.IsEditable).ToList();
 
     public PartitionInfo? Find(int number) => Partitions.FirstOrDefault(p => p.Number == number);
 
-    /// <summary>The partition to open when nobody was asked: the largest editable one (the root filesystem, as a rule).</summary>
-    public PartitionInfo? PickDefault() => Partitions.Where(p => p.IsEditable).MaxBy(p => p.Length);
+    /// <summary>
+    /// The partition to open when nobody was asked: the root filesystem, as a rule the largest SquashFS or ext partition.
+    /// A FAT boot partition is opened by default only when there is nothing else.
+    /// </summary>
+    public PartitionInfo? PickDefault() =>
+        Partitions.Where(p => p.IsEditable && p.Content != PartitionContent.Fat).MaxBy(p => p.Length)
+        ?? Partitions.Where(p => p.IsEditable).MaxBy(p => p.Length);
 
     // ------------------------------------------------------------------ read
 
