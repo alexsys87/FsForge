@@ -5,6 +5,7 @@ using FsForge.Core.Compression;
 using FsForge.Core.Ext;
 using FsForge.Core.Host;
 using FsForge.Core.Images;
+using FsForge.Core.Jffs2;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
 
@@ -87,6 +88,7 @@ internal static partial class SelfTest
             DiskTests(tree, reference);
             JournalTests();
             UbifsTests(tree, reference);
+            Jffs2Tests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -248,6 +250,7 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Tar && f[1] == "s") continue;
             if (o.Format == ImageFormat.Ext && f[0] == "/lost+found") continue;
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
+            if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
             if (noRoot && f[0] == "/") f[5] = "*";
             if (inode128 && long.Parse(f[5]) > int.MaxValue) f[5] = int.MaxValue.ToString();   // 32-bit timestamps are clamped
             sb.Append(string.Join('\t', f)).Append('\n');
@@ -608,6 +611,8 @@ internal static partial class SelfTest
             ("tar", new SaveOptions { Format = ImageFormat.Tar, Tar = new TarOptions { Compression = ArchiveCompression.None } }),
             ("tar.gz", new SaveOptions { Format = ImageFormat.Tar }),
             ("tar.xz", new SaveOptions { Format = ImageFormat.Tar, Tar = new TarOptions { Compression = ArchiveCompression.Xz, XzEffort = 0 } }),
+            ("jffs2", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { EraseBlockSize = 8192, StoreXattrs = true } }),
+            ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 
         string path = Path.Combine(_dir, "fuzz.bin");

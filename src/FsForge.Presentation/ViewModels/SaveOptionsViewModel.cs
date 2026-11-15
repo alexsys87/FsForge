@@ -16,6 +16,7 @@ public enum SaveFormat
     Ext3,
     Ext2,
     Ubifs,
+    Jffs2,
     Tar,
 }
 
@@ -42,6 +43,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Ext3, "ext3"),
         new Choice<SaveFormat>(SaveFormat.Ext2, "ext2"),
         new Choice<SaveFormat>(SaveFormat.Ubifs, L.T("UBIFS (NAND- и NOR-флеш)")),
+        new Choice<SaveFormat>(SaveFormat.Jffs2, L.T("JFFS2 (NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
     };
 
@@ -97,6 +99,23 @@ public static class OptionLists
         new Choice<FsForge.Core.Ubifs.UbifsCompression>(FsForge.Core.Ubifs.UbifsCompression.None, L.T("без сжатия")),
     };
 
+    public static IReadOnlyList<Choice<FsForge.Core.Jffs2.Jffs2Compression>> Jffs2Compressions { get; } = new[]
+    {
+        new Choice<FsForge.Core.Jffs2.Jffs2Compression>(FsForge.Core.Jffs2.Jffs2Compression.Zlib, L.T("zlib — как у mkfs.jffs2 по умолчанию")),
+        new Choice<FsForge.Core.Jffs2.Jffs2Compression>(FsForge.Core.Jffs2.Jffs2Compression.Lzo, L.T("lzo — быстрее, нужно ядро с CONFIG_JFFS2_LZO")),
+        new Choice<FsForge.Core.Jffs2.Jffs2Compression>(FsForge.Core.Jffs2.Jffs2Compression.Rtime, L.T("rtime — простое и быстрое, сжимает слабо")),
+        new Choice<FsForge.Core.Jffs2.Jffs2Compression>(FsForge.Core.Jffs2.Jffs2Compression.None, L.T("без сжатия")),
+    };
+
+    public static IReadOnlyList<Choice<bool>> Jffs2ByteOrders { get; } = new[]
+    {
+        new Choice<bool>(false, L.T("little-endian (ARM, x86, MIPS little-endian)")),
+        new Choice<bool>(true, L.T("big-endian (MIPS, PowerPC)")),
+    };
+
+    public static IReadOnlyList<Choice<int>> Jffs2EraseBlockSizes { get; } =
+        new[] { 4, 8, 16, 32, 64, 128, 256, 512, 1024 }.Select(k => new Choice<int>(k * 1024, k < 1024 ? L.F("{0} КБ", k) : L.T("1 МБ"))).ToArray();
+
     public static IReadOnlyList<Choice<ArchiveCompression>> TarCompressions { get; } = new[]
     {
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.tar.gz)"),
@@ -145,6 +164,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             ImageFormat.SquashFs => SaveFormat.SquashFs,
             ImageFormat.Ubifs => SaveFormat.Ubifs,
+            ImageFormat.Jffs2 => SaveFormat.Jffs2,
             ImageFormat.Tar => SaveFormat.Tar,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
@@ -165,6 +185,12 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Minimal, L.T("минимальный по содержимому")));
         sizeModes.Add(new Choice<ExtSizeMode>(ExtSizeMode.Fixed, L.T("заданный, МиБ")));
         SizeModes = sizeModes;
+
+        // An erase block size that is not in the list (a source image with 2 MiB blocks) is offered as well.
+        var eraseSizes = OptionLists.Jffs2EraseBlockSizes.ToList();
+        if (!eraseSizes.Any(c => c.Value == _o.Jffs2.EraseBlockSize))
+            eraseSizes.Add(new Choice<int>(_o.Jffs2.EraseBlockSize, Fmt.Size(_o.Jffs2.EraseBlockSize)));
+        Jffs2EraseBlockSizes = eraseSizes;
 
         _ubifsLeb = _o.Ubifs.LebSize.ToString();
         _ubifsMinIo = _o.Ubifs.MinIoSize.ToString();
@@ -217,12 +243,14 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
-    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar;
+    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsJffs2;
 
     public string ContainerNote
     {
         get
         {
+            if (IsJffs2 && HasContainer)
+                return L.T("JFFS2 сохраняется отдельным файлом: в раздел образа диска или том UBI он не записывается.");
             if (_doc.Ubi is { } ubi)
             {
                 if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ UBI при этом не меняется.");
@@ -287,7 +315,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(IsJffs2), nameof(ShowCommonXattrs), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -297,6 +325,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsExt => _format is SaveFormat.Ext2 or SaveFormat.Ext3 or SaveFormat.Ext4;
     public bool IsTar => _format == SaveFormat.Tar;
     public bool IsUbifs => _format == SaveFormat.Ubifs;
+    public bool IsJffs2 => _format == SaveFormat.Jffs2;
     public bool HasJournalOption => _format is SaveFormat.Ext3 or SaveFormat.Ext4;
 
     public string FormatNote => _format switch
@@ -305,6 +334,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
         SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
         SaveFormat.Ext2 => L.T("ext2: без журнала, карты блоков."),
+        SaveFormat.Jffs2 => L.T("Журналируемая файловая система для NOR-флеш (и старых NAND). Порядок байтов и размер блока стирания должны совпадать с устройством; для NAND маркеры очистки выключают."),
         SaveFormat.Ubifs => L.T("Файловая система для «сырой» флеш-памяти. Образ делается под конкретную память: размер блока стирания и страницы должны совпадать с её параметрами."),
         _ => L.T("Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами."),
     };
@@ -457,7 +487,28 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string TarPrefix { get => _o.Tar.PathPrefix; set { _o.Tar.PathPrefix = value ?? ""; OnPropertyChanged(); } }
     public bool TarRootEntry { get => _o.Tar.IncludeRootEntry; set { _o.Tar.IncludeRootEntry = value; OnPropertyChanged(); } }
 
+    // ---- JFFS2
+    public IReadOnlyList<Choice<FsForge.Core.Jffs2.Jffs2Compression>> Jffs2Compressions => OptionLists.Jffs2Compressions;
+    public IReadOnlyList<Choice<bool>> Jffs2ByteOrders => OptionLists.Jffs2ByteOrders;
+    public IReadOnlyList<Choice<int>> Jffs2EraseBlockSizes { get; }
+    public FsForge.Core.Jffs2.Jffs2Compression Jffs2Compression { get => _o.Jffs2.Compression; set { _o.Jffs2.Compression = value; OnPropertyChanged(); } }
+    public bool Jffs2BigEndian { get => _o.Jffs2.BigEndian; set { _o.Jffs2.BigEndian = value; OnPropertyChanged(); } }
+    public int Jffs2EraseBlockSize { get => _o.Jffs2.EraseBlockSize; set { _o.Jffs2.EraseBlockSize = value; OnPropertyChanged(); } }
+    public bool Jffs2Cleanmarkers { get => _o.Jffs2.Cleanmarkers; set { _o.Jffs2.Cleanmarkers = value; OnPropertyChanged(); } }
+    public bool Jffs2Pad { get => _o.Jffs2.PadToEraseBlock; set { _o.Jffs2.PadToEraseBlock = value; OnPropertyChanged(); } }
+    public bool Jffs2Xattrs { get => _o.Jffs2.StoreXattrs; set { _o.Jffs2.StoreXattrs = value; OnPropertyChanged(); } }
+
+    /// <summary>Warns when the erase block size of the source was estimated and not read from clean markers.</summary>
+    public string Jffs2Note => _doc.Jffs2 is { EraseBlockSizeKnown: false } j && _o.Jffs2.EraseBlockSize == j.EraseBlockSize
+        ? L.F("Размер блока стирания исходного образа ({0}) определён по расположению узлов, а не по маркерам очистки. Проверьте, что он совпадает с размером блока флеш-памяти устройства.", Fmt.Size(j.EraseBlockSize))
+        : "";
+
+    public bool HasJffs2Note => Jffs2Note.Length > 0;
+
     // ---- common to all formats
+    /// <summary>JFFS2 has its own switch for attributes (a kernel without xattr support refuses such an image).</summary>
+    public bool ShowCommonXattrs => !IsJffs2;
+
     public bool StoreXattrs
     {
         get => _o.SquashFs.StoreXattrs;
@@ -467,7 +518,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool AllRoot
     {
         get => _o.SquashFs.AllRoot;
-        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = value; OnPropertyChanged(); }
+        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = value; OnPropertyChanged(); }
     }
 
     public VerifyLevel Verify { get => _o.Verify; set { _o.Verify = value; OnPropertyChanged(); } }
@@ -481,6 +532,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         SaveFormat.SquashFs => ".squashfs",
         SaveFormat.Ubifs => ".ubifs",
+        SaveFormat.Jffs2 => ".jffs2",
         SaveFormat.Ext4 => ".ext4",
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
@@ -507,6 +559,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             SaveFormat.SquashFs => ImageFormat.SquashFs,
             SaveFormat.Ubifs => ImageFormat.Ubifs,
+            SaveFormat.Jffs2 => ImageFormat.Jffs2,
             SaveFormat.Tar => ImageFormat.Tar,
             _ => ImageFormat.Ext,
         };
@@ -596,6 +649,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.SquashFs: o.SquashFs.Validate(); break;
                 case ImageFormat.Ext: o.Ext.Validate(); break;
                 case ImageFormat.Ubifs: o.Ubifs.Validate(); break;
+                case ImageFormat.Jffs2: o.Jffs2.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }

@@ -528,6 +528,54 @@
                 </Border>
             </StackPanel>
 
+            <!--  JFFS2  -->
+            <StackPanel Visibility="{Binding IsJffs2, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="JFFS2" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Сжатие'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="300"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding Jffs2Compressions}"
+                                SelectedValue="{Binding Jffs2Compression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Порядок байтов процессора устройства'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="300"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding Jffs2ByteOrders}"
+                                SelectedValue="{Binding Jffs2BigEndian}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Размер блока стирания флеш-памяти'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="140"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding Jffs2EraseBlockSizes}"
+                                SelectedValue="{Binding Jffs2EraseBlockSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding Jffs2Note}"
+                            Visibility="{Binding HasJffs2Note, Converter={StaticResource BoolToVisibility}}" />
+                        <HeaderedContentControl Header="{l:Tr 'Маркеры очистки в начале блоков (для NOR; для NAND выключить)'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Jffs2Cleanmarkers}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Дополнить последний блок стирания байтами 0xFF'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Jffs2Pad}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Записывать расширенные атрибуты и ACL'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding Jffs2Xattrs}" />
+                        </HeaderedContentControl>
+                        <TextBlock Style="{StaticResource Hint}" Text="{l:Tr 'Ядро без поддержки атрибутов JFFS2 (CONFIG_JFFS2_FS_XATTR) не смонтирует образ, в котором они есть.'}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  A new UBI image around UBIFS or SquashFS  -->
             <StackPanel Visibility="{Binding ShowNewUbi, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Образ UBI'}" />
@@ -751,7 +799,10 @@
                             SelectedValue="{Binding ZstdLevel}"
                             SelectedValuePath="Value" />
                     </HeaderedContentControl>
-                    <HeaderedContentControl Header="{l:Tr 'Сохранять расширенные атрибуты'}" Style="{StaticResource Row}">
+                    <HeaderedContentControl
+                        Header="{l:Tr 'Сохранять расширенные атрибуты'}"
+                        Style="{StaticResource Row}"
+                        Visibility="{Binding ShowCommonXattrs, Converter={StaticResource BoolToVisibility}}">
                         <ui:ToggleSwitch IsChecked="{Binding StoreXattrs}" />
                     </HeaderedContentControl>
                     <HeaderedContentControl Header="{l:Tr 'Сделать владельцем всех объектов root (0:0)'}" Style="{StaticResource Row}">

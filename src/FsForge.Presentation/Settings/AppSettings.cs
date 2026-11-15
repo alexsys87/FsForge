@@ -106,6 +106,9 @@ public sealed class AppSettings
     /// <summary>Defaults of a new UBIFS image: the geometry of the flash it is made for, and the compressor.</summary>
     public FsForge.Core.Ubifs.UbifsOptions Ubifs { get; set; } = new();
 
+    /// <summary>Defaults of a new JFFS2 image: byte order and erase block size of the target, compressor.</summary>
+    public FsForge.Core.Jffs2.Jffs2Options Jffs2 { get; set; } = new();
+
     /// <summary>Defaults of a new UBI image.</summary>
     public FsForge.Core.Ubifs.UbiOptions Ubi { get; set; } = new();
 
@@ -172,6 +175,7 @@ public sealed class AppSettings
             Ext = Ext.Clone(),
             Tar = Tar.Clone(),
             Ubifs = Ubifs.Clone(),
+            Jffs2 = Jffs2.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -286,7 +290,9 @@ public sealed class SettingsStore
         s.ExtExtraFreeMiB = Math.Clamp(s.ExtExtraFreeMiB, 0, 1 << 20);
         if (!Enum.IsDefined(s.NewImageFormat)) s.NewImageFormat = ImageFormat.SquashFs;
         s.Ubifs ??= new();
+        s.Jffs2 ??= new();
         s.Ubi ??= new();
+        try { s.Jffs2.Validate(); } catch (FsForge.Core.FsException) { s.Jffs2 = new(); }
         try { s.Ubifs.Validate(); } catch (FsForge.Core.FsException) { s.Ubifs = new(); }
         try { s.Ubi.Validate(); } catch (FsForge.Core.FsException) { s.Ubi = new(); }
         // Like the other defaults: nothing of a particular image, or of the volume it lived in.

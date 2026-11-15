@@ -711,6 +711,21 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
                 : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
         }
+        if (doc.Jffs2 is { } j)
+        {
+            Add(L.T("Порядок байтов"), j.BigEndian ? "big-endian" : "little-endian");
+            Add(L.T("Блок стирания"), j.EraseBlockSizeKnown ? Fmt.Size(j.EraseBlockSize)
+                : L.F("{0} (определён по расположению узлов)", Fmt.Size(j.EraseBlockSize)));
+            Add(L.T("Маркеры очистки"), j.Cleanmarkers ? L.F("есть, по {0} байт", j.CleanmarkerSize) : L.T("нет (образ для NAND или без них)"));
+            Add(L.T("Сжатие"), j.CompressionCounts.Count == 0 ? L.T("нет") : string.Join(", ", j.CompressionCounts.OrderByDescending(p => p.Value)
+                .Select(p => $"{p.Key.ToString().ToLowerInvariant()}: {Fmt.Bytes(p.Value)}")));
+            Add(L.T("Узлов"), L.F("{0} действующих, {1} устаревших, {2} повреждённых", Fmt.Bytes(j.Nodes), Fmt.Bytes(j.ObsoleteNodes), Fmt.Bytes(j.DamagedNodes)));
+            Add(L.T("Занято"), L.F("{0} из {1}", Fmt.Size(j.UsedBytes), Fmt.Size(j.ImageBytes)));
+            Add(L.T("Особенности"), string.Join(", ", new[]
+            {
+                j.HasSummary ? L.T("сводки блоков (summary)") : null, j.HasXattrs ? L.T("расширенные атрибуты") : null,
+            }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
+        }
         if (doc.Tar is { } t)
         {
             Add(L.T("Сжатие"), t.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : t.Compression.ToString().ToLowerInvariant());
