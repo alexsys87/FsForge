@@ -22,7 +22,7 @@ namespace FsForge.Cli;
 internal static class Program
 {
     private const string Usage = """
-        fsforge - SquashFS / EROFS / ext2-3-4 / UBIFS / JFFS2 / FAT / tar / cpio image tool
+        fsforge - SquashFS / EROFS / CramFS / romfs / ext2-3-4 / UBIFS / JFFS2 / FAT / tar / cpio image tool
 
           fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
@@ -37,7 +37,7 @@ internal static class Program
         A disk image with a partition table (SD card images: boot partition + root filesystem) is opened
         at its root filesystem partition; add part=<n> to any command to pick another one. "convert" writes
         the whole disk image again with only that partition replaced, unless the output name says otherwise
-        (.squashfs, .erofs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
+        (.squashfs, .erofs, .cramfs, .romfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
 
         A UBI image (ubinize output, a flash dump without out-of-band data) is opened at the volume that holds
         the most data; add vol=<name or number> to any command to pick another one. "convert" writes the whole
@@ -46,12 +46,15 @@ internal static class Program
 
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|erofs|ext2|ext3|ext4|ubifs|jffs2|fat|tar|cpio  default: by output extension, else the source format
+          format=squashfs|erofs|cramfs|romfs|ext2|ext3|ext4|ubifs|jffs2|fat|tar|cpio
+                                                        default: by output extension, else the source format
           verify=none|structure|content                 default: structure
-          threads=<n>                                   compression threads (SquashFS, EROFS, tar.xz); default: one per processor
+          threads=<n>                                   compression threads (SquashFS, EROFS, CramFS, tar.xz); default: one per processor
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
           erofs:    comp=none|lz4|lz4hc|lzma|deflate|zstd pcluster=<bytes> level=1..12 (lz4hc), 1..9 (deflate), 1..22 (zstd) effort=0..2 (lzma) dict=<bytes>
                     inline=0|1 dedup=0 xattrs=0|1 sharexattrs=0|1 allroot=1 label=<text> uuid=<uuid> time=<unix time>
+          cramfs:   endian=little|big block=4096..65536 level=1..9 label=<text> edition=<n> pad=0|1 holes=0|1 allroot=1
+          romfs:    label=<text> align=16..65536
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
           cpio:     comp=none|gzip|xz|zstd cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
@@ -207,6 +210,11 @@ internal static class Program
         if (doc.Cpio is { } cp)
             Console.WriteLine($"Archive:     {cp.Entries} entries, {cp.Header.ToString().ToLowerInvariant()} headers, compression {cp.Compression}, prefix '{cp.PathPrefix}'" +
                               $"{(cp.HasRootEntry ? ", root entry" : "")}{(cp.Parts > 1 ? $", {cp.Parts} archives one after another" : "")}{(cp.Truncated ? ", no trailer" : "")}");
+        if (doc.Cramfs is { } cr)
+            Console.WriteLine($"CramFS:      {(cr.BigEndian ? "big" : "little")}-endian, block {cr.BlockSize}, {cr.Files} inodes, {cr.Blocks} blocks, name '{cr.VolumeName}', edition {cr.Edition}" +
+                              $"{(cr.Padded ? ", 512-byte boot pad" : "")}{(cr.Holes ? ", holes" : "")}{(cr.CrcOk is { } ok ? ok ? ", CRC ok" : ", CRC WRONG" : ", no CRC")}");
+        if (doc.Romfs is { } ro)
+            Console.WriteLine($"romfs:       name '{ro.VolumeName}', {ro.Size} bytes, data aligned to {ro.DataAlignment}, checksum {(ro.ChecksumOk ? "ok" : "WRONG")}");
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
         if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
@@ -264,6 +272,11 @@ internal static class Program
             Console.Error.WriteLine($"jffs2 endian={(j.BigEndian ? "big" : "little")} erase={j.EraseBlockSize} known={j.EraseBlockSizeKnown} cleanmarkers={j.Cleanmarkers} comp={j.MainCompression} nodes={j.Nodes}");
         if (doc.Cpio is { } cpi)
             Console.Error.WriteLine($"cpio header={cpi.Header} comp={cpi.Compression} entries={cpi.Entries} prefix='{cpi.PathPrefix}' root={cpi.HasRootEntry} parts={cpi.Parts}");
+        if (doc.Cramfs is { } cri)
+            Console.Error.WriteLine($"cramfs endian={(cri.BigEndian ? "big" : "little")} block={cri.BlockSize} files={cri.Files} blocks={cri.Blocks} name='{cri.VolumeName}' " +
+                                    $"edition={cri.Edition} pad={cri.Padded} holes={cri.Holes} flags=0x{cri.Flags:X} crc={cri.CrcOk?.ToString() ?? "none"}");
+        if (doc.Romfs is { } roi)
+            Console.Error.WriteLine($"romfs name='{roi.VolumeName}' size={roi.Size} align={roi.DataAlignment} checksum={roi.ChecksumOk}");
         if (doc.Tar is { } t)
             Console.Error.WriteLine($"tar comp={t.Compression} entries={t.Entries} pax={t.HasPaxHeaders} gnu={t.HasGnuExtensions} prefix='{t.PathPrefix}' root={t.HasRootEntry}");
         return 0;
@@ -287,6 +300,8 @@ internal static class Program
                     if (name.EndsWith(z)) name = name[..^z.Length];
                 if (name.EndsWith(".sqfs") || name.EndsWith(".squashfs")) f = "squashfs";
                 else if (name.EndsWith(".erofs")) f = "erofs";
+                else if (name.EndsWith(".cramfs") || name.EndsWith(".cramfs.img")) f = "cramfs";
+                else if (name.EndsWith(".romfs")) f = "romfs";
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
                 else if (name.EndsWith(".ubifs")) f = "ubifs";
                 else if (name.EndsWith(".jffs2")) f = "jffs2";
@@ -302,6 +317,8 @@ internal static class Program
             case "fat" or "vfat" or "msdos": format = ImageFormat.Fat; break;
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "erofs": format = ImageFormat.Erofs; break;
+            case "cramfs": format = ImageFormat.Cramfs; break;
+            case "romfs": format = ImageFormat.Romfs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "cpio": format = ImageFormat.Cpio; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
@@ -324,7 +341,7 @@ internal static class Program
             if (f is null) s.Format = ImageFormat.Ubifs;
         }
         if (s.NewUbi && doc.Ubi is not null && !o.ContainsKey("container")) s.KeepContainer = false;
-        if (s.NewUbi && s.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio)
+        if (s.NewUbi && s.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Cramfs or ImageFormat.Romfs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image; add format=ubifs or format=squashfs.");
         if (kind is not null) s.Ext.Kind = kind.Value;
         if (s.Format == ImageFormat.Tar && doc.Format != ImageFormat.Tar && ArchiveCodec.CompressionFromFileName(output) is { } byName)
@@ -338,7 +355,7 @@ internal static class Program
             switch (key.ToLowerInvariant())
             {
                 case "format" or "verify" or "container" or "ubi": break;
-                case "threads": s.SquashFs.Threads = s.Tar.Threads = s.Erofs.Threads = s.Cpio.Threads = int.Parse(value); break;
+                case "threads": s.SquashFs.Threads = s.Tar.Threads = s.Erofs.Threads = s.Cpio.Threads = s.Cramfs.Threads = int.Parse(value); break;
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
                     else if (s.Format == ImageFormat.Cpio) s.Cpio.Compression = Enum.Parse<ArchiveCompression>(value, true);
@@ -347,9 +364,12 @@ internal static class Program
                     else if (s.Format == ImageFormat.Erofs) s.Erofs.Compression = Enum.Parse<ErofsCompression>(value, true);
                     else s.SquashFs.Compression = Enum.Parse<SquashCompression>(value, true);
                     break;
-                case "block": s.SquashFs.BlockSize = int.Parse(value); break;
+                case "block":
+                    if (s.Format == ImageFormat.Cramfs) s.Cramfs.BlockSize = int.Parse(value);
+                    else s.SquashFs.BlockSize = int.Parse(value);
+                    break;
                 case "level":
-                    s.SquashFs.GzipLevel = s.Tar.GzipLevel = s.Cpio.GzipLevel = Math.Clamp(int.Parse(value), 1, 9);
+                    s.SquashFs.GzipLevel = s.Tar.GzipLevel = s.Cpio.GzipLevel = s.Cramfs.Level = Math.Clamp(int.Parse(value), 1, 9);
                     s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = s.Cpio.ZstdLevel = int.Parse(value);
                     s.Erofs.Lz4Level = Math.Clamp(int.Parse(value), 1, 12);
                     s.Erofs.ZstdLevel = Math.Clamp(int.Parse(value), 1, 22);
@@ -368,8 +388,8 @@ internal static class Program
                 case "time": s.Erofs.BuildTime = long.Parse(value); break;
                 case "nofrag": s.SquashFs.NoFragments = value != "0"; break;
                 case "dedup": s.SquashFs.Deduplicate = s.Erofs.Deduplicate = value != "0"; break;
-                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = s.Cpio.AllRoot = value != "0"; break;
-                case "endian": s.Jffs2.BigEndian = value.ToLowerInvariant() switch
+                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = s.Cpio.AllRoot = s.Cramfs.AllRoot = value != "0"; break;
+                case "endian": s.Jffs2.BigEndian = s.Cramfs.BigEndian = value.ToLowerInvariant() switch
                 {
                     "big" or "be" => true,
                     "little" or "le" => false,
@@ -380,7 +400,10 @@ internal static class Program
                 case "cleanmarkers": s.Jffs2.Cleanmarkers = value != "0"; break;
                 case "cmsize": s.Jffs2.CleanmarkerSize = int.Parse(value); break;
                 case "pagesize": s.Jffs2.PageSize = int.Parse(value); break;
-                case "pad": s.Jffs2.PadToEraseBlock = s.Cpio.Pad512 = value != "0"; break;
+                case "pad": s.Jffs2.PadToEraseBlock = s.Cpio.Pad512 = s.Cramfs.Pad = value != "0"; break;
+                case "holes": s.Cramfs.Holes = value != "0"; break;
+                case "edition": s.Cramfs.Edition = uint.Parse(value); break;
+                case "align": s.Romfs.DataAlignment = int.Parse(value); break;
                 case "xattrs": s.Jffs2.StoreXattrs = s.Erofs.StoreXattrs = value != "0"; break;
                 case "minio": s.Ubifs.MinIoSize = s.Ubi.MinIoSize = int.Parse(value); break;
                 case "leb": s.Ubifs.LebSize = int.Parse(value); break;
@@ -403,6 +426,7 @@ internal static class Program
                 case "label":
                     s.Ext.Label = s.Fat.Label = value;
                     if (s.Format == ImageFormat.Erofs) s.Erofs.VolumeName = value;
+                    s.Cramfs.VolumeName = s.Romfs.VolumeName = value;
                     break;
                 case "fattype": s.Fat.Type = value switch
                 {

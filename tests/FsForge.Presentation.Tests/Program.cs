@@ -1077,6 +1077,82 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("CramFS and romfs: open a big-endian CramFS image, keep its settings, convert it to romfs", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string cramfs = Path.Combine(_dir, "rootfs.cramfs");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("cr.sqfs"), _dir))
+            using (var fs = new FileStream(cramfs, FileMode.Create))
+                ImageDocument.WriteTo(source.Tree, fs, new SaveOptions
+                {
+                    Format = ImageFormat.Cramfs,
+                    Cramfs = new FsForge.Core.Cramfs.CramfsOptions { BigEndian = true, BlockSize = 16384, VolumeName = "router" },
+                });
+            Check(await vm.OpenPathAsync(cramfs), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cramfs, Cramfs: { BigEndian: true, BlockSize: 16384 } } && vm.DocumentInfo.StartsWith("CramFS · big-endian · блок 16 КБ"),
+                "status line: " + vm.DocumentInfo);
+            Check(!vm.IsInfoOpen, "a CramFS image must open without warnings: " + vm.InfoMessage);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Порядок байтов" && r.Value == "big-endian")
+                                                                    && i.Rows.Any(r => r.Label == "Имя тома" && r.Value == "router")
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма" && r.Value == "верна");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a CramFS image");
+
+            // "Save as" starts with the settings of the source.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsCramfs && s.CramfsBigEndian && s.CramfsBlockSize == 16384 && s.CramfsVolumeName == "router" && s.CramfsLevel == 9
+                      && s.CramfsNote.Contains("big-endian") && s.Extension == ".cramfs" && !s.ShowCommonXattrs && s.ShowAllRoot && !s.ShowNewUbi,
+                    "the dialog does not start with the settings of the source");
+                Check(s.CramfsBlockSizes.Any(c => c.Value == s.CramfsBlockSize), "the block size is not in the list");
+                s.CramfsVolumeName = "a name longer than 16 bytes";
+                Check(!s.Accept() && s.Error is not null, "a name that is too long was accepted");
+                s.CramfsVolumeName = "rootfs";
+                s.CramfsBigEndian = false;
+                s.CramfsBlockSize = 4096;
+                s.CramfsHoles = true;
+                Check(s.CramfsNote.Contains("little-endian"), "note: " + s.CramfsNote);
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "rootfs-le.cramfs");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as CramFS failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cramfs, Cramfs: { BigEndian: false, BlockSize: 4096, Holes: true, VolumeName: "rootfs" } }
+                  && vm.DocumentInfo.StartsWith("CramFS · little-endian · блок 4 КБ"), "saved image: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+
+            // An edit and Ctrl+S: the same file, the same settings.
+            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cramfs, FilePath: var path, Cramfs.Holes: true } && path == again && vm.Document.Tree.Resolve("/etc/passwd") is null
+                  && !vm.IsModified, "saved in place: " + vm.DocumentInfo);
+
+            // Converting to romfs: no owners, so no "all root" switch.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.Romfs;
+                Check(s.IsRomfs && !s.IsCramfs && !s.ShowAllRoot && !s.ShowCommonXattrs && s.Extension == ".romfs" && s.RomfsVolumeName == "rom", "romfs after CramFS");
+                s.RomfsVolumeName = "flash";
+                s.RomfsAlignment = 512;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "flash.romfs"));
+            Check(await vm.SaveAsAsync(), "save as romfs failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Romfs, Romfs: { VolumeName: "flash", DataAlignment: 512 } } && vm.DocumentInfo.StartsWith("romfs · flash"),
+                "romfs image: " + vm.DocumentInfo);
+            // CramFS has no hard links: after it, /bin/ash is a file of its own with the same content.
+            Check(vm.Document.Tree.Resolve("/bin/ash")!.Inode is { LinkCount: 1, Size: 50000 }, "the former hard link");
+            infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Выравнивание данных" && r.Value == "512 Б")
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма" && r.Value == "верна");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a romfs image");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();

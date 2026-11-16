@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using FsForge.Core.Cpio;
+using FsForge.Core.Cramfs;
 using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
+using FsForge.Core.Romfs;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
 using FsForge.Core.Fat;
@@ -30,6 +32,12 @@ public enum ImageFormat
 
     /// <summary>A cpio archive (newc): the format of the Linux initramfs; gzip, xz or zstd compressed or not.</summary>
     Cpio,
+
+    /// <summary>CramFS: the compressed read-only filesystem of older embedded Linux (zlib, blocks of a page).</summary>
+    Cramfs,
+
+    /// <summary>romfs: the minimal read-only filesystem of uClinux and boot loaders (no compression, no owners).</summary>
+    Romfs,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -52,6 +60,8 @@ public sealed class SaveOptions
     public ExtOptions Ext { get; set; } = new();
     public TarOptions Tar { get; set; } = new();
     public CpioOptions Cpio { get; set; } = new();
+    public CramfsOptions Cramfs { get; set; } = new();
+    public RomfsOptions Romfs { get; set; } = new();
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
     public FatOptions Fat { get; set; } = new();
@@ -89,6 +99,8 @@ public sealed class SaveOptions
         Ext = Ext.Clone(),
         Tar = Tar.Clone(),
         Cpio = Cpio.Clone(),
+        Cramfs = Cramfs.Clone(),
+        Romfs = Romfs.Clone(),
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
         Fat = Fat.Clone(),
@@ -131,6 +143,8 @@ public sealed class ImageDocument : IDisposable
     public ExtInfo? Ext { get; private init; }
     public TarInfo? Tar { get; private init; }
     public CpioInfo? Cpio { get; private init; }
+    public CramfsInfo? Cramfs { get; private init; }
+    public RomfsInfo? Romfs { get; private init; }
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
     public FatInfo? Fat { get; private init; }
@@ -200,6 +214,8 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Jffs2 => "JFFS2",
         ImageFormat.Fat => Fat?.TypeName ?? "FAT",
         ImageFormat.Erofs => "EROFS",
+        ImageFormat.Cramfs => "CramFS",
+        ImageFormat.Romfs => "romfs",
         ImageFormat.Cpio => Cpio is null ? "cpio" : "cpio" + CpioFormat.DefaultExtension(Cpio.Compression)[5..],
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
@@ -254,6 +270,8 @@ public sealed class ImageDocument : IDisposable
         SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs
         : UbifsReader.IsUbifs(src) ? ImageFormat.Ubifs
         : ErofsReader.IsErofs(src) ? ImageFormat.Erofs
+        : CramfsReader.IsCramfs(src) ? ImageFormat.Cramfs
+        : RomfsReader.IsRomfs(src) ? ImageFormat.Romfs
         : ExtReader.IsExt(src) ? ImageFormat.Ext
         : FatReader.IsFat(src) ? ImageFormat.Fat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
@@ -262,6 +280,8 @@ public sealed class ImageDocument : IDisposable
     {
         PartitionContent.SquashFs => ImageFormat.SquashFs,
         PartitionContent.Erofs => ImageFormat.Erofs,
+        PartitionContent.Cramfs => ImageFormat.Cramfs,
+        PartitionContent.Romfs => ImageFormat.Romfs,
         PartitionContent.Ext => ImageFormat.Ext,
         _ => ImageFormat.Ubifs,
     };
@@ -270,6 +290,8 @@ public sealed class ImageDocument : IDisposable
     {
         PartitionContent.SquashFs => ImageFormat.SquashFs,
         PartitionContent.Erofs => ImageFormat.Erofs,
+        PartitionContent.Cramfs => ImageFormat.Cramfs,
+        PartitionContent.Romfs => ImageFormat.Romfs,
         PartitionContent.Fat => ImageFormat.Fat,
         _ => ImageFormat.Ext,
     };
@@ -480,6 +502,30 @@ public sealed class ImageDocument : IDisposable
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
+            else if (CramfsReader.IsCramfs(fs))
+            {
+                CramfsReader r = CramfsReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Cramfs, path)
+                {
+                    Cramfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
+            else if (RomfsReader.IsRomfs(fs))
+            {
+                RomfsReader r = RomfsReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Romfs, path)
+                {
+                    Romfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
             else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
             {
                 FatReader r = FatReader.Open(fs);
@@ -610,7 +656,7 @@ public sealed class ImageDocument : IDisposable
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (CpioFormat.IsBinary(head.AsSpan(0, n))) hint = " It looks like a cpio archive in the old binary format, which is not supported (only newc, crc and odc).";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
+        return "The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -704,6 +750,14 @@ public sealed class ImageDocument : IDisposable
         if (SquashFs is not null) o.SquashFs = SquashFsOptions.FromInfo(SquashFs);
         if (Ext is not null) o.Ext = ExtOptions.FromInfo(Ext);
         if (Tar is not null) o.Tar = TarOptions.FromInfo(Tar);
+        if (Cramfs is not null)
+        {
+            // The layout of the source; the compression level stays as configured.
+            CramfsOptions c = CramfsOptions.FromInfo(Cramfs);
+            (c.Level, c.Threads) = (o.Cramfs.Level, o.Cramfs.Threads);
+            o.Cramfs = c;
+        }
+        if (Romfs is not null) o.Romfs = RomfsOptions.FromInfo(Romfs);
         if (Cpio is not null)
         {
             // The layout of the source; the compression levels stay as configured.
@@ -735,6 +789,8 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Fat => FatWriter.Write(tree, output, options.Fat, progress, ct),
         ImageFormat.Erofs => ErofsWriter.Write(tree, output, options.Erofs, progress, ct, options.TempDirectory),
         ImageFormat.Cpio => CpioWriter.Write(tree, output, options.Cpio, null, progress, ct),
+        ImageFormat.Cramfs => CramfsWriter.Write(tree, output, options.Cramfs, progress, ct, options.TempDirectory),
+        ImageFormat.Romfs => RomfsWriter.Write(tree, output, options.Romfs, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -771,7 +827,8 @@ public sealed class ImageDocument : IDisposable
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs)
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs
+            or ImageFormat.Cramfs or ImageFormat.Romfs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
@@ -1000,8 +1057,8 @@ public sealed class ImageDocument : IDisposable
         long stored = part.StoredLength;            // how much of it the file actually had
         bool canGrow = c.CanGrow;
         bool squash = options.Format == ImageFormat.SquashFs;
-        // Like SquashFS, EROFS is as large as its content: it is written to the start of the partition.
-        bool packed = squash || options.Format == ImageFormat.Erofs;
+        // Like SquashFS, EROFS, CramFS and romfs are as large as their content: they are written to the start of the partition.
+        bool packed = squash || options.Format is ImageFormat.Erofs or ImageFormat.Cramfs or ImageFormat.Romfs;
         string partName = $"partition {part.Number}";
 
         // Everything in front of the partition: the partition table, the boot loader, the boot partition.
@@ -1324,6 +1381,18 @@ public static class TreeComparer
 
         /// <summary>Timestamps outside this range cannot be represented and are not compared.</summary>
         public long MinTime = long.MinValue, MaxTime = long.MaxValue;
+
+        /// <summary>No times are stored (CramFS, romfs).</summary>
+        public bool IgnoreTimes;
+
+        /// <summary>Hard links become separate names that share the data (CramFS).</summary>
+        public bool IgnoreHardLinks;
+
+        /// <summary>Only whether a file is executable is stored (romfs): the permissions are compared as the kernel shows them.</summary>
+        public bool ExecOnly;
+
+        /// <summary>Bits of the owner, the group and the device numbers that are stored (CramFS: 16, 8 and 8).</summary>
+        public uint UidMask = uint.MaxValue, GidMask = uint.MaxValue, DevMask = uint.MaxValue;
     }
 
     public static Rules RulesFor(SaveOptions o) => o.Format switch
@@ -1372,6 +1441,24 @@ public static class TreeComparer
             MinTime = o.Ext.InodeSize >= 256 ? -0x80000000L : int.MinValue,
             MaxTime = o.Ext.InodeSize >= 256 ? 0x37FFFFFFFL : int.MaxValue,
         },
+        ImageFormat.Cramfs => new Rules
+        {
+            IgnoreOwners = o.Cramfs.AllRoot,
+            IgnoreXattrs = true,
+            IgnoreTimes = true,
+            IgnoreHardLinks = true,
+            UidMask = 0xFFFF,
+            GidMask = 0xFF,
+            DevMask = 0xFF,
+        },
+        ImageFormat.Romfs => new Rules
+        {
+            IgnoreOwners = true,
+            IgnoreXattrs = true,
+            IgnoreTimes = true,
+            ExecOnly = true,
+            DevMask = 0xFFFF,
+        },
         ImageFormat.Cpio => new Rules
         {
             IgnoreOwners = o.Cpio.AllRoot,
@@ -1414,11 +1501,16 @@ public static class TreeComparer
             }
             if (!(root && rules.IgnoreRootAttributes))
             {
-                if (!rules.IgnoreModes && x.Type != FsNodeType.Symlink && (x.Mode & 0xFFF) != (y.Mode & 0xFFF))
+                if (rules.ExecOnly)
+                {
+                    if (x.Type is FsNodeType.File or FsNodeType.Directory && ((x.Mode & 0x49) != 0) != ((y.Mode & 0x49) != 0))
+                        problems.Add($"{path}: mode is {UnixMode.ToOctal(y.Mode)}, expected an executable bit as in {UnixMode.ToOctal(x.Mode)}.");
+                }
+                else if (!rules.IgnoreModes && x.Type != FsNodeType.Symlink && (x.Mode & 0xFFF) != (y.Mode & 0xFFF))
                     problems.Add($"{path}: mode is {UnixMode.ToOctal(y.Mode)}, expected {UnixMode.ToOctal(x.Mode)}.");
-                if (!rules.IgnoreOwners && (x.Uid != y.Uid || x.Gid != y.Gid))
-                    problems.Add($"{path}: owner is {y.Uid}:{y.Gid}, expected {x.Uid}:{x.Gid}.");
-                if (x.MTime - (x.MTime % rules.TimeStep + rules.TimeStep) % rules.TimeStep != y.MTime && x.MTime >= rules.MinTime && x.MTime <= rules.MaxTime)
+                if (!rules.IgnoreOwners && ((x.Uid & rules.UidMask) != y.Uid || (x.Gid & rules.GidMask) != y.Gid))
+                    problems.Add($"{path}: owner is {y.Uid}:{y.Gid}, expected {x.Uid & rules.UidMask}:{x.Gid & rules.GidMask}.");
+                if (!rules.IgnoreTimes && x.MTime - (x.MTime % rules.TimeStep + rules.TimeStep) % rules.TimeStep != y.MTime && x.MTime >= rules.MinTime && x.MTime <= rules.MaxTime)
                     problems.Add($"{path}: modification time is {y.MTime}, expected {x.MTime}.");
             }
             if (!rules.IgnoreXattrs && !XattrsEqual(x.XAttrs, y.XAttrs)) problems.Add($"{path}: extended attributes differ.");
@@ -1429,7 +1521,7 @@ public static class TreeComparer
                     if (x.LinkTarget != y.LinkTarget) problems.Add($"{path}: link target differs.");
                     break;
                 case FsNodeType.CharDevice or FsNodeType.BlockDevice:
-                    if (x.DevMajor != y.DevMajor || x.DevMinor != y.DevMinor)
+                    if ((x.DevMajor & rules.DevMask) != y.DevMajor || (x.DevMinor & rules.DevMask) != y.DevMinor)
                         problems.Add($"{path}: device is {y.DevMajor}:{y.DevMinor}, expected {x.DevMajor}:{x.DevMinor}.");
                     break;
                 case FsNodeType.File:
@@ -1439,7 +1531,7 @@ public static class TreeComparer
                         break;
                     }
                     // Hard links must stay hard links of the same group.
-                    if (x.LinkCount > 1 && !rules.FilesAndDirectoriesOnly)
+                    if (x.LinkCount > 1 && !rules.FilesAndDirectoriesOnly && !rules.IgnoreHardLinks)
                     {
                         if (linkMap.TryGetValue(x, out FsInode? mapped))
                         {
