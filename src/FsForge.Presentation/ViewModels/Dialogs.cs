@@ -642,8 +642,8 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         if (!_selected.IsEditable)
         {
             Error = _volumes
-                ? L.T("В этом томе нет UBIFS или SquashFS — его нельзя открыть.")
-                : L.T("В этом разделе нет SquashFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
+                ? L.T("В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.")
+                : L.T("В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
@@ -710,6 +710,19 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Состояние"), u.ReplayedNodes > 0
                 ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
                 : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
+        }
+        if (doc.Erofs is { } er)
+        {
+            Add(L.T("Размер ФС"), L.F("{0} ({1} блоков по {2} байт)", Fmt.Size(er.SizeBytes), Fmt.Bytes(er.Blocks), Fmt.Bytes(er.BlockSize)));
+            Add(L.T("Сжатие"), er.Algorithms.Count == 0 ? L.T("нет")
+                : string.Join(", ", er.Algorithms.Select(a => a.ToString().ToLowerInvariant())) +
+                  (er.Compression != Core.Erofs.ErofsCompression.None ? L.F(", кластеры до {0}", Fmt.Size(er.PclusterSize)) : "") +
+                  (er.LzmaDictionarySize > 0 ? L.F(", словарь LZMA {0}", Fmt.Size(er.LzmaDictionarySize)) : ""));
+            Add(L.T("Инодов"), Fmt.Bytes(er.InodeCount));
+            Add(L.T("Метка"), er.VolumeName.Length > 0 ? er.VolumeName : L.T("(нет)"));
+            Add("UUID", er.Uuid.ToString());
+            Add(L.T("Время образа"), Fmt.Date(er.BuildTime, settings.UtcTimes));
+            Add(L.T("Возможности"), string.Join(" ", er.FeatureNames.DefaultIfEmpty(L.T("нет"))));
         }
         if (doc.Fat is { } fat)
         {

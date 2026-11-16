@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
@@ -22,6 +23,9 @@ public enum ImageFormat
 
     /// <summary>FAT12/16/32 with long names: boot partitions of SD cards, EFI system partitions, USB sticks.</summary>
     Fat,
+
+    /// <summary>EROFS, the read-only filesystem with fixed-size compressed clusters (Android, container images, live systems).</summary>
+    Erofs,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -46,6 +50,7 @@ public sealed class SaveOptions
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
     public FatOptions Fat { get; set; } = new();
+    public ErofsOptions Erofs { get; set; } = new();
 
     /// <summary>Geometry and volume of the UBI image that <see cref="NewUbi"/> asks for.</summary>
     public UbiOptions Ubi { get; set; } = new();
@@ -81,6 +86,7 @@ public sealed class SaveOptions
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
         Fat = Fat.Clone(),
+        Erofs = Erofs.Clone(),
         Ubi = Ubi.Clone(),
         NewUbi = NewUbi,
         Verify = Verify,
@@ -121,6 +127,7 @@ public sealed class ImageDocument : IDisposable
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
     public FatInfo? Fat { get; private init; }
+    public ErofsInfo? Erofs { get; private init; }
 
     /// <summary>
     /// The UBI image and the volume the filesystem was opened from; null when the file is not a UBI image.
@@ -185,6 +192,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ubifs => "UBIFS",
         ImageFormat.Jffs2 => "JFFS2",
         ImageFormat.Fat => Fat?.TypeName ?? "FAT",
+        ImageFormat.Erofs => "EROFS",
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
 
@@ -236,6 +244,7 @@ public sealed class ImageDocument : IDisposable
     private static ImageFormat? FilesystemAt(IBlockSource src) =>
         SquashFsReader.IsSquashFs(src) ? ImageFormat.SquashFs
         : UbifsReader.IsUbifs(src) ? ImageFormat.Ubifs
+        : ErofsReader.IsErofs(src) ? ImageFormat.Erofs
         : ExtReader.IsExt(src) ? ImageFormat.Ext
         : FatReader.IsFat(src) ? ImageFormat.Fat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
@@ -243,12 +252,18 @@ public sealed class ImageDocument : IDisposable
     private static ImageFormat FormatOf(UbiVolumeInfo volume) => volume.Content switch
     {
         PartitionContent.SquashFs => ImageFormat.SquashFs,
+        PartitionContent.Erofs => ImageFormat.Erofs,
         PartitionContent.Ext => ImageFormat.Ext,
         _ => ImageFormat.Ubifs,
     };
 
-    private static ImageFormat FormatOf(PartitionInfo part) =>
-        part.Content == PartitionContent.SquashFs ? ImageFormat.SquashFs : ImageFormat.Ext;
+    private static ImageFormat FormatOf(PartitionInfo part) => part.Content switch
+    {
+        PartitionContent.SquashFs => ImageFormat.SquashFs,
+        PartitionContent.Erofs => ImageFormat.Erofs,
+        PartitionContent.Fat => ImageFormat.Fat,
+        _ => ImageFormat.Ext,
+    };
 
     /// <summary>Unpacks only as much of a compressed image as it takes to see what it is.</summary>
     private static ImageFormat? SniffCompressed(FileBlockSource file, ArchiveCompression compression)
@@ -437,6 +452,21 @@ public sealed class ImageDocument : IDisposable
                     doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
                                       $"Saving uses {SquashFsOptions.FromInfo(r.Info).Compression.ToString().ToLowerInvariant()} unless another method is chosen.");
             }
+            else if (ErofsReader.IsErofs(fs))
+            {
+                ErofsReader r = ErofsReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.Erofs, path)
+                {
+                    Erofs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi,
+                };
+                doc._warnings.AddRange(r.Warnings);
+                if (r.Info.Compression is ErofsCompression.Deflate or ErofsCompression.Zstd)
+                    doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
+                                      "Saving uses LZMA unless another method is chosen.");
+            }
             else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
             {
                 FatReader r = FatReader.Open(fs);
@@ -508,7 +538,7 @@ public sealed class ImageDocument : IDisposable
                 ?? throw new FsException($"The disk image has no partition {wanted}. Its partitions: {ListPartitions(table)}.");
             if (!p.IsEditable)
                 throw new FsException($"Partition {wanted} holds {(p.ContentName.Length > 0 ? p.ContentName : "an unknown format")}, " +
-                                      "not SquashFS, ext2/3/4 or FAT, and cannot be edited.");
+                                      "not SquashFS, EROFS, ext2/3/4 or FAT, and cannot be edited.");
             return p;
         }
         IReadOnlyList<PartitionInfo> editable = table.Editable;
@@ -516,7 +546,7 @@ public sealed class ImageDocument : IDisposable
         if (editable.Count == 1 || ask is null) return table.PickDefault();
         PartitionInfo? answer = ask(table) ?? throw new OperationCanceledException();
         if (!answer.IsEditable || !table.Partitions.Contains(answer))
-            throw new FsException("The selected partition does not hold SquashFS, ext2/3/4 or FAT.");
+            throw new FsException("The selected partition does not hold SquashFS, EROFS, ext2/3/4 or FAT.");
         return answer;
     }
 
@@ -532,7 +562,7 @@ public sealed class ImageDocument : IDisposable
                 ?? throw new FsException($"The UBI image has no volume '{wanted}'. Its volumes: {ListVolumes(image)}.");
             if (!chosen.IsReadable)
                 throw new FsException($"Volume {VolumeText(chosen)} holds {(chosen.ContentName.Length > 0 ? chosen.ContentName : "an unknown format")}, " +
-                                      "not UBIFS or SquashFS, and cannot be opened.");
+                                      "not UBIFS, SquashFS or EROFS, and cannot be opened.");
         }
         else
         {
@@ -540,13 +570,13 @@ public sealed class ImageDocument : IDisposable
             if (readable.Count == 0)
                 throw new FsException(image.Volumes.Count == 0
                     ? "The UBI image holds no volumes."
-                    : "None of the volumes of this UBI image holds UBIFS or SquashFS. Its volumes: " + ListVolumes(image) + ".");
+                    : "None of the volumes of this UBI image holds UBIFS, SquashFS or EROFS. Its volumes: " + ListVolumes(image) + ".");
             if (readable.Count == 1 || ask is null) chosen = image.PickDefault()!;
             else
             {
                 chosen = ask(image) ?? throw new OperationCanceledException();
                 if (!chosen.IsReadable || !image.Volumes.Contains(chosen))
-                    throw new FsException("The selected volume does not hold UBIFS or SquashFS.");
+                    throw new FsException("The selected volume does not hold UBIFS, SquashFS or EROFS.");
             }
         }
         return (image.OpenVolume(chosen), new UbiContainer(image, chosen));
@@ -561,12 +591,12 @@ public sealed class ImageDocument : IDisposable
     private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
     {
         if (table is not null)
-            return "None of the partitions of this disk image holds SquashFS, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
+            return "None of the partitions of this disk image holds SquashFS, EROFS, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
         byte[] head = new byte[8];
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive." + hint;
+        return "The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -644,6 +674,13 @@ public sealed class ImageDocument : IDisposable
         if (Ubifs is not null) o.Ubifs = UbifsOptions.FromInfo(Ubifs);
         if (Jffs2 is not null) o.Jffs2 = Jffs2Options.FromInfo(Jffs2);
         if (Fat is not null) o.Fat = FatOptions.FromInfo(Fat);
+        if (Erofs is not null)
+        {
+            // The method, the cluster size and the identity of the image are kept; the effort stays as configured.
+            ErofsOptions e = ErofsOptions.FromInfo(Erofs);
+            (e.Lz4Level, e.LzmaEffort, e.Threads) = (o.Erofs.Lz4Level, o.Erofs.LzmaEffort, o.Erofs.Threads);
+            o.Erofs = e;
+        }
         // A filesystem that goes into a UBI image is made for the erase blocks of that image.
         if (Ubifs is null && Ubi is not null)
         {
@@ -675,6 +712,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ubifs => UbifsWriter.Write(tree, output, options.Ubifs, progress, ct),
         ImageFormat.Jffs2 => Jffs2Writer.Write(tree, output, options.Jffs2, progress, ct),
         ImageFormat.Fat => FatWriter.Write(tree, output, options.Fat, progress, ct),
+        ImageFormat.Erofs => ErofsWriter.Write(tree, output, options.Erofs, progress, ct, options.TempDirectory),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -711,7 +749,7 @@ public sealed class ImageDocument : IDisposable
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2 or ImageFormat.Fat)
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
@@ -940,6 +978,8 @@ public sealed class ImageDocument : IDisposable
         long stored = part.StoredLength;            // how much of it the file actually had
         bool canGrow = c.CanGrow;
         bool squash = options.Format == ImageFormat.SquashFs;
+        // Like SquashFS, EROFS is as large as its content: it is written to the start of the partition.
+        bool packed = squash || options.Format == ImageFormat.Erofs;
         string partName = $"partition {part.Number}";
 
         // Everything in front of the partition: the partition table, the boot loader, the boot partition.
@@ -957,7 +997,7 @@ public sealed class ImageDocument : IDisposable
                                       $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
             o.Fat.HiddenSectors = (uint)Math.Min(uint.MaxValue, part.Offset / o.Fat.SectorSize);
         }
-        else if (!squash)
+        else if (!packed)
         {
             o = options.Clone();
             long bs = o.Ext.BlockSize;
@@ -980,7 +1020,7 @@ public sealed class ImageDocument : IDisposable
             fs.Position = part.Offset;
             warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
         }
-        catch (FsNoSpaceException) when (!squash && canGrow)
+        catch (FsNoSpaceException) when (!packed && canGrow)
         {
             // Let the writer find the size the content needs; the partition follows below.
             o.Ext.SizeBytes = 0;
@@ -1277,6 +1317,11 @@ public static class TreeComparer
         {
             IgnoreOwners = o.Ubifs.AllRoot,
             IgnoreXattrs = true,                    // only the user/trusted/security namespaces exist in UBIFS
+        },
+        ImageFormat.Erofs => new Rules
+        {
+            IgnoreOwners = o.Erofs.AllRoot,
+            IgnoreXattrs = true,                    // only the user/trusted/security namespaces and ACLs exist in EROFS
         },
         ImageFormat.Fat => new Rules
         {

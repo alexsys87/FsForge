@@ -922,6 +922,85 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("EROFS: open an lzma image, keep its settings on saving, change them, convert it", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string erofs = Path.Combine(_dir, "system.erofs");
+            var uuid = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("e.sqfs"), _dir))
+            using (var fs = new FileStream(erofs, FileMode.Create))
+                ImageDocument.WriteTo(source.Tree, fs, new SaveOptions
+                {
+                    Format = ImageFormat.Erofs,
+                    Erofs = new FsForge.Core.Erofs.ErofsOptions
+                    {
+                        Compression = FsForge.Core.Erofs.ErofsCompression.Lzma, LzmaEffort = 0, PclusterSize = 16 * 1024, VolumeName = "system", Uuid = uuid,
+                    },
+                });
+            Check(await vm.OpenPathAsync(erofs), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Erofs, Erofs.VolumeName: "system" } && vm.DocumentInfo.StartsWith("EROFS · lzma · кластер "), "status line: " + vm.DocumentInfo);
+            Check(!vm.IsInfoOpen, "an EROFS image must open without warnings: " + vm.InfoMessage);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Сжатие" && r.Value.StartsWith("lzma, кластеры до "))
+                                                                    && i.Rows.Any(r => r.Label == "Метка" && r.Value == "system")
+                                                                    && i.Rows.Any(r => r.Label == "UUID" && r.Value == uuid.ToString());
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of an EROFS image");
+
+            // "Save as" starts with the settings of the source; another method shows its own options.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsErofs && s.ErofsCompression == FsForge.Core.Erofs.ErofsCompression.Lzma && s.ErofsVolumeName == "system" && s.ErofsKeepUuid && s.CanKeepErofsUuid
+                      && s.ShowErofsLzma && !s.ShowErofsLz4Level && s.ShowErofsCluster && s.HasErofsNote && s.ErofsNote.Contains("5.16") && s.Extension == ".erofs"
+                      && s.ShowCommonXattrs && s.ShowAllRoot && !s.ShowNewUbi && !s.WritesDisk,
+                    "the dialog does not start with the settings of the source");
+                Check(s.ErofsPclusterSizes.Any(c => c.Value == s.ErofsPclusterSize), "the cluster size of the source is not in the list: " + s.ErofsPclusterSize);
+                s.ErofsCompression = FsForge.Core.Erofs.ErofsCompression.Lz4Hc;
+                s.ErofsPclusterSize = 64 * 1024;
+                Check(s.ShowErofsLz4Level && !s.ShowErofsLzma && s.ErofsNote.Contains("5.13"), "options of lz4hc: " + s.ErofsNote);
+                s.ErofsVolumeName = "a label of more than 16 bytes";
+                Check(!s.Accept() && s.Error is not null, "a label that is too long was accepted");
+                s.ErofsVolumeName = "vendor";
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "vendor.erofs");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as EROFS failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Erofs, Erofs: { Compression: FsForge.Core.Erofs.ErofsCompression.Lz4, VolumeName: "vendor", BigPcluster: true } e2 } && e2.Uuid == uuid
+                  && vm.DocumentInfo.StartsWith("EROFS · lz4 · кластер "), "saved image: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+
+            // An edit and Ctrl+S: the same file, the same settings.
+            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Erofs, FilePath: var path, Erofs.VolumeName: "vendor" } && path == again && vm.Document.Tree.Resolve("/etc/passwd") is null && !vm.IsModified,
+                "saved in place: " + vm.DocumentInfo);
+
+            // Converting to ext4 and uncompressed EROFS.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.ErofsCompression = FsForge.Core.Erofs.ErofsCompression.None;
+                Check(!s.ShowErofsCluster && !s.HasErofsNote && !s.ShowErofsLz4Level, "options without compression");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "plain.erofs"));
+            Check(await vm.SaveAsAsync(), "save as uncompressed EROFS failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Erofs.Compression: FsForge.Core.Erofs.ErofsCompression.None } && vm.DocumentInfo.StartsWith("EROFS · без сжатия"), "uncompressed image: " + vm.DocumentInfo);
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.Ext4;
+                Check(s.IsExt && !s.IsErofs && s.Extension == ".ext4", "ext4 after EROFS");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "from-erofs.ext4"));
+            Check(await vm.SaveAsAsync(), "save as ext4 failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.Ext && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();

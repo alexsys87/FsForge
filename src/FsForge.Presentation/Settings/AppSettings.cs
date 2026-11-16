@@ -112,6 +112,9 @@ public sealed class AppSettings
     /// <summary>Defaults of a new FAT image: type, cluster size, label.</summary>
     public FsForge.Core.Fat.FatOptions Fat { get; set; } = new();
 
+    /// <summary>Defaults of a new EROFS image: compressor, cluster size, effort.</summary>
+    public FsForge.Core.Erofs.ErofsOptions Erofs { get; set; } = new();
+
     /// <summary>Defaults of a new UBI image.</summary>
     public FsForge.Core.Ubifs.UbiOptions Ubi { get; set; } = new();
 
@@ -180,6 +183,7 @@ public sealed class AppSettings
             Ubifs = Ubifs.Clone(),
             Jffs2 = Jffs2.Clone(),
             Fat = Fat.Clone(),
+            Erofs = Erofs.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -195,6 +199,7 @@ public sealed class AppSettings
         o.TempDirectory = string.IsNullOrWhiteSpace(TempDirectory) ? null : TempDirectory;
         o.SquashFs.Threads = Threads;
         o.Tar.Threads = Threads;
+        o.Erofs.Threads = Threads;
     }
 
     public string? EffectiveTempDirectory => string.IsNullOrWhiteSpace(TempDirectory) ? null : TempDirectory;
@@ -302,6 +307,13 @@ public sealed class SettingsStore
         s.Fat.VolumeId = null;
         s.Fat.HiddenSectors = 0;
         s.Fat.BootCode = null;
+        s.Erofs ??= new();
+        try { s.Erofs.Validate(); } catch (FsForge.Core.FsException) { s.Erofs = new(); }
+        // Defaults never carry the identity of a particular image.
+        s.Erofs.Uuid = null;
+        s.Erofs.BuildTime = null;
+        s.Erofs.VolumeName = "";
+        s.Erofs.LzmaDictionarySize = 0;
         s.Ubi ??= new();
         try { s.Jffs2.Validate(); } catch (FsForge.Core.FsException) { s.Jffs2 = new(); }
         try { s.Ubifs.Validate(); } catch (FsForge.Core.FsException) { s.Ubifs = new(); }

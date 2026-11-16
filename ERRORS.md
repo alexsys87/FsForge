@@ -37,7 +37,7 @@
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
+| `The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
 | …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
@@ -53,10 +53,10 @@
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `None of the partitions of this disk image holds SquashFS, ext2/3/4 or FAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, exFAT, F2FS, swap и т. п.). | Редактируются разделы SquashFS, ext2/3/4 и FAT12/16/32. Раздел NTFS или exFAT можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
+| `None of the partitions of this disk image holds SquashFS, EROFS, ext2/3/4 or FAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, exFAT, F2FS, swap и т. п.). | Редактируются разделы SquashFS, EROFS, ext2/3/4 и FAT12/16/32. Раздел NTFS или exFAT можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
 | `The disk image has no partition <N>. Its partitions: <список>.` | В `fsforge-cli` указан несуществующий `part=<N>`. | Посмотрите номера разделов: `fsforge-cli info образ.img`. |
-| `Partition <N> holds <формат>, not SquashFS, ext2/3/4 or FAT, and cannot be edited.` | Выбран раздел с неподдерживаемой файловой системой. | Выберите другой раздел. |
-| `The selected partition does not hold SquashFS, ext2/3/4 or FAT.`; в окне выбора — «В этом разделе нет SquashFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.» | То же в окне выбора раздела. | Выберите раздел с пометкой SquashFS, ext или FAT. |
+| `Partition <N> holds <формат>, not SquashFS, EROFS, ext2/3/4 or FAT, and cannot be edited.` | Выбран раздел с неподдерживаемой файловой системой. | Выберите другой раздел. |
+| `The selected partition does not hold SquashFS, EROFS, ext2/3/4 or FAT.`; в окне выбора — «В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.» | То же в окне выбора раздела. | Выберите раздел с пометкой SquashFS, EROFS, ext или FAT. |
 | «Выберите раздел.» | В окне выбора раздела ничего не выбрано. | Выберите раздел в списке. |
 | Открылся корневой раздел, а нужен загрузочный FAT (`config.txt`, `cmdline.txt`) | По умолчанию выбирается самый большой раздел не FAT — корневая система. | В окне выбора раздела выберите раздел FAT; в `fsforge-cli` — `part=1` (номер раздела показывает `fsforge-cli info`). |
 | `The file has no partition table, so there is no partition <N> to open.` | `part=<N>` указан для файла без таблицы разделов. | Уберите `part=`. |
@@ -112,7 +112,7 @@
 
 ## 4. Чтение UBIFS и UBI
 
-UBIFS и UBI читаются и записываются (запись — в разделе 7). Образ UBI всегда сохраняется целиком,
+UBIFS и UBI читаются и записываются (запись — в разделе 10). Образ UBI всегда сохраняется целиком,
 с заменой открытого тома.
 
 ### Образы UBI (тома)
@@ -120,10 +120,10 @@ UBIFS и UBI читаются и записываются (запись — в �
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | Предупреждение: `The UBI image was found inside the file at offset 0x<…>. Saving writes the UBI image alone, without the data in front of it.` | Образ UBI лежит в файле прошивки не с начала (перед ним ядро или заголовок производителя). Заголовок и контрольные суммы прошивки программа не пересобирает. | Сохраните под новым именем и соберите прошивку заново средствами производителя. |
-| `None of the volumes of this UBI image holds UBIFS or SquashFS. Its volumes: <список>.`, `The UBI image holds no volumes.` | В образе нет тома с файловой системой, которую программа читает (например, только ядро). | Проверьте, тот ли это файл: корневая файловая система может быть в другом разделе флеш-памяти. |
+| `None of the volumes of this UBI image holds UBIFS, SquashFS or EROFS. Its volumes: <список>.`, `The UBI image holds no volumes.` | В образе нет тома с файловой системой, которую программа читает (например, только ядро). | Проверьте, тот ли это файл: корневая файловая система может быть в другом разделе флеш-памяти. |
 | `The UBI image has no volume '<имя>'. Its volumes: <список>.` | Параметр `vol=` в `fsforge-cli` называет том, которого нет. | Возьмите имя или номер из списка в сообщении (или из `fsforge-cli info`). |
-| `Volume '<имя>' (<N>) holds <формат>, not UBIFS or SquashFS, and cannot be opened.` | Выбран том без читаемой файловой системы (ядро, пустой том). | Выберите другой том. |
-| `The selected volume does not hold UBIFS or SquashFS.`; в окне выбора — «В этом томе нет UBIFS или SquashFS — его нельзя открыть.», «Выберите том.» | То же в окне выбора тома. | Выберите том с пометкой UBIFS или SquashFS. |
+| `Volume '<имя>' (<N>) holds <формат>, not UBIFS, SquashFS or EROFS, and cannot be opened.` | Выбран том без читаемой файловой системы (ядро, пустой том). | Выберите другой том. |
+| `The selected volume does not hold UBIFS, SquashFS or EROFS.`; в окне выбора — «В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.», «Выберите том.» | То же в окне выбора тома. | Выберите том с пометкой UBIFS или SquashFS. |
 | `The file is not a UBI image, so there is no volume '<имя>' to open.` | `vol=` указан для файла, который не является образом UBI. | Уберите параметр. |
 | `The file is a UBI image and has no partition table, so there is no partition <N> to open.` | `part=` указан для образа UBI. | Тома UBI выбираются параметром `vol=`. |
 | `The size of the erase blocks of this UBI image cannot be determined: no second erase-counter header was found. A flash dump that includes out-of-band (spare) data is not supported.` | В файле один блок стирания, либо это дамп NAND вместе с OOB-данными: блоки в нём идут не подряд. | Снимите дамп без OOB (`nanddump --omitoob`) или уберите OOB сторонней утилитой. |
@@ -208,7 +208,36 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 Длинные имена, у которых не сошлась контрольная сумма с коротким именем (остатки после программы,
 не знающей VFAT), не показываются: файл виден под коротким именем, как и в Windows.
 
-## 7. Чтение архивов tar
+## 7. Чтение EROFS
+
+EROFS читается из отдельного образа (`*.erofs`, `system.img` и другие разделы Android после
+распаковки), из раздела образа диска и из тома UBI. Читаются все виды образов, которые делает
+`mkfs.erofs` до версии 1.8 включительно: без сжатия, lz4, lzma, deflate и zstd; кластеры до 1 МБ; хвосты
+рядом с инодом (ztailpacking), фрагменты, дедупликация, файлы из чанков, блоки 512 байт – 4 КБ.
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The file is too small to be an EROFS image.`, `Not an EROFS image (bad magic).`, `Corrupt EROFS superblock: invalid block size (2^<N>).` | Суперблок (по смещению 1024) повреждён. | Проверьте образ: `fsck.erofs образ.erofs`, `dump.erofs образ.erofs` в Linux. |
+| `The EROFS image uses the 48-bit layout (mkfs.erofs -E48bit, Linux 6.15), which is not supported.` | Образ сделан `mkfs.erofs` 1.9 с параметром `-E48bit` (адреса блоков шире 32 бит, записи экстентов). | Соберите образ без `-E48bit` или распакуйте его в Linux (`fsck.erofs --extract=папка`) и соберите в FsForge из папки. |
+| `The EROFS image keeps its metadata compressed (mkfs.erofs -Emetabox, Linux 6.17), which is not supported.` | Образ сделан с параметром `-Emetabox`: иноды и каталоги лежат сжатыми в служебном файле. | То же: соберите образ без `-Emetabox` или распакуйте его в Linux. |
+| `The EROFS image describes compressed files with extent records (mkfs.erofs 1.9), which is not supported.` | Новая форма индекса сжатых файлов из `mkfs.erofs` 1.9. | То же. |
+| `The EROFS image uses features this program does not know (incompatible feature flags 0x<…>).`, `The EROFS image uses a compression method this program does not know (methods 0x<…>).`, `The EROFS image uses an LZMA variant this program does not know.`, `The EROFS inode <N> has a format / a data layout this program does not know (…).`, `The EROFS inode <N> uses a chunk format this program does not know (0x<…>).`, `The EROFS image uses directory blocks of their own size, which is not supported.` | Образ сделан более новой версией `mkfs.erofs`, чем знает программа. | Обновите FsForge; пока — распакуйте образ в Linux (`fsck.erofs --extract=папка`). |
+| `The EROFS image keeps file data on <N> more device(s) (blob files), which are not part of this file.`, `The EROFS image keeps file data on another device (a blob file), which is not part of this file.` | Образ сделан с `--blobdev` (образы контейнеров Nydus, composefs): в этом файле только метаданные, содержимое файлов — в отдельных файлах. | Такой образ без его файлов данных прочитать нельзя; откройте образ, собранный одним файлом. |
+| Предупреждение: `The checksum of the EROFS superblock does not match: the image is damaged or was changed without updating it. The kernel refuses to mount such an image.` | Суперблок изменён (например, метка тома исправлена в шестнадцатеричном редакторе) или повреждён. | Образ читается. Сохраните его в FsForge — контрольная сумма будет записана заново. Если суперблок не меняли намеренно, получите файл заново. |
+| Предупреждение: `The file is shorter than the EROFS filesystem it holds; reading the missing part fails.` | Файл обрезан: суперблок описывает больше блоков, чем есть в файле. | Получите файл заново. Файлы из уцелевшей части читаются. |
+| `Corrupt EROFS image: metadata lies outside the file.`, `…inode <N> lies outside the file.`, `…invalid inode number <N>.`, `…inode <N> has an invalid size.`, `…an empty metadata record.` | Ссылка на инод или служебную запись ведёт за пределы файла: образ обрезан или повреждён. | Получите файл заново; `fsck.erofs образ.erofs` покажет, цел ли он. |
+| `Corrupt EROFS image: the root inode is not a directory.`, `…a directory is referenced more than once.`, `…the directory '<путь>' is larger than the image.`, `…has a truncated block.`, `…has an invalid entry table.`, `…has an entry whose name lies outside its block.`, `…a directory or link is too large.`, `…the symbolic link '<путь>' has an invalid length.` | Повреждён каталог или ссылка. | См. общие способы. |
+| Предупреждение: `Invalid or duplicate directory entry '<имя>' in '<папка>' was skipped.`, `'<путь>' has an unknown file type (mode <…>) and was skipped.` | В каталоге запись с недопустимым или повторяющимся именем либо объект неизвестного типа. | Объект пропущен; остальное содержимое доступно. |
+| Предупреждение: `An extended attribute of '<путь>' uses an unknown name prefix and was skipped.`, `…is of an unknown namespace (<N>) and was skipped.` | Атрибут из пространства имён, которого программа не знает. | Атрибут не показывается и при сохранении теряется. |
+| `Corrupt EROFS image: invalid extended attribute area.`, `…an extended attribute runs past its area.`, `…an attribute name prefix is too long.` | Повреждены расширенные атрибуты. | См. общие способы. |
+| `Corrupt EROFS image: inline data crosses a block boundary.`, `…invalid chunk size.`, `…a part of a file is not mapped to any data.` | Повреждено описание размещения файла. Ошибка появляется при чтении этого файла (извлечение, сохранение). | Остальные файлы читаются. Извлеките их выборочно. |
+| `Corrupt EROFS image: invalid cluster size.`, `…a compressed file does not start with a head cluster.`, `…invalid offset in a cluster index.`, `…the cluster index is not in order.`, `…compact cluster indexes with a cluster size above 16 KiB.`, `…2-byte compact cluster indexes with a cluster size above 4 KiB.`, `…invalid distance in a compact cluster index.`, `…a compressed file has no clusters.`, `…a compressed cluster is larger than 1 MiB.`, `…an uncompressed cluster is shorter than its data.`, `…an inline cluster crosses a block boundary.`, `…an inline cluster is shorter than its data.`, `…invalid interlaced cluster.` | Повреждён индекс кластеров сжатого файла. | То же: ошибка относится к одному файлу. |
+| `Corrupt EROFS image: a file uses the compression method <метод>, which the superblock does not announce.`, `…unknown compression method <N>.`, `…an empty compressed cluster.`, `…a compressed cluster unpacks to <N> bytes instead of <M>.`, `…a <метод> cluster cannot be unpacked (<подробности>).`, `Corrupt LZ4 data.`, `Corrupt LZMA data: …` | Сжатые данные файла повреждены. | Получите образ заново. Остальные файлы читаются. |
+| `The EROFS image has a compressed cluster that stands for <N> MiB of data, which is more than this program unpacks at once.` | Один сжатый кластер описывает больше 64 МБ данных (ядро Linux допускает до 12 МБ). | Скорее всего образ повреждён; если нет — распакуйте его в Linux. |
+| `Corrupt EROFS image: a file keeps data in the packed inode, but the image has none.`, `…a fragment lies outside the packed inode.`, `…the packed inode refers to itself.` | Повреждены фрагменты (хвосты файлов в служебном «упакованном» файле, `-Efragments`). | Ошибка относится к файлу, который читается; см. общие способы. |
+| Предупреждение: `The image is compressed with DEFLATE / ZSTD, which can be read but not written. Saving uses LZMA unless another method is chosen.` | Образ сжат deflate или zstd: программа их читает, но не записывает. | При сохранении выберите lz4hc или lzma. Учтите требования ядра: lzma — Linux 5.16 и новее. |
+
+## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -224,7 +253,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | Предупреждение: `'<имя>': the hard link target '<цель>' is not in the archive; the link was skipped.` | Жёсткая ссылка на файл, которого нет в архиве (архив собран не целиком). | Добавьте недостающий файл вручную. |
 | Предупреждение: `'<имя>' was skipped: <причина>` | Запись с недопустимым именем или конфликтом. | Запись потеряна; при необходимости добавьте её вручную. |
 
-## 8. Ошибки сжатых данных
+## 9. Ошибки сжатых данных
 
 Появляются при открытии, извлечении или сохранении, когда читается конкретный блок данных:
 
@@ -237,7 +266,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 Причина — повреждённые данные или редкие параметры сжатия. Если ошибка возникает при извлечении
 одного файла — повреждён именно он: извлеките остальное. Если при открытии — см. общие способы.
 
-## 9. Сохранение
+## 10. Сохранение
 
 ### Общие
 
@@ -363,6 +392,24 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 только то, что FAT хранит. В окне «Сохранить как» для раздела образа диска размер FAT не задаётся:
 он равен размеру раздела (подсказка «В образе диска FAT занимает раздел целиком»).
 
+### Запись EROFS
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `Writing EROFS with the <метод> compressor is not supported; choose LZ4 or LZMA.` | Для записи выбран deflate или zstd (`comp=` в `fsforge-cli`). | Выберите `lz4`, `lz4hc`, `lzma` или `none`. |
+| `The EROFS cluster size must be a multiple of 4 KiB between 4 KiB and 1 MiB.` | Неверный `pcluster=`. | Возьмите 4096 … 1048576, кратно 4096. |
+| `The LZ4HC level must be between 1 and 12.`, `The EROFS LZMA dictionary size must be between 4 KiB and 8 MiB.` | Неверные `level=` или `dict=`. | Исправьте или уберите параметр. |
+| `An EROFS volume name has at most 16 bytes.`; в окне параметров — «Метка тома не длиннее 16 байт.» | Метка тома длиннее 16 байт (русская буква — 2 байта). | Сократите метку. |
+| `The image would be larger than 16 TiB, the limit of this EROFS layout.` | Номера блоков в записываемом виде EROFS — 32-битные. | Разделите содержимое на несколько образов. |
+| Предупреждение: `'<путь>': the extended attribute '<имя>' was dropped; EROFS holds only user.*, trusted.*, security.* attributes and POSIX ACLs.` | Атрибут из другого пространства имён (например, `system.` кроме ACL). | Атрибут потерян; если нужен — ext или tar pax. |
+| Предупреждение: `'<путь>': the extended attribute '<имя>' was dropped; its name or value is too long for EROFS.`, `'<путь>': the extended attributes take more than 256 KiB and were dropped.` | Имя атрибута длиннее 255 байт, значение больше 65535 байт или все атрибуты объекта вместе больше 256 КБ. | Атрибуты потеряны; сохраните образ в ext4, если они нужны. |
+| `Only UBIFS and SquashFS can be wrapped into a UBI image.` | Для EROFS выбрано «Упаковать в образ UBI» (`ubi=1`). | Новый образ UBI делается только вокруг UBIFS и SquashFS. EROFS, открытый из тома существующего образа UBI, сохраняется в этот том. |
+| Смонтировать образ не удаётся: `erofs: unsupported …`, `can't find valid erofs superblock`, ошибка ввода-вывода при чтении файлов | Ядро устройства старше, чем требует выбранный вид образа: кластеры больше 4 КБ — Linux 5.13, lzma — Linux 5.16 (и `CONFIG_EROFS_FS_ZIP_LZMA`); сам EROFS со сжатием lz4 — Linux 5.4. | Сохраните образ со сжатием lz4hc и кластером 4 КБ — его читает любое ядро с EROFS. |
+
+EROFS хранит всё, что есть в дереве: владельцев, права, время (с секундной точностью), ссылки,
+устройства, сокеты, жёсткие ссылки, расширенные атрибуты `user.`, `trusted.`, `security.` и POSIX ACL.
+«Разреженность» файлов не сохраняется: нули сжимаются, а без сжатия записываются как есть.
+
 ### Запись tar
 
 | Сообщение | Причина | Что делать |
@@ -380,7 +427,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | `The added file '<путь>' can no longer be read: <текст>` | Файл, добавленный с диска, удалён, переименован или заблокирован до сохранения. Образ ссылается на него и читает только при записи. | Верните файл на место или добавьте его заново. Чтобы такого не было, включите Настройки → «Сразу копировать добавляемые файлы во временную папку». |
 | `The file '<путь>' has changed since it was added to the image. Add it again.` | Размер добавленного файла изменился. | Добавьте файл заново (или включите ту же настройку). |
 
-## 10. Правка образа
+## 11. Правка образа
 
 Сообщения в окнах «Создать», «Свойства», «Переименовать» и при вставке. Ядро даёт английский текст,
 окна показывают русский перевод.
@@ -411,7 +458,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | «Вставка» со списком | Часть объектов не вставлена; причина указана для каждого. |
 | «Путь не найден» (уведомление) | Путь, введённый в адресной строке, не существует в образе. Проверьте написание; пути начинаются с `/`. |
 
-## 11. Добавление файлов и сборка из папки
+## 12. Добавление файлов и сборка из папки
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -423,7 +470,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | Предупреждение: `'<путь>' was skipped: <текст>` | Файл не читается (занят, нет прав) или имя недопустимо. | Закройте программу, держащую файл, и добавьте его снова. |
 | Вопрос «Объекты с такими именами уже существуют» | Совпадение имён при добавлении. | Выберите действие; поведение по умолчанию — Настройки → «Если объект с таким именем уже есть». |
 
-## 12. Извлечение и внешний редактор
+## 13. Извлечение и внешний редактор
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
@@ -439,7 +486,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | «Замена содержимого» — «Выберите один файл.» | Для замены содержимого выбрано несколько файлов. | Выберите один. |
 | «Не удалось выполнить действие» | Не удалось открыть папку в Проводнике или скопировать путь в буфер обмена. | Повторите; причина указана в тексте. |
 
-## 13. Настройки и параметры сохранения
+## 14. Настройки и параметры сохранения
 
 | Сообщение | Что делать |
 |---|---|
@@ -450,7 +497,7 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 | «Размер образа — целое число мегабайт (МиБ), не меньше 1.» | Введите целое число. |
 | «Запас свободного места — целое неотрицательное число мегабайт.» | Введите 0 или больше. |
 
-## 14. Прочее
+## 15. Прочее
 
 | Сообщение | Причина | Что делать |
 |---|---|---|

@@ -692,6 +692,79 @@
                 </Border>
             </StackPanel>
 
+            <!--  EROFS  -->
+            <StackPanel Visibility="{Binding IsErofs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="EROFS" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Сжатие'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="330"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ErofsCompressions}"
+                                SelectedValue="{Binding ErofsCompression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Размер сжатого кластера'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowErofsCluster, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="140"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ErofsPclusterSizes}"
+                                SelectedValue="{Binding ErofsPclusterSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding ErofsNote}"
+                            Visibility="{Binding HasErofsNote, Converter={StaticResource BoolToVisibility}}" />
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Уровень lz4hc'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowErofsLz4Level, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="150"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ErofsLz4Levels}"
+                                SelectedValue="{Binding ErofsLz4Level}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Усердие lzma'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowErofsLzma, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="220"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding XzEfforts}"
+                                SelectedValue="{Binding ErofsLzmaEffort}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Хранить хвосты файлов рядом с инодами'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding ErofsInlineData}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Хранить одинаковые файлы один раз'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding ErofsDeduplicate}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Хранить общие расширенные атрибуты один раз'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding ErofsShareXattrs}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Метка тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="180" Text="{Binding ErofsVolumeName, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Сохранить UUID исходного образа'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding CanKeepErofsUuid, Converter={StaticResource BoolToVisibility}}">
+                            <ui:ToggleSwitch IsChecked="{Binding ErofsKeepUuid}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  ext2 / ext3 / ext4  -->
             <StackPanel Visibility="{Binding IsExt, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="ext2 / ext3 / ext4" />
@@ -1204,6 +1277,47 @@
                     </HeaderedContentControl>
                     <HeaderedContentControl Header="{l:Tr 'Дополнять файл до границы 4 КБ'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.SquashFs.Pad4K}" />
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'EROFS по умолчанию'}" />
+            <Border Style="{StaticResource Card}">
+                <StackPanel>
+                    <HeaderedContentControl Header="{l:Tr 'Сжатие'}" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="330"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ErofsCompressions}"
+                            SelectedValue="{Binding Settings.Erofs.Compression}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Размер сжатого кластера'}" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="140"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ErofsPclusterSizes}"
+                            SelectedValue="{Binding Settings.Erofs.PclusterSize}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Уровень lz4hc'}" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="150"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding ErofsLz4Levels}"
+                            SelectedValue="{Binding Settings.Erofs.Lz4Level}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Усердие lzma'}" Style="{StaticResource Row}">
+                        <ComboBox
+                            Width="220"
+                            DisplayMemberPath="Title"
+                            ItemsSource="{Binding XzEfforts}"
+                            SelectedValue="{Binding Settings.Erofs.LzmaEffort}"
+                            SelectedValuePath="Value" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Хранить одинаковые файлы один раз'}" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.Erofs.Deduplicate}" />
                     </HeaderedContentControl>
                 </StackPanel>
             </Border>

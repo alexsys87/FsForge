@@ -230,6 +230,72 @@ internal sealed class Lzma2Encoder
         return outPos - dstOffset;
     }
 
+    private byte[] _micro = Array.Empty<byte>();
+
+    /// <summary>
+    /// Compresses the beginning of <paramref name="src"/> into one MicroLZMA stream of at most
+    /// <paramref name="dst"/>.Length bytes: a raw LZMA stream without an end marker whose first byte holds
+    /// the bitwise negation of the properties byte. As much input as fits is taken, symbol by symbol.
+    /// </summary>
+    /// <param name="consumed">Number of input bytes the stream stands for.</param>
+    /// <returns>The compressed size, or -1 when not even the first symbol fits.</returns>
+    public int EncodeMicroLzma(ReadOnlySpan<byte> src, Span<byte> dst, int dictionarySize, out int consumed)
+    {
+        consumed = 0;
+        int n = src.Length, capacity = dst.Length;
+        if (n == 0 || capacity < 6) return -1;
+        _dictLimit = Math.Max(dictionarySize, 4096);
+        Prepare(src);
+        if (_micro.Length < capacity + SymbolMargin + 64) _micro = new byte[capacity + SymbolMargin + 64];
+        _out = _micro;
+        _outPos = 0;
+        _low = 0;
+        _range = 0xFFFFFFFF;
+        _cache = 0;
+        _cacheSize = 1;
+
+        int pos = 0;
+        while (pos < n)
+        {
+            // The state of the range coder before the symbol: when the symbol turns out not to fit,
+            // the stream ends here. The probability model needs no rollback, nothing is coded after it.
+            int outPos = _outPos;
+            ulong low = _low;
+            uint range = _range;
+            byte cache = _cache;
+            long cacheSize = _cacheSize;
+
+            if (_symIndex == _symCount) Parse(pos);
+            int len = _symLen[_symIndex];
+            int back = _symBack[_symIndex];
+            _symIndex++;
+            EncodeSymbol(pos, len, back);
+            // Flushing writes what is pending plus four more bytes.
+            if (_outPos + _cacheSize + 4 > capacity)
+            {
+                _outPos = outPos;
+                _low = low;
+                _range = range;
+                _cache = cache;
+                _cacheSize = cacheSize;
+                break;
+            }
+            pos += len;
+        }
+        if (pos == 0)
+        {
+            _out = Array.Empty<byte>();
+            return -1;
+        }
+        for (int i = 0; i < 5; i++) ShiftLow();
+        int size = _outPos;
+        _micro[0] = (byte)~PropsByte;
+        _micro.AsSpan(0, size).CopyTo(dst);
+        _out = Array.Empty<byte>();
+        consumed = pos;
+        return size;
+    }
+
     private void Prepare(ReadOnlySpan<byte> src)
     {
         _n = src.Length;

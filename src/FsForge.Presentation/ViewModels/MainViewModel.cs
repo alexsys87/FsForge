@@ -457,6 +457,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc.SquashFs is { } s) info += L.F(" · {0} · блок {1}", s.Compression.ToString().ToLowerInvariant(), Fmt.Size(s.BlockSize));
         if (_doc.Ext is { } e) info += L.F(" · {0} · свободно {1}", Fmt.Size(e.SizeBytes), Fmt.Size(e.FreeBlocks * e.BlockSize));
         if (_doc.Ubifs is { } u) info += L.F(" · {0} · блок стирания {1}", u.DefaultCompression.ToString().ToLowerInvariant(), Fmt.Size(u.LebSize));
+        if (_doc.Erofs is { } er)
+            info += er.Compression == FsForge.Core.Erofs.ErofsCompression.None
+                ? L.T(" · без сжатия")
+                : L.F(" · {0} · кластер {1}", er.Compression.ToString().ToLowerInvariant(), Fmt.Size(er.PclusterSize));
         if (_doc.Fat is { } fat)
             info += L.F(" · кластер {0} · свободно {1}", Fmt.Size(fat.ClusterSize), Fmt.Size(fat.FreeClusters * fat.ClusterSize));
         if (_doc.Jffs2 is { } j)
@@ -1274,7 +1278,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         string version = typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "";
         return _dialogs.ShowMessageAsync(L.T("О программе FsForge"),
             $"FsForge {version}" + Environment.NewLine +
-            L.T("Редактор образов SquashFS и ext2/ext3/ext4, архивов rootfs.tar (gz, xz, zst).") + Environment.NewLine + Environment.NewLine +
+            L.T("Редактор образов SquashFS, EROFS и ext2/ext3/ext4, архивов rootfs.tar (gz, xz, zst).") + Environment.NewLine + Environment.NewLine +
             L.T("Чтение и запись файловых систем выполняются собственным кодом на C#: без WSL и без утилит Linux.") + Environment.NewLine +
             L.T("Интерфейс: WPF и библиотека WPF-UI (Fluent).") + Environment.NewLine + Environment.NewLine +
             L.T("Настройки: ") + _store.FilePath);

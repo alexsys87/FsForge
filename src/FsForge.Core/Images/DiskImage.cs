@@ -1,4 +1,5 @@
 using System.Text;
+using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
 
@@ -32,6 +33,7 @@ public enum PartitionContent
     Luks,
     Ubi,
     Ubifs,
+    Erofs,
 }
 
 /// <summary>One entry of a partition table.</summary>
@@ -74,7 +76,7 @@ public sealed class PartitionInfo
     internal long SizeFieldOffset { get; init; } = -1;
 
     /// <summary>The partition holds a filesystem this program can edit.</summary>
-    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat;
+    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat or PartitionContent.Erofs;
 
     public override string ToString()
     {
@@ -105,7 +107,7 @@ public sealed class PartitionTable
     /// <summary>All partitions in the order of their numbers. Extended containers are not listed.</summary>
     public IReadOnlyList<PartitionInfo> Partitions { get; }
 
-    /// <summary>Partitions that hold SquashFS, ext2/3/4 or FAT.</summary>
+    /// <summary>Partitions that hold SquashFS, EROFS, ext2/3/4 or FAT.</summary>
     public IReadOnlyList<PartitionInfo> Editable => Partitions.Where(p => p.IsEditable).ToList();
 
     public PartitionInfo? Find(int number) => Partitions.FirstOrDefault(p => p.Number == number);
@@ -280,6 +282,7 @@ public sealed class PartitionTable
         if (At(head, 3, "EXFAT   "u8)) return (PartitionContent.ExFat, "exFAT", "");
         if (LooksLikeFat(head, out string fatKind, out string fatLabel)) return (PartitionContent.Fat, fatKind, fatLabel);
         if (SquashFsReader.IsSquashFs(part)) return (PartitionContent.SquashFs, "SquashFS", "");
+        if (ErofsReader.IsErofs(part)) return (PartitionContent.Erofs, "EROFS", CleanLabel(part.ReadBytes(ErofsFormat.SuperOffset + 64, 16)));
         if (ExtReader.IsExt(part))
         {
             byte[] sb = part.ReadBytes(1024, 1024);
