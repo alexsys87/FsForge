@@ -45,9 +45,11 @@ public partial class MainWindow
         UpdateSortIndicators();
 
         _vm.SelectionRequested += OnSelectionRequested;
-        _vm.AppearanceChanged += ApplyTheme;
+        _vm.AppearanceChanged += () => ApplyTheme(reapplyTheme: true);
         _vm.PropertyChanged += OnViewModelPropertyChanged;
-        Loaded += (_, _) => ApplyTheme();
+        // The theme itself is applied before the window is created (see App.OnStartup); swapping the theme
+        // dictionaries under live controls can fail inside WPF with a Freezable context error.
+        Loaded += (_, _) => ApplyTheme(reapplyTheme: false);
         Activated += async (_, _) => await _vm.CheckExternalEditsAsync();
         PreviewKeyDown += OnPreviewKeyDown;
     }
@@ -57,27 +59,42 @@ public partial class MainWindow
 
     // ----------------------------------------------------------- appearance
 
-    private void ApplyTheme()
+    /// <summary>Applies the theme from the settings. Called before the first window exists, and again when the user changes it.</summary>
+    internal static void ApplyThemeResources(AppSettings s, WindowBackdropType backdrop)
+    {
+        if (s.Theme == AppTheme.System)
+            ApplicationThemeManager.ApplySystemTheme();
+        else
+            ApplicationThemeManager.Apply(s.Theme == AppTheme.Dark ? ApplicationTheme.Dark : ApplicationTheme.Light, backdrop);
+    }
+
+    internal static WindowBackdropType BackdropOf(AppSettings s) => s.Backdrop switch
+    {
+        BackdropKind.Acrylic => WindowBackdropType.Acrylic,
+        BackdropKind.Tabbed => WindowBackdropType.Tabbed,
+        BackdropKind.None => WindowBackdropType.None,
+        _ => WindowBackdropType.Mica,
+    };
+
+    private bool _watchingSystemTheme;
+
+    private void ApplyTheme(bool reapplyTheme)
     {
         AppSettings s = _vm.Settings;
-        WindowBackdropType backdrop = s.Backdrop switch
-        {
-            BackdropKind.Acrylic => WindowBackdropType.Acrylic,
-            BackdropKind.Tabbed => WindowBackdropType.Tabbed,
-            BackdropKind.None => WindowBackdropType.None,
-            _ => WindowBackdropType.Mica,
-        };
+        WindowBackdropType backdrop = BackdropOf(s);
         // Start from a clean state: watching the same window twice would install two hooks.
-        if (IsLoaded) SystemThemeWatcher.UnWatch(this);
+        // UnWatch on a window that was never watched fails inside WPF with a Freezable context error.
+        if (_watchingSystemTheme)
+        {
+            SystemThemeWatcher.UnWatch(this);
+            _watchingSystemTheme = false;
+        }
         WindowBackdropType = backdrop;
+        if (reapplyTheme) ApplyThemeResources(s, backdrop);
         if (s.Theme == AppTheme.System)
         {
-            ApplicationThemeManager.ApplySystemTheme();
             SystemThemeWatcher.Watch(this, backdrop);
-        }
-        else
-        {
-            ApplicationThemeManager.Apply(s.Theme == AppTheme.Dark ? ApplicationTheme.Dark : ApplicationTheme.Light, backdrop);
+            _watchingSystemTheme = true;
         }
     }
 
