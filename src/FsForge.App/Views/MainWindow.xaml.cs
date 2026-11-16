@@ -76,15 +76,26 @@ public partial class MainWindow
         _ => WindowBackdropType.Mica,
     };
 
+    private bool _watchingSystemTheme;
+
     private void ApplyTheme(bool reapplyTheme)
     {
         AppSettings s = _vm.Settings;
         WindowBackdropType backdrop = BackdropOf(s);
         // Start from a clean state: watching the same window twice would install two hooks.
-        if (IsLoaded) SystemThemeWatcher.UnWatch(this);
+        // UnWatch on a window that was never watched fails inside WPF with a Freezable context error.
+        if (_watchingSystemTheme)
+        {
+            SystemThemeWatcher.UnWatch(this);
+            _watchingSystemTheme = false;
+        }
         WindowBackdropType = backdrop;
         if (reapplyTheme) ApplyThemeResources(s, backdrop);
-        if (s.Theme == AppTheme.System) SystemThemeWatcher.Watch(this, backdrop);
+        if (s.Theme == AppTheme.System)
+        {
+            SystemThemeWatcher.Watch(this, backdrop);
+            _watchingSystemTheme = true;
+        }
     }
 
     private void RestorePlacement()
