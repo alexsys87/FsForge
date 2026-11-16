@@ -359,7 +359,7 @@ public static class FatWriter
                     {
                         int at = (int)(c * 3 / 2);
                         ushort v = Le.U16(fatBytes, at);
-                        v = (c & 1) == 0 ? (ushort)((v & 0xF000) | (fat[c] & 0xFFF)) : (ushort)((v & 0x000F) | ((fat[c] & 0xFFF) << 4));
+                        v = (c & 1) == 0 ? (ushort)((v & 0xF000) | (int)(fat[c] & 0xFFF)) : (ushort)((v & 0x000F) | (int)((fat[c] & 0xFFF) << 4));
                         Le.W16(fatBytes, at, v);
                         break;
                     }

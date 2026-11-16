@@ -764,9 +764,9 @@ internal static class Program
             await vm.DeleteCommand.ExecuteAsync();
             d.OnDialog = o => o is PartitionChoiceViewModel ? throw new InvalidOperationException("the volume was asked for again") : throw new InvalidOperationException("unexpected dialog on save: " + o.GetType().Name);
             Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
-            Check(vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume.Name: "rootfs" } && vm.Document.FilePath == ubi && vm.Document.Ubi.Image.Volumes.Count == 3, "the saved file is not the UBI image");
-            Check(vm.CurrentPath == "/etc" && vm.Items.Count == 3 && !vm.IsModified && vm.Document.Tree.Resolve("/etc/Banner") is null, "view after saving");
-            FsForge.Core.Ubifs.UbiImage image = vm.Document.Ubi.Image;
+            Check(vm.Document is { Format: ImageFormat.Ubifs, Ubi.Volume.Name: "rootfs" } && vm.Document.FilePath == ubi && vm.Document.Ubi!.Image.Volumes.Count == 3, "the saved file is not the UBI image");
+            Check(vm.CurrentPath == "/etc" && vm.Items.Count == 3 && !vm.IsModified && vm.Document!.Tree.Resolve("/etc/Banner") is null, "view after saving");
+            FsForge.Core.Ubifs.UbiImage image = vm.Document!.Ubi!.Image;
             Check(image.OpenVolume(image.Volumes[0]).ReadBytes(0, kernel.Length).AsSpan().SequenceEqual(kernel) && image.Volumes[0].IsStatic, "the kernel volume changed");
             Check(image.Volumes[2] is { Name: "rootfs_data", IsReadable: true }, "the data volume: " + image.Volumes[2]);
 
@@ -906,7 +906,7 @@ internal static class Program
             Check(await vm.SaveAsAsync(), "save as JFFS2 failed: " + string.Join("; ", d.Messages));
             Check(vm.Document is { Format: ImageFormat.Jffs2, Jffs2: { BigEndian: true, EraseBlockSize: 65536, MainCompression: FsForge.Core.Jffs2.Jffs2Compression.Lzo } },
                 "saved image: " + vm.DocumentInfo);
-            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+            Check(vm.Document!.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
 
             // Converting to SquashFS.
             d.OnDialog = o =>
