@@ -122,6 +122,7 @@ public sealed class SettingsViewModel : DialogViewModel
     {
         new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Erofs, "EROFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Ubifs, "UBIFS"), new Choice<ImageFormat>(ImageFormat.Jffs2, "JFFS2"), new Choice<ImageFormat>(ImageFormat.Fat, "FAT"),
         new Choice<ImageFormat>(ImageFormat.Tar, L.T("архив tar")),
+        new Choice<ImageFormat>(ImageFormat.Cpio, L.T("архив cpio (initramfs)")),
     };
 
     public IReadOnlyList<Choice<ExtKind>> ExtKinds { get; } = new[]

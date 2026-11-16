@@ -112,6 +112,9 @@ public sealed class AppSettings
     /// <summary>Defaults of a new FAT image: type, cluster size, label.</summary>
     public FsForge.Core.Fat.FatOptions Fat { get; set; } = new();
 
+    /// <summary>Defaults of a new cpio archive: header format, compression, prefix.</summary>
+    public FsForge.Core.Cpio.CpioOptions Cpio { get; set; } = new();
+
     /// <summary>Defaults of a new EROFS image: compressor, cluster size, effort.</summary>
     public FsForge.Core.Erofs.ErofsOptions Erofs { get; set; } = new();
 
@@ -184,6 +187,7 @@ public sealed class AppSettings
             Jffs2 = Jffs2.Clone(),
             Fat = Fat.Clone(),
             Erofs = Erofs.Clone(),
+            Cpio = Cpio.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -200,6 +204,7 @@ public sealed class AppSettings
         o.SquashFs.Threads = Threads;
         o.Tar.Threads = Threads;
         o.Erofs.Threads = Threads;
+        o.Cpio.Threads = Threads;
     }
 
     public string? EffectiveTempDirectory => string.IsNullOrWhiteSpace(TempDirectory) ? null : TempDirectory;
@@ -307,6 +312,8 @@ public sealed class SettingsStore
         s.Fat.VolumeId = null;
         s.Fat.HiddenSectors = 0;
         s.Fat.BootCode = null;
+        s.Cpio ??= new();
+        try { s.Cpio.Validate(); } catch (FsForge.Core.FsException) { s.Cpio = new(); }
         s.Erofs ??= new();
         try { s.Erofs.Validate(); } catch (FsForge.Core.FsException) { s.Erofs = new(); }
         // Defaults never carry the identity of a particular image.

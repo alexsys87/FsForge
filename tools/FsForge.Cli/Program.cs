@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using FsForge.Core;
 using FsForge.Core.Compression;
+using FsForge.Core.Cpio;
 using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.Host;
@@ -21,7 +22,7 @@ namespace FsForge.Cli;
 internal static class Program
 {
     private const string Usage = """
-        fsforge - SquashFS / EROFS / ext2-3-4 / UBIFS / JFFS2 / FAT / tar image tool
+        fsforge - SquashFS / EROFS / ext2-3-4 / UBIFS / JFFS2 / FAT / tar / cpio image tool
 
           fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
@@ -45,7 +46,7 @@ internal static class Program
 
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|erofs|ext2|ext3|ext4|ubifs|jffs2|fat|tar  default: by output extension, else the source format
+          format=squashfs|erofs|ext2|ext3|ext4|ubifs|jffs2|fat|tar|cpio  default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           threads=<n>                                   compression threads (SquashFS, EROFS, tar.xz); default: one per processor
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
@@ -53,6 +54,7 @@ internal static class Program
                     inline=0|1 dedup=0 xattrs=0|1 sharexattrs=0|1 allroot=1 label=<text> uuid=<uuid> time=<unix time>
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
+          cpio:     comp=none|gzip|xz|zstd cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
           ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
           jffs2:    comp=zlib|lzo|rtime|none endian=little|big erase=<bytes> cleanmarkers=0|1 cmsize=<bytes>
                     pagesize=<bytes> pad=0|1 xattrs=0|1 allroot=1
@@ -202,6 +204,9 @@ internal static class Program
             Console.WriteLine($"Nodes:       {j.Nodes} valid, {j.ObsoleteNodes} obsolete, {j.DamagedNodes} damaged; {j.UsedBytes} of {j.ImageBytes} bytes used");
             Console.WriteLine($"Compression: {string.Join(", ", j.CompressionCounts.OrderByDescending(p => p.Value).Select(p => $"{p.Key.ToString().ToLowerInvariant()} {p.Value}"))}");
         }
+        if (doc.Cpio is { } cp)
+            Console.WriteLine($"Archive:     {cp.Entries} entries, {cp.Header.ToString().ToLowerInvariant()} headers, compression {cp.Compression}, prefix '{cp.PathPrefix}'" +
+                              $"{(cp.HasRootEntry ? ", root entry" : "")}{(cp.Parts > 1 ? $", {cp.Parts} archives one after another" : "")}{(cp.Truncated ? ", no trailer" : "")}");
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
         if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
@@ -257,6 +262,8 @@ internal static class Program
             Console.Error.WriteLine($"fat type={fi.TypeName} cluster={fi.ClusterSize} clusters={fi.Clusters} size={fi.SizeBytes} label='{fi.Label}' hidden={fi.HiddenSectors}");
         if (doc.Jffs2 is { } j)
             Console.Error.WriteLine($"jffs2 endian={(j.BigEndian ? "big" : "little")} erase={j.EraseBlockSize} known={j.EraseBlockSizeKnown} cleanmarkers={j.Cleanmarkers} comp={j.MainCompression} nodes={j.Nodes}");
+        if (doc.Cpio is { } cpi)
+            Console.Error.WriteLine($"cpio header={cpi.Header} comp={cpi.Compression} entries={cpi.Entries} prefix='{cpi.PathPrefix}' root={cpi.HasRootEntry} parts={cpi.Parts}");
         if (doc.Tar is { } t)
             Console.Error.WriteLine($"tar comp={t.Compression} entries={t.Entries} pax={t.HasPaxHeaders} gnu={t.HasGnuExtensions} prefix='{t.PathPrefix}' root={t.HasRootEntry}");
         return 0;
@@ -273,6 +280,7 @@ internal static class Program
         {
             string name = Path.GetFileName(output).ToLowerInvariant();
             if (ArchiveCodec.CompressionFromFileName(name) is not null) f = "tar";
+            else if (CpioFormat.CompressionFromFileName(name) is not null) f = "cpio";
             else
             {
                 foreach (string z in new[] { ".gz", ".xz", ".zst", ".zstd" })
@@ -295,6 +303,7 @@ internal static class Program
             case "squashfs" or "sqfs": format = ImageFormat.SquashFs; break;
             case "erofs": format = ImageFormat.Erofs; break;
             case "tar": format = ImageFormat.Tar; break;
+            case "cpio": format = ImageFormat.Cpio; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
             case "ext3": format = ImageFormat.Ext; kind = ExtKind.Ext3; break;
             case "ext4" or "ext": format = ImageFormat.Ext; kind = ExtKind.Ext4; break;
@@ -315,11 +324,13 @@ internal static class Program
             if (f is null) s.Format = ImageFormat.Ubifs;
         }
         if (s.NewUbi && doc.Ubi is not null && !o.ContainsKey("container")) s.KeepContainer = false;
-        if (s.NewUbi && s.Format is ImageFormat.Ext or ImageFormat.Tar)
+        if (s.NewUbi && s.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image; add format=ubifs or format=squashfs.");
         if (kind is not null) s.Ext.Kind = kind.Value;
         if (s.Format == ImageFormat.Tar && doc.Format != ImageFormat.Tar && ArchiveCodec.CompressionFromFileName(output) is { } byName)
             s.Tar.Compression = byName;
+        if (s.Format == ImageFormat.Cpio && doc.Format != ImageFormat.Cpio && CpioFormat.CompressionFromFileName(output) is { } cpioByName)
+            s.Cpio.Compression = cpioByName;
         if (o.TryGetValue("verify", out string? v)) s.Verify = Enum.Parse<VerifyLevel>(v, true);
 
         foreach ((string key, string value) in o)
@@ -327,9 +338,10 @@ internal static class Program
             switch (key.ToLowerInvariant())
             {
                 case "format" or "verify" or "container" or "ubi": break;
-                case "threads": s.SquashFs.Threads = s.Tar.Threads = s.Erofs.Threads = int.Parse(value); break;
+                case "threads": s.SquashFs.Threads = s.Tar.Threads = s.Erofs.Threads = s.Cpio.Threads = int.Parse(value); break;
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
+                    else if (s.Format == ImageFormat.Cpio) s.Cpio.Compression = Enum.Parse<ArchiveCompression>(value, true);
                     else if (s.Format == ImageFormat.Ubifs) s.Ubifs.Compression = Enum.Parse<UbifsCompression>(value, true);
                     else if (s.Format == ImageFormat.Jffs2) s.Jffs2.Compression = Enum.Parse<Jffs2Compression>(value, true);
                     else if (s.Format == ImageFormat.Erofs) s.Erofs.Compression = Enum.Parse<ErofsCompression>(value, true);
@@ -337,13 +349,13 @@ internal static class Program
                     break;
                 case "block": s.SquashFs.BlockSize = int.Parse(value); break;
                 case "level":
-                    s.SquashFs.GzipLevel = s.Tar.GzipLevel = Math.Clamp(int.Parse(value), 1, 9);
-                    s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = int.Parse(value);
+                    s.SquashFs.GzipLevel = s.Tar.GzipLevel = s.Cpio.GzipLevel = Math.Clamp(int.Parse(value), 1, 9);
+                    s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = s.Cpio.ZstdLevel = int.Parse(value);
                     s.Erofs.Lz4Level = Math.Clamp(int.Parse(value), 1, 12);
                     s.Erofs.ZstdLevel = Math.Clamp(int.Parse(value), 1, 22);
                     s.Erofs.DeflateLevel = Math.Clamp(int.Parse(value), 1, 9);
                     break;
-                case "effort": s.SquashFs.XzEffort = s.Tar.XzEffort = s.Erofs.LzmaEffort = int.Parse(value); break;
+                case "effort": s.SquashFs.XzEffort = s.Tar.XzEffort = s.Cpio.XzEffort = s.Erofs.LzmaEffort = int.Parse(value); break;
                 case "bcj": s.SquashFs.XzFilters.Add(Enum.Parse<BcjFilter>(value, true)); break;
                 case "dict":
                     if (s.Format == ImageFormat.Erofs) s.Erofs.LzmaDictionarySize = int.Parse(value);
@@ -356,7 +368,7 @@ internal static class Program
                 case "time": s.Erofs.BuildTime = long.Parse(value); break;
                 case "nofrag": s.SquashFs.NoFragments = value != "0"; break;
                 case "dedup": s.SquashFs.Deduplicate = s.Erofs.Deduplicate = value != "0"; break;
-                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = value != "0"; break;
+                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = s.Cpio.AllRoot = value != "0"; break;
                 case "endian": s.Jffs2.BigEndian = value.ToLowerInvariant() switch
                 {
                     "big" or "be" => true,
@@ -368,7 +380,7 @@ internal static class Program
                 case "cleanmarkers": s.Jffs2.Cleanmarkers = value != "0"; break;
                 case "cmsize": s.Jffs2.CleanmarkerSize = int.Parse(value); break;
                 case "pagesize": s.Jffs2.PageSize = int.Parse(value); break;
-                case "pad": s.Jffs2.PadToEraseBlock = value != "0"; break;
+                case "pad": s.Jffs2.PadToEraseBlock = s.Cpio.Pad512 = value != "0"; break;
                 case "xattrs": s.Jffs2.StoreXattrs = s.Erofs.StoreXattrs = value != "0"; break;
                 case "minio": s.Ubifs.MinIoSize = s.Ubi.MinIoSize = int.Parse(value); break;
                 case "leb": s.Ubifs.LebSize = int.Parse(value); break;
@@ -402,8 +414,9 @@ internal static class Program
                 case "serial": s.Fat.VolumeId = System.Convert.ToUInt32(value.Replace("-", ""), 16); break;
                 case "reserved": s.Ext.ReservedPercent = double.Parse(value, System.Globalization.CultureInfo.InvariantCulture); break;
                 case "dialect": s.Tar.Dialect = Enum.Parse<TarDialect>(value, true); break;
-                case "prefix": s.Tar.PathPrefix = value; break;
-                case "root": s.Tar.IncludeRootEntry = value != "0"; break;
+                case "prefix": s.Tar.PathPrefix = s.Cpio.PathPrefix = value; break;
+                case "root": s.Tar.IncludeRootEntry = s.Cpio.IncludeRootEntry = value != "0"; break;
+                case "cpioformat": s.Cpio.Header = Enum.Parse<CpioHeader>(value, true); break;
                 default: throw new FsException($"Unknown option '{key}'.");
             }
         }

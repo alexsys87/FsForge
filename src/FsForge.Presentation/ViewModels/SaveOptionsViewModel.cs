@@ -1,5 +1,6 @@
 using FsForge.Core;
 using FsForge.Core.Compression;
+using FsForge.Core.Cpio;
 using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.Images;
@@ -21,6 +22,7 @@ public enum SaveFormat
     Jffs2,
     Fat,
     Tar,
+    Cpio,
 }
 
 /// <summary>How the size of an ext image is chosen.</summary>
@@ -50,6 +52,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Jffs2, L.T("JFFS2 (NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Fat, L.T("FAT (загрузочные разделы, флешки)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
+        new Choice<SaveFormat>(SaveFormat.Cpio, L.T("Архив cpio (initramfs)")),
     };
 
     public static IReadOnlyList<Choice<SquashCompression>> SquashCompressions { get; } = new[]
@@ -164,6 +167,26 @@ public static class OptionLists
         new Choice<TarDialect>(TarDialect.Gnu, L.T("GNU tar — без расширенных атрибутов")),
     };
 
+    public static IReadOnlyList<Choice<ArchiveCompression>> CpioCompressions { get; } = new[]
+    {
+        new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.cpio.gz)"),
+        new Choice<ArchiveCompression>(ArchiveCompression.Zstd, L.T("zstd (.cpio.zst) — Linux 5.9 и новее")),
+        new Choice<ArchiveCompression>(ArchiveCompression.Xz, "xz (.cpio.xz)"),
+        new Choice<ArchiveCompression>(ArchiveCompression.None, L.T("без сжатия (.cpio)")),
+    };
+
+    public static IReadOnlyList<Choice<CpioHeader>> CpioHeaders { get; } = new[]
+    {
+        new Choice<CpioHeader>(CpioHeader.Newc, L.T("newc — как у initramfs")),
+        new Choice<CpioHeader>(CpioHeader.Crc, L.T("crc — newc с контрольными суммами файлов")),
+    };
+
+    public static IReadOnlyList<Choice<string>> CpioPrefixes { get; } = new[]
+    {
+        new Choice<string>("", L.T("без префикса — как у gen_init_cpio и dracut")),
+        new Choice<string>("./", L.T("./ — как у «find . | cpio»")),
+    };
+
     public static IReadOnlyList<Choice<string>> TarPrefixes { get; } = new[]
     {
         new Choice<string>("./", L.T("./ — как у «tar -C rootfs .»")), new Choice<string>("", L.T("без префикса")),
@@ -202,6 +225,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ImageFormat.Jffs2 => SaveFormat.Jffs2,
             ImageFormat.Fat => SaveFormat.Fat,
             ImageFormat.Tar => SaveFormat.Tar,
+            ImageFormat.Cpio => SaveFormat.Cpio,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
         CanKeepSize = doc.Ext is not null && _o.Ext.SizeBytes > 0;
@@ -291,7 +315,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
-    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsJffs2 && !(IsFat && IsUbiContainer);
+    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsCpio && !IsJffs2 && !(IsFat && IsUbiContainer);
 
     public string ContainerNote
     {
@@ -304,6 +328,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             if (_doc.Ubi is { } ubi)
             {
                 if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ UBI при этом не меняется.");
+                if (IsCpio) return L.T("Архив cpio сохраняется отдельным файлом; образ UBI при этом не меняется.");
                 if (!_o.KeepContainer)
                     return L.T("Будет записана только файловая система — без образа UBI и остальных томов. Такой файл записывают в том командой ubiupdatevol или передают ubinize.");
                 return L.F("Образ UBI записывается заново: том {0} заменяется, остальные тома переносятся без изменений. Пустые блоки и старые копии блоков в новый образ не попадают. ", Fmt.VolumeName(ubi.Volume)) +
@@ -313,6 +338,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             if (_doc.Container is not { } disk) return "";
             PartitionInfo p = disk.Partition;
             if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ диска при этом не меняется.");
+            if (IsCpio) return L.T("Архив cpio сохраняется отдельным файлом; образ диска при этом не меняется.");
             if (!_o.KeepContainer)
                 return L.T("Будет записана только файловая система — без таблицы разделов и остальных разделов. Такой файл не загрузится с карты памяти; он годится для sysupgrade или записи в раздел вручную.");
             string grow = disk.CanGrow
@@ -357,6 +383,9 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public IReadOnlyList<Choice<ArchiveCompression>> TarCompressions => OptionLists.TarCompressions;
     public IReadOnlyList<Choice<TarDialect>> TarDialects => OptionLists.TarDialects;
     public IReadOnlyList<Choice<string>> TarPrefixes => OptionLists.TarPrefixes;
+    public IReadOnlyList<Choice<ArchiveCompression>> CpioCompressions => OptionLists.CpioCompressions;
+    public IReadOnlyList<Choice<CpioHeader>> CpioHeaders => OptionLists.CpioHeaders;
+    public IReadOnlyList<Choice<string>> CpioPrefixes => OptionLists.CpioPrefixes;
     public IReadOnlyList<Choice<VerifyLevel>> VerifyLevels => OptionLists.VerifyLevels;
 
     public SaveFormat Format
@@ -366,7 +395,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -376,6 +405,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsErofs => _format == SaveFormat.Erofs;
     public bool IsExt => _format is SaveFormat.Ext2 or SaveFormat.Ext3 or SaveFormat.Ext4;
     public bool IsTar => _format == SaveFormat.Tar;
+    public bool IsCpio => _format == SaveFormat.Cpio;
     public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool IsJffs2 => _format == SaveFormat.Jffs2;
     public bool IsFat => _format == SaveFormat.Fat;
@@ -384,6 +414,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string FormatNote => _format switch
     {
         SaveFormat.SquashFs => L.T("Сжатая файловая система только для чтения (версия 4.0)."),
+        SaveFormat.Cpio => L.T("Архив cpio в формате newc — так устроен initramfs ядра Linux. Хранит права, владельцев, время, ссылки и устройства; расширенные атрибуты (метки SELinux, capabilities) не хранит."),
         SaveFormat.Erofs => L.T("Файловая система только для чтения со сжатием в кластеры фиксированного размера: быстрый доступ к любому месту файла. Linux 5.4 и новее (Android, образы контейнеров, live-системы)."),
         SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
         SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
@@ -401,9 +432,12 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                      nameof(ErofsNote), nameof(HasErofsNote) }) OnPropertyChanged(p);
     }
 
-    public bool ShowXz => (IsSquash && _o.SquashFs.Compression == SquashCompression.Xz) || (IsTar && _o.Tar.Compression == ArchiveCompression.Xz);
-    public bool ShowGzip => (IsSquash && _o.SquashFs.Compression == SquashCompression.Gzip) || (IsTar && _o.Tar.Compression == ArchiveCompression.Gzip);
-    public bool ShowZstd => (IsSquash && _o.SquashFs.Compression == SquashCompression.Zstd) || (IsTar && _o.Tar.Compression == ArchiveCompression.Zstd);
+    public bool ShowXz => (IsSquash && _o.SquashFs.Compression == SquashCompression.Xz) || (IsTar && _o.Tar.Compression == ArchiveCompression.Xz)
+                          || (IsCpio && _o.Cpio.Compression == ArchiveCompression.Xz);
+    public bool ShowGzip => (IsSquash && _o.SquashFs.Compression == SquashCompression.Gzip) || (IsTar && _o.Tar.Compression == ArchiveCompression.Gzip)
+                            || (IsCpio && _o.Cpio.Compression == ArchiveCompression.Gzip);
+    public bool ShowZstd => (IsSquash && _o.SquashFs.Compression == SquashCompression.Zstd) || (IsTar && _o.Tar.Compression == ArchiveCompression.Zstd)
+                            || (IsCpio && _o.Cpio.Compression == ArchiveCompression.Zstd);
     public bool ShowBcj => IsSquash && _o.SquashFs.Compression == SquashCompression.Xz;
 
     // ---- SquashFS
@@ -500,20 +534,20 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     // ---- levels shared by SquashFS and tar (each keeps its own value)
     public int XzEffort
     {
-        get => IsTar ? _o.Tar.XzEffort : _o.SquashFs.XzEffort;
-        set { if (IsTar) _o.Tar.XzEffort = value; else _o.SquashFs.XzEffort = value; OnPropertyChanged(); }
+        get => IsTar ? _o.Tar.XzEffort : IsCpio ? _o.Cpio.XzEffort : _o.SquashFs.XzEffort;
+        set { if (IsTar) _o.Tar.XzEffort = value; else if (IsCpio) _o.Cpio.XzEffort = value; else _o.SquashFs.XzEffort = value; OnPropertyChanged(); }
     }
 
     public int GzipLevel
     {
-        get => IsTar ? _o.Tar.GzipLevel : _o.SquashFs.GzipLevel;
-        set { if (IsTar) _o.Tar.GzipLevel = value; else _o.SquashFs.GzipLevel = value; OnPropertyChanged(); }
+        get => IsTar ? _o.Tar.GzipLevel : IsCpio ? _o.Cpio.GzipLevel : _o.SquashFs.GzipLevel;
+        set { if (IsTar) _o.Tar.GzipLevel = value; else if (IsCpio) _o.Cpio.GzipLevel = value; else _o.SquashFs.GzipLevel = value; OnPropertyChanged(); }
     }
 
     public int ZstdLevel
     {
-        get => IsTar ? _o.Tar.ZstdLevel : _o.SquashFs.ZstdLevel;
-        set { if (IsTar) _o.Tar.ZstdLevel = value; else _o.SquashFs.ZstdLevel = value; OnPropertyChanged(); }
+        get => IsTar ? _o.Tar.ZstdLevel : IsCpio ? _o.Cpio.ZstdLevel : _o.SquashFs.ZstdLevel;
+        set { if (IsTar) _o.Tar.ZstdLevel = value; else if (IsCpio) _o.Cpio.ZstdLevel = value; else _o.SquashFs.ZstdLevel = value; OnPropertyChanged(); }
     }
 
     // ---- UBIFS and a new UBI image
@@ -615,6 +649,35 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string TarPrefix { get => _o.Tar.PathPrefix; set { _o.Tar.PathPrefix = value ?? ""; OnPropertyChanged(); } }
     public bool TarRootEntry { get => _o.Tar.IncludeRootEntry; set { _o.Tar.IncludeRootEntry = value; OnPropertyChanged(); } }
 
+    // ---- cpio
+    public ArchiveCompression CpioCompression
+    {
+        get => _o.Cpio.Compression;
+        set
+        {
+            if (_o.Cpio.Compression == value) return;
+            _o.Cpio.Compression = value;
+            OnPropertyChanged();
+            RaiseCompression();
+            OnPropertyChanged(nameof(XzEffort));
+            OnPropertyChanged(nameof(GzipLevel));
+            OnPropertyChanged(nameof(ZstdLevel));
+            OnPropertyChanged(nameof(Extension));
+        }
+    }
+
+    public CpioHeader CpioHeader { get => _o.Cpio.Header; set { _o.Cpio.Header = value; OnPropertyChanged(); } }
+    public string CpioPrefix { get => _o.Cpio.PathPrefix; set { _o.Cpio.PathPrefix = value ?? ""; OnPropertyChanged(); } }
+    public bool CpioRootEntry { get => _o.Cpio.IncludeRootEntry; set { _o.Cpio.IncludeRootEntry = value; OnPropertyChanged(); } }
+    public bool CpioPad { get => _o.Cpio.Pad512; set { _o.Cpio.Pad512 = value; OnPropertyChanged(); } }
+
+    /// <summary>Several archives one after another (early microcode in front of the initramfs) become one.</summary>
+    public string CpioPartsNote => IsCpio && _doc.Cpio is { Parts: > 1 } c
+        ? L.F("Исходный файл состоит из нескольких архивов cpio подряд ({0}): например, микрокод процессора перед initramfs. Они будут записаны одним архивом, и ядро уже не загрузит микрокод на раннем этапе.", c.Parts)
+        : "";
+
+    public bool HasCpioPartsNote => CpioPartsNote.Length > 0;
+
     // ---- JFFS2
     public IReadOnlyList<Choice<FsForge.Core.Jffs2.Jffs2Compression>> Jffs2Compressions => OptionLists.Jffs2Compressions;
     public IReadOnlyList<Choice<bool>> Jffs2ByteOrders => OptionLists.Jffs2ByteOrders;
@@ -635,7 +698,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- common to all formats
     /// <summary>JFFS2 has its own switch for attributes (a kernel without xattr support refuses such an image).</summary>
-    public bool ShowCommonXattrs => !IsJffs2 && !IsFat;
+    public bool ShowCommonXattrs => !IsJffs2 && !IsFat && !IsCpio;
 
     /// <summary>FAT has no owners: the "everything belongs to root" switch means nothing there.</summary>
     public bool ShowAllRoot => !IsFat;
@@ -667,7 +730,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool AllRoot
     {
         get => _o.SquashFs.AllRoot;
-        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = value; OnPropertyChanged(); }
+        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = _o.Cpio.AllRoot = value; OnPropertyChanged(); }
     }
 
     public VerifyLevel Verify { get => _o.Verify; set { _o.Verify = value; OnPropertyChanged(); } }
@@ -687,6 +750,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext4 => ".ext4",
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
+        SaveFormat.Cpio => CpioFormat.DefaultExtension(_o.Cpio.Compression),
         _ => ArchiveCodec.DefaultExtension(_o.Tar.Compression),
     };
 
@@ -714,6 +778,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             SaveFormat.Jffs2 => ImageFormat.Jffs2,
             SaveFormat.Fat => ImageFormat.Fat,
             SaveFormat.Tar => ImageFormat.Tar,
+            SaveFormat.Cpio => ImageFormat.Cpio,
             _ => ImageFormat.Ext,
         };
         o.NewUbi = ShowUbiOptions;
@@ -821,6 +886,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.Jffs2: o.Jffs2.Validate(); break;
                 case ImageFormat.Fat: o.Fat.Validate(); break;
                 case ImageFormat.Erofs: o.Erofs.Validate(); break;
+                case ImageFormat.Cpio: o.Cpio.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }

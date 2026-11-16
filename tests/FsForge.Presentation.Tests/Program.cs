@@ -1005,6 +1005,78 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("cpio: open an initramfs of two archives, keep its settings on saving, change them, convert it", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            // As distributions build it: uncompressed CPU microcode, then the system in a gzip-compressed archive.
+            string initrd = Path.Combine(_dir, "initrd.img");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("cp.sqfs"), _dir))
+            using (var early = new FsTree(0x1ED, 1700000000))
+            using (var fs = new FileStream(initrd, FileMode.Create))
+            {
+                FsNode mc = early.CreateDirectory(early.CreateDirectory(early.CreateDirectory(early.Root, "kernel", 0x1ED, 0, 0, 1700000000), "x86", 0x1ED, 0, 0, 1700000000),
+                    "microcode", 0x1ED, 0, 0, 1700000000);
+                early.CreateFile(mc, "GenuineIntel.bin", new MemoryFileData(new byte[3000]), 0x1A4, 0, 0, 1700000000);
+                FsForge.Core.Cpio.CpioWriter.Write(early, fs, new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.None });
+                FsForge.Core.Cpio.CpioWriter.Write(source.Tree, fs, new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.Gzip, PathPrefix = "./" });
+            }
+            Check(await vm.OpenPathAsync(initrd), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cpio, Cpio: { Parts: 2, Compression: ArchiveCompression.Gzip, PathPrefix: "./" } }
+                  && vm.DocumentInfo.StartsWith("cpio.gz"), "status line: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/kernel/x86/microcode/GenuineIntel.bin") is not null && vm.Document.Tree.Resolve("/bin/ash")!.Inode.LinkCount == 2,
+                "both archives are read into one tree");
+            Check(vm.IsInfoOpen && vm.InfoMessage.Contains("2 cpio archives"), "the two archives are not reported: " + vm.InfoMessage);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Сжатие" && r.Value == "gzip")
+                                                                    && i.Rows.Any(r => r.Label == "Заголовки" && r.Value == "newc")
+                                                                    && i.Rows.Any(r => r.Label == "Префикс путей" && r.Value == "./")
+                                                                    && i.Rows.Any(r => r.Label == "Архивов подряд" && r.Value == "2");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a cpio archive");
+
+            // "Save as" starts with the settings of the source and warns that the microcode archive is merged.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsCpio && s.CpioCompression == ArchiveCompression.Gzip && s.CpioHeader == FsForge.Core.Cpio.CpioHeader.Newc && s.CpioPrefix == "./"
+                      && s.CpioRootEntry && s.ShowGzip && !s.ShowXz && s.HasCpioPartsNote && s.CpioPartsNote.Contains("(2)") && s.Extension == ".cpio.gz"
+                      && !s.ShowCommonXattrs && s.ShowAllRoot && !s.WritesDisk, "the dialog does not start with the settings of the source");
+                s.CpioCompression = ArchiveCompression.Xz;
+                Check(s.ShowXz && !s.ShowGzip && s.Extension == ".cpio.xz", "options of xz");
+                s.CpioHeader = FsForge.Core.Cpio.CpioHeader.Crc;
+                s.CpioPrefix = "";
+                s.CpioRootEntry = false;
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "initramfs.cpio.xz");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as cpio failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cpio, Cpio: { Parts: 1, Compression: ArchiveCompression.Xz, Header: FsForge.Core.Cpio.CpioHeader.Crc, PathPrefix: "", HasRootEntry: false } }
+                  && vm.DocumentInfo.StartsWith("cpio.xz"), "saved archive: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/kernel/x86/microcode/GenuineIntel.bin") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3
+                  && vm.Document.Tree.Resolve("/bin/ash")!.Inode.LinkCount == 2, "content of the saved archive");
+
+            // An edit and Ctrl+S: the same file, the same settings.
+            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/kernel")!);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cpio, FilePath: var path, Cpio: { Header: FsForge.Core.Cpio.CpioHeader.Crc, Compression: ArchiveCompression.Xz } }
+                  && path == again && vm.Document.Tree.Resolve("/kernel") is null && !vm.IsModified, "saved in place: " + vm.DocumentInfo);
+
+            // Converting to SquashFS.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsCpio && !s.HasCpioPartsNote, "a single archive needs no note");
+                s.Format = SaveFormat.SquashFs;
+                Check(s.IsSquash && !s.IsCpio && s.ShowCommonXattrs && s.Extension == ".squashfs", "SquashFS after cpio");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "from-cpio.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as SquashFS failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.SquashFs && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();

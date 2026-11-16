@@ -749,6 +749,15 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 j.HasSummary ? L.T("сводки блоков (summary)") : null, j.HasXattrs ? L.T("расширенные атрибуты") : null,
             }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
         }
+        if (doc.Cpio is { } cp)
+        {
+            Add(L.T("Сжатие"), cp.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : cp.Compression.ToString().ToLowerInvariant());
+            Add(L.T("Записей"), Fmt.Bytes(cp.Entries));
+            Add(L.T("Заголовки"), cp.Header.ToString().ToLowerInvariant());
+            Add(L.T("Префикс путей"), cp.PathPrefix.Length > 0 ? cp.PathPrefix : L.T("(нет)"));
+            if (cp.Parts > 1) Add(L.T("Архивов подряд"), cp.Parts.ToString());
+            if (cp.Truncated) Add(L.T("Состояние"), L.T("нет завершающей записи — архив, возможно, обрезан"));
+        }
         if (doc.Tar is { } t)
         {
             Add(L.T("Сжатие"), t.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : t.Compression.ToString().ToLowerInvariant());

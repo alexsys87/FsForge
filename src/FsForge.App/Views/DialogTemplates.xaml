@@ -897,6 +897,50 @@
                 </Border>
             </StackPanel>
 
+            <!--  cpio  -->
+            <StackPanel Visibility="{Binding IsCpio, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Архив cpio'}" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Сжатие'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="280"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding CpioCompressions}"
+                                SelectedValue="{Binding CpioCompression}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Формат заголовков'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="340"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding CpioHeaders}"
+                                SelectedValue="{Binding CpioHeader}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Префикс имён'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="340"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding CpioPrefixes}"
+                                SelectedValue="{Binding CpioPrefix}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Запись для самой корневой папки'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding CpioRootEntry}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Дополнить архив до границы 512 байт'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding CpioPad}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding CpioPartsNote}"
+                            Visibility="{Binding HasCpioPartsNote, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  Compression strength: shown for whichever codec is selected  -->
             <Border Margin="0,10,0,4" Style="{StaticResource Card}">
                 <StackPanel>

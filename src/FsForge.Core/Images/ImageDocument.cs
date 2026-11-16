@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using FsForge.Core.Cpio;
 using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.SquashFs;
@@ -26,6 +27,9 @@ public enum ImageFormat
 
     /// <summary>EROFS, the read-only filesystem with fixed-size compressed clusters (Android, container images, live systems).</summary>
     Erofs,
+
+    /// <summary>A cpio archive (newc): the format of the Linux initramfs; gzip, xz or zstd compressed or not.</summary>
+    Cpio,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -47,6 +51,7 @@ public sealed class SaveOptions
     public SquashFsOptions SquashFs { get; set; } = new();
     public ExtOptions Ext { get; set; } = new();
     public TarOptions Tar { get; set; } = new();
+    public CpioOptions Cpio { get; set; } = new();
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
     public FatOptions Fat { get; set; } = new();
@@ -83,6 +88,7 @@ public sealed class SaveOptions
         SquashFs = SquashFs.Clone(),
         Ext = Ext.Clone(),
         Tar = Tar.Clone(),
+        Cpio = Cpio.Clone(),
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
         Fat = Fat.Clone(),
@@ -124,6 +130,7 @@ public sealed class ImageDocument : IDisposable
     public SquashFsInfo? SquashFs { get; private init; }
     public ExtInfo? Ext { get; private init; }
     public TarInfo? Tar { get; private init; }
+    public CpioInfo? Cpio { get; private init; }
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
     public FatInfo? Fat { get; private init; }
@@ -193,6 +200,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Jffs2 => "JFFS2",
         ImageFormat.Fat => Fat?.TypeName ?? "FAT",
         ImageFormat.Erofs => "EROFS",
+        ImageFormat.Cpio => Cpio is null ? "cpio" : "cpio" + CpioFormat.DefaultExtension(Cpio.Compression)[5..],
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
 
@@ -225,6 +233,7 @@ public sealed class ImageDocument : IDisposable
             }
         }
         if (ReferenceEquals(src, file) && TarReader.IsTar(src, out _)) return ImageFormat.Tar;
+        if (ReferenceEquals(src, file) && CpioReader.IsCpio(src, out _)) return ImageFormat.Cpio;
         if (PartitionTable.Read(src)?.PickDefault() is { } part) return FormatOf(part);
         if (!ReferenceEquals(src, file)) return null;
 
@@ -361,7 +370,7 @@ public sealed class ImageDocument : IDisposable
             ArchiveCompression? outer = null;
             byte[] magic = new byte[8];
             int magicLength = file.Read(0, magic);
-            if (ArchiveCodec.DetectCompression(magic.AsSpan(0, magicLength)) is { } packed && !TarReader.IsTar(file, out _))
+            if (ArchiveCodec.DetectCompression(magic.AsSpan(0, magicLength)) is { } packed && !TarReader.IsTar(file, out _) && !CpioReader.IsCpio(file, out _))
             {
                 src = Unpack(file, packed, tempDirectory, progress, ct);
                 outer = packed;
@@ -382,6 +391,13 @@ public sealed class ImageDocument : IDisposable
             }
             else if (FilesystemAt(src) is null)
             {
+                if (!sparse && outer is null && CpioReader.IsCpio(src, out _))
+                {
+                    CpioReader.Result res = CpioReader.Read(src, tempDirectory, progress, ct);
+                    var cpioDoc = new ImageDocument(res.Tree, ImageFormat.Cpio, path) { Cpio = res.Info, FileSize = file.Length };
+                    cpioDoc._warnings.AddRange(res.Warnings);
+                    return cpioDoc;
+                }
                 if (!sparse && outer is null && TarReader.IsTar(src, out _))
                 {
                     TarReader.Result res = TarReader.Read(src, tempDirectory, progress, ct);
@@ -592,8 +608,9 @@ public sealed class ImageDocument : IDisposable
         byte[] head = new byte[8];
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
+        if (CpioFormat.IsBinary(head.AsSpan(0, n))) hint = " It looks like a cpio archive in the old binary format, which is not supported (only newc, crc and odc).";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive." + hint;
+        return "The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -687,12 +704,19 @@ public sealed class ImageDocument : IDisposable
         if (SquashFs is not null) o.SquashFs = SquashFsOptions.FromInfo(SquashFs);
         if (Ext is not null) o.Ext = ExtOptions.FromInfo(Ext);
         if (Tar is not null) o.Tar = TarOptions.FromInfo(Tar);
+        if (Cpio is not null)
+        {
+            // The layout of the source; the compression levels stay as configured.
+            CpioOptions c = CpioOptions.FromInfo(Cpio);
+            (c.GzipLevel, c.ZstdLevel, c.XzEffort, c.Threads) = (o.Cpio.GzipLevel, o.Cpio.ZstdLevel, o.Cpio.XzEffort, o.Cpio.Threads);
+            o.Cpio = c;
+        }
         return o;
     }
 
     /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
-        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Jffs2)
+        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
         && !(Ubi is not null && options.Format == ImageFormat.Fat);
 
     /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
@@ -710,6 +734,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Jffs2 => Jffs2Writer.Write(tree, output, options.Jffs2, progress, ct),
         ImageFormat.Fat => FatWriter.Write(tree, output, options.Fat, progress, ct),
         ImageFormat.Erofs => ErofsWriter.Write(tree, output, options.Erofs, progress, ct, options.TempDirectory),
+        ImageFormat.Cpio => CpioWriter.Write(tree, output, options.Cpio, null, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -746,12 +771,12 @@ public sealed class ImageDocument : IDisposable
         DiskContainer? container = WritesContainer(options) ? Container : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs)
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
         // A tar archive carries its compression in its own options; an image gets it from the file name.
-        ArchiveCompression outer = options.Format == ImageFormat.Tar ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
+        ArchiveCompression outer = options.Format is ImageFormat.Tar or ImageFormat.Cpio ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
 
         // "tmp" becomes the target file. A compressed image is first written raw to "raw" and verified there.
         string tmp = path + ".fsforge-tmp";
@@ -1346,6 +1371,14 @@ public static class TreeComparer
             IgnoreLostFound = true,
             MinTime = o.Ext.InodeSize >= 256 ? -0x80000000L : int.MinValue,
             MaxTime = o.Ext.InodeSize >= 256 ? 0x37FFFFFFFL : int.MaxValue,
+        },
+        ImageFormat.Cpio => new Rules
+        {
+            IgnoreOwners = o.Cpio.AllRoot,
+            IgnoreXattrs = true,                    // cpio has no extended attributes
+            IgnoreRootAttributes = !o.Cpio.IncludeRootEntry,
+            MinTime = 0,
+            MaxTime = uint.MaxValue,
         },
         _ => new Rules
         {

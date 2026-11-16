@@ -92,6 +92,7 @@ internal static partial class SelfTest
             Jffs2Tests();
             FatTests();
             ErofsTests(tree, reference);
+            CpioTests(tree, reference);
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -253,6 +254,7 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Tar && f[1] == "s") continue;
             if (o.Format == ImageFormat.Ext && f[0] == "/lost+found") continue;
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
+            if (o.Format == ImageFormat.Cpio) f[8] = "-";                // cpio has no extended attributes
             if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
             if (o.Format == ImageFormat.Fat)
             {
@@ -628,6 +630,8 @@ internal static partial class SelfTest
             ("erofs uncompressed", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.None } }),
             ("erofs zstd", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Zstd, PclusterSize = 16384 } }),
             ("erofs deflate", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Deflate } }),
+            ("cpio newc", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.None } }),
+            ("cpio crc gzip", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Header = FsForge.Core.Cpio.CpioHeader.Crc } }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 

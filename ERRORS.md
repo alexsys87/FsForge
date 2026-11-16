@@ -34,10 +34,11 @@
 
 ## 1. Открытие файла
 
+| …`It looks like a cpio archive in the old binary format, which is not supported (only newc, crc and odc).` | Архив cpio старого двоичного формата (`cpio -H bin`). | Перепакуйте: распакуйте `cpio -idm < a.cpio` и упакуйте заново `find . \| cpio -o -H newc > b.cpio`. |
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, or tar archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
+| `The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
 | …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
@@ -252,6 +253,22 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 | Предупреждение: `'<имя>': the hard link target '<цель>' is not in the archive; the link was skipped.` | Жёсткая ссылка на файл, которого нет в архиве (архив собран не целиком). | Добавьте недостающий файл вручную. |
 | Предупреждение: `'<имя>' was skipped: <причина>` | Запись с недопустимым именем или конфликтом. | Запись потеряна; при необходимости добавьте её вручную. |
 
+## 8a. Чтение архивов cpio (initramfs)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `Not a cpio archive (no newc, crc or odc header).` | Файл назван как cpio, но внутри не он. | Проверьте файл; `file` покажет, что внутри. |
+| `The archive uses the old binary cpio format, which is not supported. Only newc, crc and odc archives are read.` | Старый двоичный формат (`-H bin`). | Перепакуйте GNU cpio в newc (см. раздел 1). |
+| `The cpio archive is compressed with <метод>, which is not supported. Use gzip, xz or zstd.` | Initramfs сжат bzip2, lz4 или lzma. | Перепакуйте: `lz4 -dc initrd.img \| gzip -9 > initrd.gz`. |
+| `The cpio archive is corrupt: <подробности>` | Ошибка в сжатых данных. | Скачайте заново; `gzip -t` / `xz -t` / `zstd -t`. |
+| `The cpio archive is truncated.`, `Corrupt cpio header: invalid <поле> field.`, `Corrupt cpio header: invalid name size.`, `Corrupt cpio archive: no header where entry <N> should start.`, `Corrupt cpio archive: file data where a header should be.`, `Corrupt cpio archive: the symbolic link '<имя>' has an invalid length.` | Архив обрезан или повреждён. | Скачайте заново; `cpio -tv < a.cpio` покажет, до какой записи архив цел. |
+| Предупреждение: `The file holds <N> cpio archives one after another (for example CPU microcode in front of the initramfs). They are shown together; saving writes a single archive, which the kernel then no longer reads as early microcode.` | Initramfs дистрибутива: несжатый архив с микрокодом процессора, за ним сжатая система. Архивы показаны одним деревом, как их видит ядро. | Если важна ранняя загрузка микрокода, удалите `kernel/` из образа, сохраните и допишите исходный архив микрокода спереди: `cat early.cpio new.cpio.gz > initrd.img` (так делают `dracut` и `mkinitramfs`). |
+| Предупреждение: `The cpio archive ends without its trailer: it may be truncated.` | Нет записи `TRAILER!!!`. | Прочитанное показано; если файлов не хватает — архив обрезан. |
+| Предупреждение: `<N> file(s) do not match the checksum stored in the archive: their content is damaged.` | Архив crc (070702): сумма байтов файла не совпала с заголовком. | Файлы повреждены; ядро такой initramfs тоже отвергнет. Получите архив заново. |
+| Предупреждение: `The file goes on after the cpio archive with <что> (from offset 0x<…>); it was ignored.`, `The compressed data goes on after the cpio archive with something else; it was ignored.` | После архива лежат не нули и не следующий архив (например, подпись или сжатие, которое не поддерживается). | Обычно безопасно; часть initramfs, сжатая bzip2/lz4/lzma, при этом не прочитана. |
+| Предупреждение: `'<имя>' has an unknown file type (mode <…>) and was skipped.`, `'<имя>': the symbolic link has an empty target and was skipped.` | Запись, которую нельзя представить. | Запись потеряна; при необходимости создайте её вручную. |
+| Предупреждение: `'<имя>': the path contains '..' and was skipped.`, `'<путь>' is replaced by a directory required by '<имя>'.`, `'<имя>' was skipped: <причина>` | Как у tar (раздел 8). Поздняя запись с тем же путём заменяет раннюю — как при распаковке ядром. | См. раздел 8. |
+
 ## 9. Ошибки сжатых данных
 
 Появляются при открытии, извлечении или сохранении, когда читается конкретный блок данных:
@@ -418,6 +435,17 @@ EROFS хранит всё, что есть в дереве: владельцев
 | `Only a directory can be exported as an archive.` | «Экспорт в архив» вызван для файла. | Выберите папку. |
 | `The tar path prefix contains invalid characters.`, `…must be empty or end with '/'.`, `…must be relative and must not contain '..'.` | Неверный префикс путей. | Используйте `./`, пустой или вида `rootfs/`. |
 | `'<путь>': unexpected end of the file data.` | Данные файла оборвались при чтении (исходный образ повреждён или добавленный файл изменился). | См. «Исходные файлы изменились» ниже. |
+
+### Запись cpio
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| Предупреждение: `<N> object(s) have extended attributes (for example SELinux labels or capabilities), which cpio does not store: they were left out.` | Формат cpio не хранит xattr. | Для Android и систем с SELinux метки задаются политикой при загрузке; capabilities выставьте скриптом в initramfs (`setcap`). |
+| Предупреждение: `<N> object(s) have a modification time before 1970 or after 2106, which a cpio header cannot hold; it was clamped.` | Время вне диапазона 32-битного беззнакового поля. | Обычно безопасно. |
+| `'<путь>' is larger than 4 GiB, the limit of a file in a cpio archive.` | Поле размера в newc — 32 бита. | Выберите другой формат (SquashFS, EROFS, tar). |
+| `Writing odc cpio archives is not supported; choose newc.`, `The cpio path prefix must be empty or "./".`, `Invalid compression level for the cpio archive.` | Неверные параметры (CLI). | Используйте `cpioformat=newc\|crc`, `prefix=` или `prefix=./`, `level=1..9` (gzip), `1..22` (zstd), `effort=0..2` (xz). |
+| `Only a directory can be written as a cpio archive.` | Запись вызвана для файла. | Выберите папку. |
+| `'<путь>' became shorter while it was being written.` | Добавленный файл изменился во время записи. | См. «Исходные файлы изменились» ниже. |
 
 ### Исходные файлы изменились
 
