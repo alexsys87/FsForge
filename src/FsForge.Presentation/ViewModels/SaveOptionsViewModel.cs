@@ -23,6 +23,8 @@ public enum SaveFormat
     Fat,
     Tar,
     Cpio,
+    Cramfs,
+    Romfs,
 }
 
 /// <summary>How the size of an ext image is chosen.</summary>
@@ -53,6 +55,8 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Fat, L.T("FAT (загрузочные разделы, флешки)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
         new Choice<SaveFormat>(SaveFormat.Cpio, L.T("Архив cpio (initramfs)")),
+        new Choice<SaveFormat>(SaveFormat.Cramfs, L.T("CramFS (старые роутеры и встраиваемые системы)")),
+        new Choice<SaveFormat>(SaveFormat.Romfs, L.T("romfs (uClinux, загрузчики)")),
     };
 
     public static IReadOnlyList<Choice<SquashCompression>> SquashCompressions { get; } = new[]
@@ -135,6 +139,20 @@ public static class OptionLists
     {
         new Choice<bool>(false, L.T("little-endian (ARM, x86, MIPS little-endian)")),
         new Choice<bool>(true, L.T("big-endian (MIPS, PowerPC)")),
+    };
+
+    public static IReadOnlyList<Choice<int>> CramfsBlockSizes { get; } = new[]
+    {
+        new Choice<int>(4096, L.T("4 КБ — страница x86, ARM, MIPS")),
+        new Choice<int>(16384, L.T("16 КБ — страница некоторых ARM64 и MIPS")),
+        new Choice<int>(65536, L.T("64 КБ — страница PowerPC64 и некоторых ARM64")),
+    };
+
+    public static IReadOnlyList<Choice<int>> RomfsAlignments { get; } = new[]
+    {
+        new Choice<int>(16, L.T("16 байт — как у genromfs")),
+        new Choice<int>(512, L.T("512 байт — сектор")),
+        new Choice<int>(4096, L.T("4 КБ — страница (выполнение на месте, XIP)")),
     };
 
     public static IReadOnlyList<Choice<int>> Jffs2EraseBlockSizes { get; } =
@@ -226,6 +244,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ImageFormat.Fat => SaveFormat.Fat,
             ImageFormat.Tar => SaveFormat.Tar,
             ImageFormat.Cpio => SaveFormat.Cpio,
+            ImageFormat.Cramfs => SaveFormat.Cramfs,
+            ImageFormat.Romfs => SaveFormat.Romfs,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
         CanKeepSize = doc.Ext is not null && _o.Ext.SizeBytes > 0;
@@ -395,7 +415,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsCramfs), nameof(IsRomfs), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -406,6 +426,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsExt => _format is SaveFormat.Ext2 or SaveFormat.Ext3 or SaveFormat.Ext4;
     public bool IsTar => _format == SaveFormat.Tar;
     public bool IsCpio => _format == SaveFormat.Cpio;
+    public bool IsCramfs => _format == SaveFormat.Cramfs;
+    public bool IsRomfs => _format == SaveFormat.Romfs;
     public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool IsJffs2 => _format == SaveFormat.Jffs2;
     public bool IsFat => _format == SaveFormat.Fat;
@@ -414,6 +436,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string FormatNote => _format switch
     {
         SaveFormat.SquashFs => L.T("Сжатая файловая система только для чтения (версия 4.0)."),
+        SaveFormat.Cramfs => L.T("Сжатая файловая система только для чтения из старых прошивок роутеров и встраиваемых систем: zlib, блоки размером со страницу памяти. Хранит права, владельца (16 бит) и группу (8 бит); не хранит время, жёсткие ссылки (одинаковые данные хранятся один раз) и расширенные атрибуты. Файл — до 16 МБ, образ — до 256 МБ."),
+        SaveFormat.Romfs => L.T("Простейшая файловая система только для чтения (uClinux, загрузчики, прошивки без MMU): без сжатия, данные можно выполнять на месте. Хранит только тип, признак исполняемого файла, ссылки и устройства; владельцы, права и время не хранятся."),
         SaveFormat.Cpio => L.T("Архив cpio в формате newc — так устроен initramfs ядра Linux. Хранит права, владельцев, время, ссылки и устройства; расширенные атрибуты (метки SELinux, capabilities) не хранит."),
         SaveFormat.Erofs => L.T("Файловая система только для чтения со сжатием в кластеры фиксированного размера: быстрый доступ к любому месту файла. Linux 5.4 и новее (Android, образы контейнеров, live-системы)."),
         SaveFormat.Ext4 => L.T("ext4 с экстентами; без контрольных сумм метаданных, монтируется любым ядром Linux 2.6.28+."),
@@ -678,6 +702,24 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     public bool HasCpioPartsNote => CpioPartsNote.Length > 0;
 
+    // ---- CramFS
+    public IReadOnlyList<Choice<int>> CramfsBlockSizes => OptionLists.CramfsBlockSizes;
+    public bool CramfsBigEndian { get => _o.Cramfs.BigEndian; set { _o.Cramfs.BigEndian = value; OnPropertyChanged(); OnPropertyChanged(nameof(CramfsNote)); } }
+    public int CramfsBlockSize { get => _o.Cramfs.BlockSize; set { _o.Cramfs.BlockSize = value; OnPropertyChanged(); OnPropertyChanged(nameof(CramfsNote)); } }
+    public int CramfsLevel { get => _o.Cramfs.Level; set { _o.Cramfs.Level = value; OnPropertyChanged(); } }
+    public string CramfsVolumeName { get => _o.Cramfs.VolumeName; set { _o.Cramfs.VolumeName = value ?? ""; OnPropertyChanged(); Error = null; } }
+    public bool CramfsPad { get => _o.Cramfs.Pad; set { _o.Cramfs.Pad = value; OnPropertyChanged(); } }
+    public bool CramfsHoles { get => _o.Cramfs.Holes; set { _o.Cramfs.Holes = value; OnPropertyChanged(); } }
+
+    /// <summary>The kernel reads only images of its own byte order and page size.</summary>
+    public string CramfsNote => L.F("Ядро читает только образ своего порядка байтов ({0}) с блоком, равным размеру страницы памяти ({1}).",
+        _o.Cramfs.BigEndian ? "big-endian" : "little-endian", Fmt.Size(_o.Cramfs.BlockSize));
+
+    // ---- romfs
+    public IReadOnlyList<Choice<int>> RomfsAlignments => OptionLists.RomfsAlignments;
+    public string RomfsVolumeName { get => _o.Romfs.VolumeName; set { _o.Romfs.VolumeName = value ?? ""; OnPropertyChanged(); Error = null; } }
+    public int RomfsAlignment { get => _o.Romfs.DataAlignment; set { _o.Romfs.DataAlignment = value; OnPropertyChanged(); } }
+
     // ---- JFFS2
     public IReadOnlyList<Choice<FsForge.Core.Jffs2.Jffs2Compression>> Jffs2Compressions => OptionLists.Jffs2Compressions;
     public IReadOnlyList<Choice<bool>> Jffs2ByteOrders => OptionLists.Jffs2ByteOrders;
@@ -698,10 +740,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- common to all formats
     /// <summary>JFFS2 has its own switch for attributes (a kernel without xattr support refuses such an image).</summary>
-    public bool ShowCommonXattrs => !IsJffs2 && !IsFat && !IsCpio;
+    public bool ShowCommonXattrs => !IsJffs2 && !IsFat && !IsCpio && !IsCramfs && !IsRomfs;
 
-    /// <summary>FAT has no owners: the "everything belongs to root" switch means nothing there.</summary>
-    public bool ShowAllRoot => !IsFat;
+    /// <summary>FAT and romfs have no owners: the "everything belongs to root" switch means nothing there.</summary>
+    public bool ShowAllRoot => !IsFat && !IsRomfs;
 
     // ---- FAT
     private string _fatSize, _fatLabel;
@@ -730,7 +772,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool AllRoot
     {
         get => _o.SquashFs.AllRoot;
-        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = _o.Cpio.AllRoot = value; OnPropertyChanged(); }
+        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = _o.Cpio.AllRoot = _o.Cramfs.AllRoot = value; OnPropertyChanged(); }
     }
 
     public VerifyLevel Verify { get => _o.Verify; set { _o.Verify = value; OnPropertyChanged(); } }
@@ -751,6 +793,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
         SaveFormat.Cpio => CpioFormat.DefaultExtension(_o.Cpio.Compression),
+        SaveFormat.Cramfs => ".cramfs",
+        SaveFormat.Romfs => ".romfs",
         _ => ArchiveCodec.DefaultExtension(_o.Tar.Compression),
     };
 
@@ -779,6 +823,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             SaveFormat.Fat => ImageFormat.Fat,
             SaveFormat.Tar => ImageFormat.Tar,
             SaveFormat.Cpio => ImageFormat.Cpio,
+            SaveFormat.Cramfs => ImageFormat.Cramfs,
+            SaveFormat.Romfs => ImageFormat.Romfs,
             _ => ImageFormat.Ext,
         };
         o.NewUbi = ShowUbiOptions;
@@ -887,6 +933,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.Fat: o.Fat.Validate(); break;
                 case ImageFormat.Erofs: o.Erofs.Validate(); break;
                 case ImageFormat.Cpio: o.Cpio.Validate(); break;
+                case ImageFormat.Cramfs: o.Cramfs.Validate(); break;
+                case ImageFormat.Romfs: o.Romfs.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }

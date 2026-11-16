@@ -34,6 +34,8 @@ public enum PartitionContent
     Ubi,
     Ubifs,
     Erofs,
+    Cramfs,
+    Romfs,
 }
 
 /// <summary>One entry of a partition table.</summary>
@@ -76,7 +78,8 @@ public sealed class PartitionInfo
     internal long SizeFieldOffset { get; init; } = -1;
 
     /// <summary>The partition holds a filesystem this program can edit.</summary>
-    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat or PartitionContent.Erofs;
+    public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat or PartitionContent.Erofs
+        or PartitionContent.Cramfs or PartitionContent.Romfs;
 
     public override string ToString()
     {
@@ -283,6 +286,8 @@ public sealed class PartitionTable
         if (LooksLikeFat(head, out string fatKind, out string fatLabel)) return (PartitionContent.Fat, fatKind, fatLabel);
         if (SquashFsReader.IsSquashFs(part)) return (PartitionContent.SquashFs, "SquashFS", "");
         if (ErofsReader.IsErofs(part)) return (PartitionContent.Erofs, "EROFS", CleanLabel(part.ReadBytes(ErofsFormat.SuperOffset + 64, 16)));
+        if (Cramfs.CramfsReader.IsCramfs(part)) return (PartitionContent.Cramfs, "CramFS", "");
+        if (Romfs.RomfsReader.IsRomfs(part)) return (PartitionContent.Romfs, "romfs", "");
         if (ExtReader.IsExt(part))
         {
             byte[] sb = part.ReadBytes(1024, 1024);

@@ -7,7 +7,9 @@
 # dosfstools and mtools (mkfs.fat, fsck.fat, fatlabel, mcopy, mdir, mtype for the FAT tests),
 # erofs-utils (mkfs.erofs and fsck.erofs for the EROFS tests; EROFS_UTILS=<folder> adds a second, newer set),
 # cpio (GNU cpio for the cpio tests; with qemu-system-x86_64, CPIO_KERNEL=<vmlinuz> and CPIO_BUSYBOX=<static
-# busybox> the kernel also boots the archives FsForge writes as its initramfs).
+# busybox> the kernel also boots the archives FsForge writes as its initramfs), mkfs.cramfs and fsck.cramfs
+# (util-linux), genromfs (with CRR_MODULES=<folder with mtd.ko, cramfs.ko and romfs.ko> as well, the kernel
+# mounts CramFS and romfs images).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -377,6 +379,13 @@ else echo "EROFS: skipped (erofs-utils with mkfs.erofs and fsck.erofs is not ins
 . "$HERE/verify-cpio.sh"
 cpio_run
 cpio_qemu
+
+# --------------------------------------------------------- CramFS and romfs
+# See tests/verify-cramfs-romfs.sh: mkfs.cramfs and genromfs images read by FsForge; FsForge images checked and
+# unpacked by fsck.cramfs; optionally all of them mounted by the kernel in QEMU.
+. "$HERE/verify-cramfs-romfs.sh"
+crr_run
+crr_qemu
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

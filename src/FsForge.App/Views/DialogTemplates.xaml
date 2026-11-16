@@ -897,6 +897,72 @@
                 </Border>
             </StackPanel>
 
+            <!--  CramFS  -->
+            <StackPanel Visibility="{Binding IsCramfs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="CramFS" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Порядок байтов'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="330"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding Jffs2ByteOrders}"
+                                SelectedValue="{Binding CramfsBigEndian}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Размер блока'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="330"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding CramfsBlockSizes}"
+                                SelectedValue="{Binding CramfsBlockSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding CramfsNote}" />
+                        <HeaderedContentControl Header="{l:Tr 'Уровень zlib'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="150"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding GzipLevels}"
+                                SelectedValue="{Binding CramfsLevel}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Имя тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="180" Text="{Binding CramfsVolumeName, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Хранить блоки из нулей как «дыры»'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding CramfsHoles}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Оставить 512 байт для загрузчика в начале'}" Style="{StaticResource Row}">
+                            <ui:ToggleSwitch IsChecked="{Binding CramfsPad}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <!--  romfs  -->
+            <StackPanel Visibility="{Binding IsRomfs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="romfs" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Имя тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="180" Text="{Binding RomfsVolumeName, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Выравнивание данных файлов'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="330"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding RomfsAlignments}"
+                                SelectedValue="{Binding RomfsAlignment}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  cpio  -->
             <StackPanel Visibility="{Binding IsCpio, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="{l:Tr 'Архив cpio'}" />

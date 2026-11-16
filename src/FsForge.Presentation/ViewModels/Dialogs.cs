@@ -749,6 +749,26 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 j.HasSummary ? L.T("сводки блоков (summary)") : null, j.HasXattrs ? L.T("расширенные атрибуты") : null,
             }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
         }
+        if (doc.Cramfs is { } cr)
+        {
+            Add(L.T("Порядок байтов"), cr.BigEndian ? "big-endian" : "little-endian");
+            Add(L.T("Размер блока"), Fmt.Size(cr.BlockSize));
+            Add(L.T("Имя тома"), cr.VolumeName.Length > 0 ? cr.VolumeName : L.T("(нет)"));
+            if (cr.Files > 0) Add(L.T("Объектов"), Fmt.Bytes(cr.Files));
+            if (cr.Edition != 0) Add(L.T("Издание"), cr.Edition.ToString());
+            Add(L.T("Контрольная сумма"), cr.CrcOk switch { true => L.T("верна"), false => L.T("НЕ СОВПАДАЕТ — образ повреждён"), _ => L.T("нет (старый формат)") });
+            Add(L.T("Возможности"), string.Join(", ", new[]
+            {
+                cr.Holes ? L.T("«дыры»") : null, cr.Padded ? L.T("512 байт для загрузчика") : null,
+                cr.ExtBlockPointers ? L.T("несжатые блоки и прямые указатели") : null,
+            }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
+        }
+        if (doc.Romfs is { } ro)
+        {
+            Add(L.T("Имя тома"), ro.VolumeName.Length > 0 ? ro.VolumeName : L.T("(нет)"));
+            Add(L.T("Выравнивание данных"), Fmt.Size(ro.DataAlignment));
+            Add(L.T("Контрольная сумма"), ro.ChecksumOk ? L.T("верна") : L.T("НЕ СОВПАДАЕТ — ядро не смонтирует образ"));
+        }
         if (doc.Cpio is { } cp)
         {
             Add(L.T("Сжатие"), cp.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : cp.Compression.ToString().ToLowerInvariant());

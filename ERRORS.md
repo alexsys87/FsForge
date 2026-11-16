@@ -38,7 +38,7 @@
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, EROFS, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
+| `The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
 | …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
@@ -236,6 +236,23 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 | `Corrupt EROFS image: a file uses the compression method <метод>, which the superblock does not announce.`, `…unknown compression method <N>.`, `…an empty compressed cluster.`, `…a compressed cluster unpacks to <N> bytes instead of <M>.`, `…a <метод> cluster cannot be unpacked (<подробности>).`, `Corrupt LZ4 data.`, `Corrupt LZMA data: …` | Сжатые данные файла повреждены. | Получите образ заново. Остальные файлы читаются. |
 | `The EROFS image has a compressed cluster that stands for <N> MiB of data, which is more than this program unpacks at once.` | Один сжатый кластер описывает больше 64 МБ данных (ядро Linux допускает до 12 МБ). | Скорее всего образ повреждён; если нет — распакуйте его в Linux. |
 | `Corrupt EROFS image: a file keeps data in the packed inode, but the image has none.`, `…a fragment lies outside the packed inode.`, `…the packed inode refers to itself.` | Повреждены фрагменты (хвосты файлов в служебном «упакованном» файле, `-Efragments`). | Ошибка относится к файлу, который читается; см. общие способы. |
+
+## 7a. Чтение CramFS и romfs
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The CramFS image uses features this program does not know (flags 0x<…>).` | В суперблоке отмечены возможности новее известных (так же отказывается ядро). | Пересоберите образ из исходных файлов `mkfs.cramfs` или распакуйте его утилитой, которая эти возможности знает. |
+| `The CramFS image is truncated: it should be <N> bytes, the file has <M>.`, `The romfs image is truncated…` | Файл короче, чем записано в суперблоке: образ недокачан или вырезан из прошивки не целиком. | Получите образ заново; при вырезании из прошивки возьмите столько байт, сколько указано в суперблоке. |
+| Предупреждение: `The CRC of the CramFS image does not match: the image is damaged or was changed after it was made.` | Контрольная сумма суперблока не совпадает с содержимым. | Образ открыт; файлы, чьи блоки повреждены, не прочитаются (ошибка zlib). Сравните с исходной прошивкой. |
+| Предупреждение: `The checksum of the romfs superblock is wrong: the kernel does not mount such an image.` | Первые 512 байт образа повреждены или изменены. | Образ открыт; сохраните его заново — FsForge запишет верную сумму. |
+| Предупреждение: `The CramFS superblock has an unexpected signature.` | Подпись «Compressed ROMFS» искажена. | Обычно безопасно, если образ читается. |
+| `Corrupt CramFS image: …` (the directory / the block list / a block of a file lies outside the image, a block decompresses to the wrong length, a directory is referenced more than once…), `Corrupt CramFS superblock: invalid size.` | Повреждённые метаданные или данные CramFS. | Получите образ заново. |
+| `Corrupt romfs image: …` (an entry lies outside the image, a name is not terminated, the entries of a directory form a loop, the first entry is not a directory…), `Corrupt romfs superblock: invalid size.` | Повреждённые заголовки romfs. | Получите образ заново. |
+| Предупреждение: `'<путь>': the hard link target is not in the image; the link was skipped.`, `'<путь>' is a hard link to the directory '<цель>' and was skipped.` | Жёсткая ссылка romfs указывает мимо заголовка объекта или на каталог. | Ссылка пропущена; при необходимости создайте файл вручную. |
+| Предупреждение: `Invalid or duplicate directory entry '<имя>' in '<папка>' was skipped.`, `'<путь>' has an unknown file type (mode <…>) and was skipped.` | Запись с недопустимым или повторяющимся именем, неизвестный тип. | Запись потеряна; при необходимости создайте её вручную. |
+
+Образ CramFS для другого порядка байтов (big-endian для MIPS и PowerPC) или с блоком больше 4 КБ
+FsForge открывает и сохраняет, но ядро x86 или ARM такой образ не смонтирует — это не ошибка образа.
 
 ## 8. Чтение архивов tar
 
@@ -446,6 +463,21 @@ EROFS хранит всё, что есть в дереве: владельцев
 | `Writing odc cpio archives is not supported; choose newc.`, `The cpio path prefix must be empty or "./".`, `Invalid compression level for the cpio archive.` | Неверные параметры (CLI). | Используйте `cpioformat=newc\|crc`, `prefix=` или `prefix=./`, `level=1..9` (gzip), `1..22` (zstd), `effort=0..2` (xz). |
 | `Only a directory can be written as a cpio archive.` | Запись вызвана для файла. | Выберите папку. |
 | `'<путь>' became shorter while it was being written.` | Добавленный файл изменился во время записи. | См. «Исходные файлы изменились» ниже. |
+
+### Запись CramFS и romfs
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `'<путь>': the name is longer than 252 bytes, the limit of CramFS.`, `… longer than 127 bytes, the limit of romfs.` | Имя не помещается в формат (romfs: ядро читает имена до 127 байт). | Переименуйте объект. |
+| `'<путь>' is larger than 16 MiB, the limit of a file in CramFS.` | Размер файла в CramFS — 24 бита. | Выберите SquashFS или EROFS — их читают те же ядра. |
+| `The data does not fit into a CramFS image (offsets are limited to 256 MiB).`, `The metadata does not fit…`, `The image is too large for CramFS.`, `The directory '<путь>' holds too many entries for CramFS…` | Ограничения формата CramFS. | Уменьшите содержимое или выберите SquashFS / EROFS. |
+| `The image is too large for romfs (4 GiB).`, `'<путь>' is larger than 4 GiB, the limit of a file in romfs.` | Смещения romfs — 32 бита. | Уменьшите содержимое. |
+| Предупреждение: `<N> object(s) have an owner above 65535…`, `<N> object(s) have a group above 255: CramFS keeps only 8 bits of it (as mkfs.cramfs does).` | CramFS хранит 16 бит владельца и 8 бит группы. | Задайте владельцев с меньшими номерами или «всё принадлежит root». |
+| Предупреждение: `<N> device(s) have a major or minor number above 255 (CramFS) / 65535 (romfs)…` | Номер устройства не помещается в поле. | Создавайте такие устройства при загрузке (devtmpfs, mdev). |
+| Предупреждение: `CramFS has no hard links: <N> additional name(s) of hard-linked files became separate files that share the data.` | В CramFS нет жёстких ссылок; данные хранятся один раз. | Обычно безопасно: содержимое то же, но изменение одного имени не меняет другое (образ всё равно только для чтения). |
+| Предупреждение: `romfs stores no owners: …`, `romfs stores only whether a file is executable: the permissions of <N> object(s)… were not kept.` | romfs не хранит владельцев и права. | Если они важны (setuid, закрытые файлы), выберите CramFS, SquashFS или EROFS. |
+| Предупреждение: `<N> object(s) have extended attributes…, which CramFS/romfs does not store: they were left out.` | Форматы без расширенных атрибутов. | Метки SELinux и capabilities задайте иначе или выберите SquashFS / EROFS. |
+| `The CramFS block size must be a power of two from 4096 to 65536 bytes.`, `The CramFS compression level must be from 1 to 9.`, `The CramFS volume name must not be longer than 16 bytes.`, `The romfs data alignment must be a power of two from 16 to 65536 bytes.`, `The romfs volume name must not be longer than 127 bytes.` | Неверные параметры. | Исправьте параметр в окне сохранения или в командной строке. |
 
 ### Исходные файлы изменились
 

@@ -43,7 +43,8 @@ public sealed class UbiVolumeInfo
     public string ContentName { get; init; } = "";
 
     /// <summary>The volume holds a filesystem this program can read.</summary>
-    public bool IsReadable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Ubifs or PartitionContent.Erofs;
+    public bool IsReadable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Ubifs or PartitionContent.Erofs
+        or PartitionContent.Cramfs or PartitionContent.Romfs;
 
     internal int DataPad { get; init; }
     internal int[] Map { get; init; } = Array.Empty<int>();     // logical block -> physical block, -1 when not stored

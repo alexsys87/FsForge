@@ -18,9 +18,10 @@ public sealed class DialogService : IDialogService
     private static string AllFiles => L.T("Все файлы") + "|*.*";
 
     private static string ImageFilter =>
-        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.gz;*.xz;*.zst|" +
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.cramfs;*.romfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.gz;*.xz;*.zst|" +
         L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|EROFS|*.erofs;*.erofs.img;*.img|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
+        "CramFS|*.cramfs;*.img;*.bin|romfs|*.romfs;*.img;*.bin|" +
         L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
         "JFFS2|*.jffs2;*.jffs2.gz;*.bin;*.img|" +
         "FAT|*.vfat;*.fat;*.img;*.bin|" +
@@ -69,6 +70,8 @@ public sealed class DialogService : IDialogService
             ImageFormat.Jffs2 => "JFFS2|*.jffs2;*.img;*.bin",
             ImageFormat.Fat => "FAT|*.vfat;*.fat;*.img;*.bin",
             ImageFormat.Erofs => "EROFS|*.erofs;*.img;*.bin",
+            ImageFormat.Cramfs => "CramFS|*.cramfs;*.img;*.bin",
+            ImageFormat.Romfs => "romfs|*.romfs;*.img;*.bin",
             ImageFormat.Cpio => L.T("Архив cpio") + "|*" + extension + ";*.img",
             _ => L.T("Архив tar") + "|*" + extension,
         }) + "|" + AllFiles;

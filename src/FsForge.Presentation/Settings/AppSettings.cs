@@ -115,6 +115,12 @@ public sealed class AppSettings
     /// <summary>Defaults of a new cpio archive: header format, compression, prefix.</summary>
     public FsForge.Core.Cpio.CpioOptions Cpio { get; set; } = new();
 
+    /// <summary>Defaults of a new CramFS image: byte order, block size, level.</summary>
+    public FsForge.Core.Cramfs.CramfsOptions Cramfs { get; set; } = new();
+
+    /// <summary>Defaults of a new romfs image: volume name, data alignment.</summary>
+    public FsForge.Core.Romfs.RomfsOptions Romfs { get; set; } = new();
+
     /// <summary>Defaults of a new EROFS image: compressor, cluster size, effort.</summary>
     public FsForge.Core.Erofs.ErofsOptions Erofs { get; set; } = new();
 
@@ -188,6 +194,8 @@ public sealed class AppSettings
             Fat = Fat.Clone(),
             Erofs = Erofs.Clone(),
             Cpio = Cpio.Clone(),
+            Cramfs = Cramfs.Clone(),
+            Romfs = Romfs.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -205,6 +213,7 @@ public sealed class AppSettings
         o.Tar.Threads = Threads;
         o.Erofs.Threads = Threads;
         o.Cpio.Threads = Threads;
+        o.Cramfs.Threads = Threads;
     }
 
     public string? EffectiveTempDirectory => string.IsNullOrWhiteSpace(TempDirectory) ? null : TempDirectory;
@@ -314,6 +323,10 @@ public sealed class SettingsStore
         s.Fat.BootCode = null;
         s.Cpio ??= new();
         try { s.Cpio.Validate(); } catch (FsForge.Core.FsException) { s.Cpio = new(); }
+        s.Cramfs ??= new();
+        try { s.Cramfs.Validate(); } catch (FsForge.Core.FsException) { s.Cramfs = new(); }
+        s.Romfs ??= new();
+        try { s.Romfs.Validate(); } catch (FsForge.Core.FsException) { s.Romfs = new(); }
         s.Erofs ??= new();
         try { s.Erofs.Validate(); } catch (FsForge.Core.FsException) { s.Erofs = new(); }
         // Defaults never carry the identity of a particular image.

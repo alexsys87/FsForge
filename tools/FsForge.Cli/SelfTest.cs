@@ -93,6 +93,7 @@ internal static partial class SelfTest
             FatTests();
             ErofsTests(tree, reference);
             CpioTests(tree, reference);
+            CramfsRomfsTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -255,6 +256,7 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Ext && f[0] == "/lost+found") continue;
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
             if (o.Format == ImageFormat.Cpio) f[8] = "-";                // cpio has no extended attributes
+            if (o.Format is ImageFormat.Cramfs or ImageFormat.Romfs) NormalizeCramfsRomfs(f, o);
             if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
             if (o.Format == ImageFormat.Fat)
             {
@@ -632,6 +634,9 @@ internal static partial class SelfTest
             ("erofs deflate", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Deflate } }),
             ("cpio newc", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.None } }),
             ("cpio crc gzip", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Header = FsForge.Core.Cpio.CpioHeader.Crc } }),
+            ("cramfs", new SaveOptions { Format = ImageFormat.Cramfs }),
+            ("cramfs big-endian holes 16k", new SaveOptions { Format = ImageFormat.Cramfs, Cramfs = new FsForge.Core.Cramfs.CramfsOptions { BigEndian = true, Holes = true, BlockSize = 16384, Pad = true } }),
+            ("romfs", new SaveOptions { Format = ImageFormat.Romfs }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 
