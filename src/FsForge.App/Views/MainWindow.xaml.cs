@@ -78,6 +78,23 @@ public partial class MainWindow
 
     private bool _watchingSystemTheme;
 
+    /// <summary>
+    /// Sets the window backdrop only when it differs from the current one (the XAML already declares Mica).
+    /// On some machines assigning it raises ArgumentException ("not a context for this Freezable") from inside
+    /// WPF-UI; the backdrop is cosmetic, so the window then simply keeps the one it has.
+    /// </summary>
+    private void SetBackdrop(WindowBackdropType backdrop)
+    {
+        if (WindowBackdropType == backdrop) return;
+        try
+        {
+            WindowBackdropType = backdrop;
+        }
+        catch (ArgumentException)
+        {
+        }
+    }
+
     private void ApplyTheme(bool reapplyTheme)
     {
         AppSettings s = _vm.Settings;
@@ -89,7 +106,7 @@ public partial class MainWindow
             SystemThemeWatcher.UnWatch(this);
             _watchingSystemTheme = false;
         }
-        WindowBackdropType = backdrop;
+        SetBackdrop(backdrop);
         if (reapplyTheme) ApplyThemeResources(s, backdrop);
         if (s.Theme == AppTheme.System)
         {
