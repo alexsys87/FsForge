@@ -4,8 +4,8 @@ namespace FsForge.Core.Compression;
 
 /// <summary>
 /// Write-only stream that produces an .xz file. The input is cut into independent chunks that are
-/// compressed in parallel; every chunk becomes a complete single-block XZ stream and the streams
-/// are concatenated, which every XZ decoder accepts (xz, tar -J, liblzma, 7-Zip).
+/// compressed in parallel and becomes one block of a single XZ stream (as "xz -T" writes it). A single
+/// stream matters: the Linux kernel unpacks only the first stream of a compressed initramfs.
 /// </summary>
 public sealed class XzOutputStream : Stream
 {
@@ -18,7 +18,9 @@ public sealed class XzOutputStream : Stream
     private readonly Stack<XzCodec> _codecs = new();
     private byte[] _chunk;
     private int _fill;
-    private bool _disposed, _wroteAnything;
+    private readonly List<(ulong Unpadded, ulong Uncompressed)> _blocks = new();
+    private byte[]? _streamFlags;
+    private bool _disposed;
 
     /// <param name="effort">0 = fast, 1 = normal, 2 = maximum.</param>
     /// <param name="chunkSize">Uncompressed size of one chunk (also the dictionary size).</param>
@@ -61,7 +63,6 @@ public sealed class XzOutputStream : Stream
         int length = _fill;
         _chunk = new byte[_chunkSize];
         _fill = 0;
-        _wroteAnything = true;
         while (_pending.Count >= _workers) Drain(1);
         _pending.Enqueue(Task.Run(() => CompressChunk(data, length)));
     }
@@ -71,8 +72,61 @@ public sealed class XzOutputStream : Stream
         for (int i = 0; i < count && _pending.Count > 0; i++)
         {
             byte[] stream = _pending.Dequeue().GetAwaiter().GetResult();
-            _output.Write(stream);
+            WriteBlockOf(stream);
         }
+    }
+
+    /// <summary>
+    /// Takes the block out of a complete single-block stream and appends it to the output stream; the
+    /// stream header goes out once, before the first block.
+    /// </summary>
+    private void WriteBlockOf(byte[] stream)
+    {
+        ReadOnlySpan<byte> s = stream;
+        int footer = s.Length - 12;
+        int indexSize = (int)(BinaryPrimitives.ReadUInt32LittleEndian(s[(footer + 4)..]) + 1) * 4;
+        int pos = footer - indexSize + 1;                    // past the index indicator
+        if (XzFormat.ReadVli(s, ref pos) != 1) throw new InvalidOperationException("Expected a single-block XZ stream.");
+        ulong unpadded = XzFormat.ReadVli(s, ref pos);
+        ulong uncompressed = XzFormat.ReadVli(s, ref pos);
+        if (_streamFlags is null)
+        {
+            _streamFlags = s.Slice(6, 2).ToArray();
+            _output.Write(s[..12]);
+        }
+        _output.Write(s.Slice(12, (int)((unpadded + 3) & ~3UL)));
+        _blocks.Add((unpadded, uncompressed));
+    }
+
+    /// <summary>The index of all blocks and the stream footer.</summary>
+    private void WriteTrailer()
+    {
+        var buf = new List<byte> { 0 };
+        Span<byte> vli = stackalloc byte[10];
+        void Vli(ulong v, Span<byte> tmp)
+        {
+            int n = XzFormat.WriteVli(tmp, v);
+            for (int i = 0; i < n; i++) buf.Add(tmp[i]);
+        }
+        Vli((ulong)_blocks.Count, vli);
+        foreach (var (unpadded, uncompressed) in _blocks)
+        {
+            Vli(unpadded, vli);
+            Vli(uncompressed, vli);
+        }
+        while ((buf.Count & 3) != 0) buf.Add(0);
+        byte[] index = new byte[buf.Count + 4];
+        buf.CopyTo(index);
+        BinaryPrimitives.WriteUInt32LittleEndian(index.AsSpan(buf.Count), Crc32.Compute(index.AsSpan(0, buf.Count)));
+        _output.Write(index);
+
+        Span<byte> foot = stackalloc byte[12];
+        BinaryPrimitives.WriteUInt32LittleEndian(foot[4..], (uint)(index.Length / 4 - 1));
+        _streamFlags.AsSpan().CopyTo(foot[8..]);
+        BinaryPrimitives.WriteUInt32LittleEndian(foot, Crc32.Compute(foot.Slice(4, 6)));
+        foot[10] = (byte)'Y';
+        foot[11] = (byte)'Z';
+        _output.Write(foot);
     }
 
     private byte[] CompressChunk(byte[] data, int length)
@@ -130,7 +184,8 @@ public sealed class XzOutputStream : Stream
             _disposed = true;
             Submit();
             Drain(_pending.Count);
-            if (!_wroteAnything) _output.Write(Stored(ReadOnlySpan<byte>.Empty, _chunkSize));
+            if (_streamFlags is null) WriteBlockOf(Stored(ReadOnlySpan<byte>.Empty, _chunkSize));
+            WriteTrailer();
             _output.Flush();
             if (!_leaveOpen) _output.Dispose();
         }

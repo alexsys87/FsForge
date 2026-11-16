@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using FsForge.Core;
 using FsForge.Core.Compression;
+using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
 using FsForge.Core.Host;
 using FsForge.Core.Images;
@@ -90,6 +91,8 @@ internal static partial class SelfTest
             UbifsTests(tree, reference);
             Jffs2Tests();
             FatTests();
+            ErofsTests(tree, reference);
+            CpioTests(tree, reference);
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally
@@ -251,6 +254,7 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Tar && f[1] == "s") continue;
             if (o.Format == ImageFormat.Ext && f[0] == "/lost+found") continue;
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
+            if (o.Format == ImageFormat.Cpio) f[8] = "-";                // cpio has no extended attributes
             if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
             if (o.Format == ImageFormat.Fat)
             {
@@ -621,6 +625,13 @@ internal static partial class SelfTest
             ("tar.gz", new SaveOptions { Format = ImageFormat.Tar }),
             ("tar.xz", new SaveOptions { Format = ImageFormat.Tar, Tar = new TarOptions { Compression = ArchiveCompression.Xz, XzEffort = 0 } }),
             ("jffs2", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { EraseBlockSize = 8192, StoreXattrs = true } }),
+            ("erofs lz4hc", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Lz4Level = 3 } }),
+            ("erofs lzma 16k", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Lzma, LzmaEffort = 0, PclusterSize = 16384 } }),
+            ("erofs uncompressed", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.None } }),
+            ("erofs zstd", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Zstd, PclusterSize = 16384 } }),
+            ("erofs deflate", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Deflate } }),
+            ("cpio newc", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.None } }),
+            ("cpio crc gzip", new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Header = FsForge.Core.Cpio.CpioHeader.Crc } }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 

@@ -18,13 +18,14 @@ public sealed class DialogService : IDialogService
     private static string AllFiles => L.T("Все файлы") + "|*.*";
 
     private static string ImageFilter =>
-        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.gz;*.xz;*.zst|" +
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.gz;*.xz;*.zst|" +
         L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
-        "SquashFS|*.squashfs;*.sqfs;*.sfs|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
+        "SquashFS|*.squashfs;*.sqfs;*.sfs|EROFS|*.erofs;*.erofs.img;*.img|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
         L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
         "JFFS2|*.jffs2;*.jffs2.gz;*.bin;*.img|" +
         "FAT|*.vfat;*.fat;*.img;*.bin|" +
-        L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" + AllFiles;
+        L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" +
+        L.T("Архивы cpio (initramfs)") + "|*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.img;*.gz;*.xz;*.zst|" + AllFiles;
 
     private readonly Func<Window?> _owner;
     private readonly Func<SnackbarPresenter?> _snackbar;
@@ -67,6 +68,8 @@ public sealed class DialogService : IDialogService
             ImageFormat.Ubifs => L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.img;*.bin",
             ImageFormat.Jffs2 => "JFFS2|*.jffs2;*.img;*.bin",
             ImageFormat.Fat => "FAT|*.vfat;*.fat;*.img;*.bin",
+            ImageFormat.Erofs => "EROFS|*.erofs;*.img;*.bin",
+            ImageFormat.Cpio => L.T("Архив cpio") + "|*" + extension + ";*.img",
             _ => L.T("Архив tar") + "|*" + extension,
         }) + "|" + AllFiles;
         var dialog = new SaveFileDialog

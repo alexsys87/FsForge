@@ -642,8 +642,8 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         if (!_selected.IsEditable)
         {
             Error = _volumes
-                ? L.T("В этом томе нет UBIFS или SquashFS — его нельзя открыть.")
-                : L.T("В этом разделе нет SquashFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
+                ? L.T("В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.")
+                : L.T("В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
@@ -711,6 +711,19 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 ? L.F("не была корректно размонтирована; журнал воспроизведён при чтении (узлов: {0}, блоков стирания: {1}), файл не изменён", Fmt.Bytes(u.ReplayedNodes), u.ReplayedBuds)
                 : u.Dirty ? L.T("не была корректно размонтирована; журнал пуст") : L.T("чистая"));
         }
+        if (doc.Erofs is { } er)
+        {
+            Add(L.T("Размер ФС"), L.F("{0} ({1} блоков по {2} байт)", Fmt.Size(er.SizeBytes), Fmt.Bytes(er.Blocks), Fmt.Bytes(er.BlockSize)));
+            Add(L.T("Сжатие"), er.Algorithms.Count == 0 ? L.T("нет")
+                : string.Join(", ", er.Algorithms.Select(a => a.ToString().ToLowerInvariant())) +
+                  (er.Compression != Core.Erofs.ErofsCompression.None ? L.F(", кластеры до {0}", Fmt.Size(er.PclusterSize)) : "") +
+                  (er.LzmaDictionarySize > 0 ? L.F(", словарь LZMA {0}", Fmt.Size(er.LzmaDictionarySize)) : ""));
+            Add(L.T("Инодов"), Fmt.Bytes(er.InodeCount));
+            Add(L.T("Метка"), er.VolumeName.Length > 0 ? er.VolumeName : L.T("(нет)"));
+            Add("UUID", er.Uuid.ToString());
+            Add(L.T("Время образа"), Fmt.Date(er.BuildTime, settings.UtcTimes));
+            Add(L.T("Возможности"), string.Join(" ", er.FeatureNames.DefaultIfEmpty(L.T("нет"))));
+        }
         if (doc.Fat is { } fat)
         {
             Add(L.T("Тип"), fat.TypeName);
@@ -735,6 +748,15 @@ public sealed class ImageInfoViewModel : DialogViewModel
             {
                 j.HasSummary ? L.T("сводки блоков (summary)") : null, j.HasXattrs ? L.T("расширенные атрибуты") : null,
             }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
+        }
+        if (doc.Cpio is { } cp)
+        {
+            Add(L.T("Сжатие"), cp.Compression == Core.Tar.ArchiveCompression.None ? L.T("нет") : cp.Compression.ToString().ToLowerInvariant());
+            Add(L.T("Записей"), Fmt.Bytes(cp.Entries));
+            Add(L.T("Заголовки"), cp.Header.ToString().ToLowerInvariant());
+            Add(L.T("Префикс путей"), cp.PathPrefix.Length > 0 ? cp.PathPrefix : L.T("(нет)"));
+            if (cp.Parts > 1) Add(L.T("Архивов подряд"), cp.Parts.ToString());
+            if (cp.Truncated) Add(L.T("Состояние"), L.T("нет завершающей записи — архив, возможно, обрезан"));
         }
         if (doc.Tar is { } t)
         {

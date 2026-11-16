@@ -120,8 +120,9 @@ public sealed class SettingsViewModel : DialogViewModel
 
     public IReadOnlyList<Choice<ImageFormat>> NewFormats { get; } = new[]
     {
-        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Ubifs, "UBIFS"), new Choice<ImageFormat>(ImageFormat.Jffs2, "JFFS2"), new Choice<ImageFormat>(ImageFormat.Fat, "FAT"),
+        new Choice<ImageFormat>(ImageFormat.SquashFs, "SquashFS"), new Choice<ImageFormat>(ImageFormat.Erofs, "EROFS"), new Choice<ImageFormat>(ImageFormat.Ext, "ext2/3/4"), new Choice<ImageFormat>(ImageFormat.Ubifs, "UBIFS"), new Choice<ImageFormat>(ImageFormat.Jffs2, "JFFS2"), new Choice<ImageFormat>(ImageFormat.Fat, "FAT"),
         new Choice<ImageFormat>(ImageFormat.Tar, L.T("архив tar")),
+        new Choice<ImageFormat>(ImageFormat.Cpio, L.T("архив cpio (initramfs)")),
     };
 
     public IReadOnlyList<Choice<ExtKind>> ExtKinds { get; } = new[]
@@ -133,6 +134,9 @@ public sealed class SettingsViewModel : DialogViewModel
     public IReadOnlyList<Choice<SquashCompression>> SquashCompressions => OptionLists.SquashCompressions;
     public IReadOnlyList<Choice<int>> SquashBlockSizes => OptionLists.SquashBlockSizes;
     public IReadOnlyList<Choice<int>> XzEfforts => OptionLists.XzEfforts;
+    public IReadOnlyList<Choice<FsForge.Core.Erofs.ErofsCompression>> ErofsCompressions => OptionLists.ErofsCompressions;
+    public IReadOnlyList<Choice<int>> ErofsPclusterSizes => OptionLists.ErofsPclusterSizes;
+    public IReadOnlyList<Choice<int>> ErofsLz4Levels => OptionLists.ErofsLz4Levels;
     public IReadOnlyList<Choice<int>> GzipLevels => OptionLists.GzipLevels;
     public IReadOnlyList<Choice<int>> ZstdLevels => OptionLists.ZstdLevels;
     public IReadOnlyList<Choice<int>> BcjFilters => OptionLists.BcjFilters;

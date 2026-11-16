@@ -625,7 +625,7 @@
                     Margin="0,4,0,20"
                     HorizontalAlignment="Center"
                     Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                    Text="{l:Tr 'Редактор образов SquashFS, ext2 / ext3 / ext4 и архивов rootfs.tar.gz'}"
+                    Text="{l:Tr 'Редактор образов SquashFS, EROFS, ext2 / ext3 / ext4 и архивов rootfs.tar.gz'}"
                     TextAlignment="Center"
                     TextWrapping="Wrap" />
                 <StackPanel

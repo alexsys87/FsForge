@@ -164,10 +164,14 @@ internal sealed class LzmaDecoder
     /// <param name="count">Exact number of bytes to produce, or -1 to stop at the end marker.</param>
     /// <param name="src">Complete compressed chunk.</param>
     /// <returns>Number of bytes produced.</returns>
-    public int Decode(Span<byte> buf, int pos, int dictStart, int count, ReadOnlySpan<byte> src)
+    /// <param name="microLzma">
+    /// The chunk is a MicroLZMA stream (EROFS): its first byte holds the properties and is not checked here,
+    /// and the stream may stand for more than <paramref name="count"/> bytes - the output is then cut off there.
+    /// </param>
+    public int Decode(Span<byte> buf, int pos, int dictStart, int count, ReadOnlySpan<byte> src, bool microLzma = false)
     {
         if (!_propsSet) throw new FsException("Corrupt LZMA data: properties are missing.");
-        if (src.Length < 5 || src[0] != 0) throw new FsException("Corrupt LZMA data: bad range coder header.");
+        if (src.Length < 5 || (src[0] != 0 && !microLzma)) throw new FsException("Corrupt LZMA data: bad range coder header.");
 
         var rc = new Rc
         {
@@ -303,7 +307,11 @@ internal sealed class LzmaDecoder
 
                 len += 2;
                 if (rep0 >= (uint)(pos - dictStart)) throw new FsException("Corrupt LZMA data: invalid distance.");
-                if (len > end - pos) throw new FsException("Corrupt LZMA data: match crosses the end of the block.");
+                if (len > end - pos)
+                {
+                    if (!microLzma) throw new FsException("Corrupt LZMA data: match crosses the end of the block.");
+                    len = end - pos;
+                }
                 int from = pos - (int)rep0 - 1;
                 if (rep0 + 1 >= (uint)len)
                 {

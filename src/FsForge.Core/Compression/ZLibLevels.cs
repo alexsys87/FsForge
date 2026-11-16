@@ -17,6 +17,16 @@ internal static class ZLibLevels
 #endif
     }
 
+    /// <summary>A bare deflate stream (no zlib header) with a 32 KiB window.</summary>
+    public static DeflateStream OpenDeflate(Stream output, int level, bool leaveOpen)
+    {
+#if NET9_0_OR_GREATER
+        return new DeflateStream(output, new ZLibCompressionOptions { CompressionLevel = level }, leaveOpen);
+#else
+        return new DeflateStream(output, Named(level), leaveOpen);
+#endif
+    }
+
     public static GZipStream OpenGZip(Stream output, int level, bool leaveOpen)
     {
 #if NET9_0_OR_GREATER
