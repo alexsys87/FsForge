@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace FsForge.Core.Compression;
 
@@ -22,6 +24,12 @@ public sealed class Lz4FixedEncoder
     private readonly int[] _head = new int[1 << HashBits];
     private int[] _prev = Array.Empty<int>();
 
+    /// <summary>
+    /// Added to every position stored in the tables. Each call starts above the values of the calls before,
+    /// so older entries read as "no candidate" and the tables never need clearing.
+    /// </summary>
+    private int _base = 1;
+
     /// <param name="level">1 and 2: one candidate per position (fast); 3 to 12: hash chains with lazy matching.</param>
     public Lz4FixedEncoder(int level)
     {
@@ -31,6 +39,9 @@ public sealed class Lz4FixedEncoder
     }
 
     private static int LengthBytes(int value) => value >= 15 ? 1 + (value - 15) / 255 : 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int Hash(uint sequence) => (int)((sequence * 2654435761u) >> (32 - HashBits));
 
     /// <summary>The final literals a block needs after a match of the given length.</summary>
     private static int TailNeed(int matchLength) => Math.Max(LastLiterals, MfLimit - matchLength);
@@ -47,24 +58,28 @@ public sealed class Lz4FixedEncoder
         consumed = 0;
         if (n == 0 || cap < 2) return 0;
         if (_prev.Length < n) _prev = new int[Math.Max(n, 1 << 16)];
-        // A small input gets a small hash table: clearing it is a visible part of the work for 4 KiB clusters.
-        int shift = 32 - Math.Clamp(System.Numerics.BitOperations.Log2((uint)n) + 1, 12, HashBits);
-        Array.Fill(_head, -1, 0, 1 << (32 - shift));
+        if (_base > int.MaxValue - n - 2)
+        {
+            Array.Clear(_head);
+            _base = 1;
+        }
+        int bias = _base;
+        _base += n + 1;
         int[] head = _head, prev = _prev;
-        int Hash(uint sequence) => (int)((sequence * 2654435761u) >> shift);
 
         int op = 0, anchor = 0, ip = 0;
         int searchEnd = n - MfLimit;            // a match may start here at the latest
         int matchEnd = n - LastLiterals;        // and must end here at the latest
         int inserted = 0;                       // positions below this one are in the hash chains
-
+        // Every position read below lies at least MfLimit bytes before the end of the input.
         void Insert(ReadOnlySpan<byte> s, int upTo)
         {
+            ref byte s0 = ref MemoryMarshal.GetReference(s);
             for (; inserted < upTo; inserted++)
             {
-                int h = Hash(BinaryPrimitives.ReadUInt32LittleEndian(s[inserted..]));
+                int h = Hash(Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref s0, inserted)));
                 prev[inserted] = head[h];
-                head[h] = inserted;
+                head[h] = inserted + bias;
             }
         }
 
@@ -73,14 +88,15 @@ public sealed class Lz4FixedEncoder
         {
             distance = 0;
             Insert(s, at);
-            uint first = BinaryPrimitives.ReadUInt32LittleEndian(s[at..]);
+            ref byte s0 = ref MemoryMarshal.GetReference(s);
+            uint first = Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref s0, at));
             int best = 0, limit = matchEnd - at;
-            int candidate = head[Hash(first)];
-            for (int tries = _attempts; candidate >= 0 && tries > 0; tries--, candidate = prev[candidate])
+            int candidate = head[Hash(first)] - bias;
+            for (int tries = _attempts; candidate >= 0 && tries > 0; tries--, candidate = prev[candidate] - bias)
             {
                 if (at - candidate > MaxDistance) break;
-                if (BinaryPrimitives.ReadUInt32LittleEndian(s[candidate..]) != first) continue;
-                if (best >= MinMatch && s[candidate + best] != s[at + best]) continue;
+                if (Unsafe.ReadUnaligned<uint>(ref Unsafe.Add(ref s0, candidate)) != first) continue;
+                if (best >= MinMatch && Unsafe.Add(ref s0, candidate + best) != Unsafe.Add(ref s0, at + best)) continue;
                 int length = s.Slice(candidate, limit).CommonPrefixLength(s.Slice(at, limit));
                 if (length > best)
                 {

@@ -10,8 +10,9 @@ namespace FsForge.Core.Erofs;
 /// <summary>
 /// Reader for EROFS images as mkfs.erofs makes them: compact and extended inodes, inline tails,
 /// chunk-based files, files compressed with LZ4, MicroLZMA, DEFLATE and Zstandard (compact and full
-/// cluster indexes, big clusters, inline tail clusters, fragments in the packed inode, deduplicated
-/// clusters), shared and inline extended attributes with long name prefixes.
+/// cluster indexes, extent records, big clusters, inline tail clusters, fragments in the packed inode,
+/// deduplicated clusters), shared and inline extended attributes with long name prefixes, the 48-bit
+/// layout and metadata kept in the (possibly compressed) metabox inode.
 /// </summary>
 public sealed class ErofsReader : IDisposable
 {
@@ -25,12 +26,16 @@ public sealed class ErofsReader : IDisposable
 
     private int _blkBits, _blkSize;
     private long _metaStart, _xattrStart;
-    private ulong _rootNid, _packedNid;
+    private ulong _rootNid, _packedNid, _metaboxNid;
     private long _epoch;
     private uint _compat, _incompat;
     private int _algorithms;                    // bit mask of the compression methods of the superblock
     private (int Base, byte[] Infix)[] _prefixes = Array.Empty<(int, byte[])>();
-    private ExtentReader? _packed;
+    private ExtentReader? _packed, _metabox;
+    private IBlockSource? _metaboxSource;
+
+    /// <summary>A directory entry with this bit set names an inode that lives in the metabox.</summary>
+    private const ulong NidMetabox = 1UL << 63;
 
     private ErofsReader(IBlockSource source, bool ownsSource)
     {
@@ -55,9 +60,17 @@ public sealed class ErofsReader : IDisposable
         if (Le.U32(sb, 0) != Magic) return false;
         int bits = sb[12];
         if (bits is < 9 or > 16) return false;
-        // The 16-bit root inode number; an image of the 48-bit layout keeps it elsewhere and is refused when opened.
-        if ((Le.U32(sb, 80) & Incompat48Bit) != 0) return true;
-        long root = ((long)Le.U32(sb, 40) << bits) + ((long)Le.U16(sb, 14) << SlotBits);
+        // The 48-bit layout keeps a 64-bit root inode number further on; a root in the metabox cannot be checked here.
+        ulong rootNid = Le.U16(sb, 14);
+        if ((Le.U32(sb, 80) & Incompat48Bit) != 0)
+        {
+            Span<byte> wide = stackalloc byte[8];
+            source.ReadExactly(SuperOffset + 112, wide);
+            if (Le.U64(wide, 0) != 0) rootNid = Le.U64(wide, 0);
+            if ((rootNid & NidMetabox) != 0) return true;
+        }
+        if (rootNid >> 58 != 0) return false;
+        long root = ((long)Le.U32(sb, 40) << bits) + ((long)rootNid << SlotBits);
         if (root + InodeCompactSize > source.Length) return false;
         Span<byte> inode = stackalloc byte[8];
         source.ReadExactly(root, inode);
@@ -86,27 +99,38 @@ public sealed class ErofsReader : IDisposable
         if (_source.Length < SuperOffset + SuperSize) throw new FsException("The file is too small to be an EROFS image.");
         byte[] sb = _source.ReadBytes(SuperOffset, SuperSize);
         if (Le.U32(sb, 0) != Magic) throw new FsException("Not an EROFS image (bad magic).");
+        int sbSize = SuperSize + sb[13] * 16;
+        // Newer superblocks are longer: the metabox inode number lies beyond the first 128 bytes.
+        if (sbSize > SuperSize && SuperOffset + Math.Min(sbSize, 256) <= _source.Length) sb = _source.ReadBytes(SuperOffset, Math.Min(sbSize, 256));
         _blkBits = sb[12];
         if (_blkBits is < 9 or > 16) throw new FsException($"Corrupt EROFS superblock: invalid block size (2^{_blkBits}).");
         _blkSize = 1 << _blkBits;
         _compat = Le.U32(sb, 8);
         _incompat = Le.U32(sb, 80);
 
-        if ((_incompat & Incompat48Bit) != 0)
-            throw new FsException("The EROFS image uses the 48-bit layout (mkfs.erofs -E48bit, Linux 6.15), which is not supported.");
-        if ((_incompat & IncompatMetabox) != 0)
-            throw new FsException("The EROFS image keeps its metadata compressed (mkfs.erofs -Emetabox, Linux 6.17), which is not supported.");
         if ((_incompat & ~IncompatSupported) != 0)
             throw new FsException($"The EROFS image uses features this program does not know (incompatible feature flags 0x{_incompat & ~IncompatSupported:X}).");
         if (sb[90] != 0) throw new FsException("The EROFS image uses directory blocks of their own size, which is not supported.");
 
-        int sbSize = SuperSize + sb[13] * 16;
         _rootNid = Le.U16(sb, 14);
         _epoch = (long)Le.U64(sb, 24);
         long blocks = Le.U32(sb, 36);
+        if (Is48Bit && Le.U64(sb, 112) != 0)
+        {
+            // The root inode number has 64 bits; the 16 bits it used to have hold the top of the block count.
+            _rootNid = Le.U64(sb, 112);
+            blocks |= (long)Le.U16(sb, 14) << 32;
+        }
         _metaStart = (long)Le.U32(sb, 40) << _blkBits;
         _xattrStart = (long)Le.U32(sb, 44) << _blkBits;
         _packedNid = Le.U64(sb, 96);
+        if ((_packedNid & NidMetabox) != 0) throw new FsException("Corrupt EROFS image: the packed inode lies in the metabox.");
+        if ((_incompat & IncompatMetabox) != 0)
+        {
+            if (sb.Length < 136) throw new FsException("Corrupt EROFS image: the superblock is too short for a metabox.");
+            _metaboxNid = Le.U64(sb, 128);
+            if ((_metaboxNid & NidMetabox) != 0 || _metaboxNid == 0) throw new FsException("Corrupt EROFS image: invalid metabox inode number.");
+        }
         int extraDevices = (_incompat & IncompatDeviceTable) != 0 ? Le.U16(sb, 86) : 0;
         if (extraDevices > 0)
             throw new FsException($"The EROFS image keeps file data on {extraDevices} more device(s) (blob files), which are not part of this file.");
@@ -163,9 +187,13 @@ public sealed class ErofsReader : IDisposable
             BigPcluster = lz4MaxBlocks > 1,
             LzmaDictionarySize = lzmaDict,
             Fragments = (_incompat & IncompatFragments) != 0 && _packedNid != 0,
+            Bits48 = Is48Bit,
+            Metabox = _metaboxNid != 0,
             Deduplicated = (_incompat & IncompatFragments) != 0 && _packedNid == 0,
         };
     }
+
+    private bool Is48Bit => (_incompat & Incompat48Bit) != 0;
 
     private bool ChecksumMatches()
     {
@@ -191,9 +219,13 @@ public sealed class ErofsReader : IDisposable
     private void ReadXattrPrefixes(int count, long pos)
     {
         if (count == 0) return;
-        // The table lives in the packed inode when there is one, otherwise in the image itself.
+        // The table lives in the metabox or the packed inode when there is one, otherwise in the image itself.
         IBlockSource table = _source;
-        if (_packedNid != 0 && (_compat & CompatPlainXattrPrefixes) == 0) table = new PackedSource(this);
+        if ((_compat & CompatPlainXattrPrefixes) == 0)
+        {
+            if (_metaboxNid != 0) table = MetaboxSource;
+            else if (_packedNid != 0) table = new InodeDataSource(this, Packed);
+        }
         _prefixes = new (int, byte[])[count];
         for (int i = 0; i < count; i++)
         {
@@ -203,21 +235,36 @@ public sealed class ErofsReader : IDisposable
         }
     }
 
-    /// <summary>The content of the packed inode as a block source.</summary>
-    private sealed class PackedSource(ErofsReader reader) : IBlockSource
+    /// <summary>The content of the packed inode or of the metabox as a block source.</summary>
+    private sealed class InodeDataSource(ErofsReader reader, Func<ExtentReader> data) : IBlockSource
     {
-        public long Length => reader.Packed().Length;
+        public long Length => data().Length;
 
         public int Read(long offset, Span<byte> buffer)
         {
-            long left = Length - offset;
+            ExtentReader r = data();
+            long left = r.Length - offset;
             if (offset < 0 || left <= 0) return 0;
             if (buffer.Length > left) buffer = buffer[..(int)left];
-            reader.ReadPacked(offset, buffer);
+            lock (reader._packedLock) r.Read(offset, buffer);
             return buffer.Length;
         }
 
         public void Dispose() { }
+    }
+
+    /// <summary>The metabox: a file of the image that holds inodes (and possibly shared attributes) instead of the metadata area.</summary>
+    private IBlockSource MetaboxSource => _metaboxSource ??= new InodeDataSource(this, Metabox);
+
+    private ExtentReader Metabox()
+    {
+        lock (_packedLock)
+        {
+            if (_metabox is not null) return _metabox;
+            Ino ino = ReadInode(_metaboxNid);
+            if (ino.Meta != _source) throw new FsException("Corrupt EROFS image: the metabox lies in itself.");
+            return _metabox = Open(ino, isPacked: true);
+        }
     }
 
     // --------------------------------------------------------------- inodes
@@ -231,26 +278,36 @@ public sealed class ErofsReader : IDisposable
         public uint Uid, Gid;
         public long MTime, Size;
         public uint Union;              // i_u: start block, compressed blocks, device number or chunk format
+        public long StartBlock = -1;    // of a flat file: the first block (48 bits), or -1 for none
+        public required IBlockSource Meta;  // where the inode and what follows it lie: the image or the metabox
 
+        /// <summary>Position of the end of the inode and its attributes in <see cref="Meta"/>.</summary>
         public long End => Pos + InodeSize + XattrSize;
     }
 
-    private byte[] Meta(long pos, long count)
+    private byte[] Meta(long pos, long count) => Meta(_source, pos, count);
+
+    private static byte[] Meta(IBlockSource source, long pos, long count)
     {
-        if (pos < 0 || count < 0 || count > int.MaxValue - 16 || pos + count > _source.Length)
+        if (pos < 0 || count < 0 || count > int.MaxValue - 16 || pos + count > source.Length)
             throw new FsException("Corrupt EROFS image: metadata lies outside the file.");
-        return _source.ReadBytes(pos, (int)count);
+        return source.ReadBytes(pos, (int)count);
     }
 
     private Ino ReadInode(ulong nid)
     {
-        if (nid >> 58 != 0) throw new FsException($"Corrupt EROFS image: invalid inode number {nid}.");
-        long pos = _metaStart + ((long)nid << SlotBits);
-        if (pos + InodeCompactSize > _source.Length) throw new FsException($"Corrupt EROFS image: inode {nid} lies outside the file.");
-        byte[] b = Meta(pos, Math.Min(InodeExtendedSize, _source.Length - pos));
+        bool inMetabox = (nid & NidMetabox) != 0;
+        ulong slot = nid & ~NidMetabox;
+        if (slot >> 58 != 0) throw new FsException($"Corrupt EROFS image: invalid inode number {nid}.");
+        if (inMetabox && _metaboxNid == 0) throw new FsException($"Corrupt EROFS image: inode {slot} is said to lie in a metabox, but the image has none.");
+        IBlockSource meta = inMetabox ? MetaboxSource : _source;
+        long pos = (inMetabox ? 0 : _metaStart) + ((long)slot << SlotBits);
+        long length = meta.Length;
+        if (pos + InodeCompactSize > length) throw new FsException($"Corrupt EROFS image: inode {slot} lies outside {(inMetabox ? "the metabox" : "the file")}.");
+        byte[] b = Meta(meta, pos, Math.Min(InodeExtendedSize, length - pos));
         int format = Le.U16(b, 0);
         if ((format & ~0x1F) != 0) throw new FsException($"The EROFS inode {nid} has a format this program does not know (0x{format:X}).");
-        var ino = new Ino { Nid = nid, Pos = pos, Layout = (format >> 1) & 7, Mode = Le.U16(b, 4), Union = Le.U32(b, 16) };
+        var ino = new Ino { Nid = nid, Pos = pos, Meta = meta, Layout = (format >> 1) & 7, Mode = Le.U16(b, 4), Union = Le.U32(b, 16) };
         if (ino.Layout > LayoutChunkBased) throw new FsException($"The EROFS inode {nid} has a data layout this program does not know ({ino.Layout}).");
         int icount = Le.U16(b, 2);
         ino.XattrSize = icount == 0 ? 0 : XattrHeaderSize + 4 * (icount - 1);
@@ -273,6 +330,13 @@ public sealed class ErofsReader : IDisposable
             ino.MTime = _epoch + Le.U32(b, 12);
         }
         if (ino.Size < 0) throw new FsException($"Corrupt EROFS image: inode {nid} has an invalid size.");
+
+        // The start block of a flat file: 48 bits where the inode has room for the upper 16 (the field that
+        // otherwise holds the link count), 32 bits in a compact inode that keeps its link count.
+        bool wide = (format & 1) != 0 || ((format & 0x10) != 0 && (ino.Mode & UnixMode.S_IFMT) != UnixMode.S_IFDIR);
+        ulong start = ino.Union | (wide ? (ulong)Le.U16(b, 6) << 32 : 0);
+        ulong mask = wide ? (1UL << 48) - 1 : uint.MaxValue;
+        if (((start ^ ulong.MaxValue) & mask) != 0) ino.StartBlock = (long)(start & mask);
         return ino;
     }
 
@@ -280,7 +344,7 @@ public sealed class ErofsReader : IDisposable
     {
         if (ino.XattrSize == 0) return null;
         if (ino.XattrSize < XattrHeaderSize) throw new FsException("Corrupt EROFS image: invalid extended attribute area.");
-        byte[] body = Meta(ino.Pos + ino.InodeSize, ino.XattrSize);
+        byte[] body = Meta(ino.Meta, ino.Pos + ino.InodeSize, ino.XattrSize);
         int shared = body[4];
         int pos = XattrHeaderSize + 4 * shared;
         if (pos > body.Length) throw new FsException("Corrupt EROFS image: invalid extended attribute area.");
@@ -321,11 +385,13 @@ public sealed class ErofsReader : IDisposable
             pos += (size + 3) & ~3;
         }
         // Entries of the shared area, by their offset in units of four bytes.
+        // The shared area lies in the metabox when the superblock says so.
+        IBlockSource area = (_compat & CompatSharedEaInMetabox) != 0 && _metaboxNid != 0 ? MetaboxSource : _source;
         for (int i = 0; i < shared; i++)
         {
             long at = _xattrStart + (long)Le.U32(body, XattrHeaderSize + 4 * i) * 4;
-            byte[] head = Meta(at, 4);
-            Add(head, Meta(at + 4, head[0] + Le.U16(head, 2)));
+            byte[] head = Meta(area, at, 4);
+            Add(head, Meta(area, at + 4, head[0] + Le.U16(head, 2)));
         }
         return result.Count > 0 ? result : null;
     }
@@ -428,6 +494,7 @@ public sealed class ErofsReader : IDisposable
             BlockSize = Info.BlockSize, Blocks = Info.Blocks, InodeCount = Info.InodeCount, BuildTime = Info.BuildTime,
             Uuid = Info.Uuid, VolumeName = Info.VolumeName, FeatureCompat = Info.FeatureCompat, FeatureIncompat = Info.FeatureIncompat,
             Algorithms = Info.Algorithms, LzmaDictionarySize = Info.LzmaDictionarySize, Fragments = Info.Fragments,
+            Bits48 = Info.Bits48, Metabox = Info.Metabox,
             Compression = algorithmUse[most] > 0 ? Algorithm(most) : sampled > 0 || Info.Algorithms.Count == 0 ? ErofsCompression.None : Info.Compression,
             PclusterSize = Math.Max(maxPcluster, Info.Algorithms.Contains(ErofsCompression.Lz4) || maxPcluster == 0 ? Info.PclusterSize : 0),
             BigPcluster = Info.BigPcluster || big,
@@ -505,11 +572,15 @@ public sealed class ErofsReader : IDisposable
     {
         long size = ino.Size;
         bool inline = ino.Layout == LayoutFlatInline;
-        if (!inline && ino.Union == NullAddr) return new[] { new Extent(0, size, ExtentKind.Hole, 0) };
+        if (!inline && ino.StartBlock < 0) return new[] { new Extent(0, size, ExtentKind.Hole, 0) };
         long blocks = (size + _blkSize - 1) >> _blkBits;
         long inBlocks = Math.Min(size, (blocks - (inline ? 1 : 0)) << _blkBits);
         var list = new List<Extent>(2);
-        if (inBlocks > 0) list.Add(new Extent(0, inBlocks, ExtentKind.Raw, (long)ino.Union << _blkBits));
+        if (inBlocks > 0)
+        {
+            if (ino.StartBlock < 0) throw new FsException("Corrupt EROFS image: a file has blocks but no address for them.");
+            list.Add(new Extent(0, inBlocks, ExtentKind.Raw, ino.StartBlock << _blkBits));
+        }
         if (size > inBlocks)
         {
             // The tail follows the inode and must not cross a block boundary.
@@ -523,25 +594,28 @@ public sealed class ErofsReader : IDisposable
     private Extent[] ChunkExtents(Ino ino)
     {
         int format = (int)(ino.Union & 0xFFFF);
-        if ((format & ~(ChunkBlkBitsMask | ChunkIndexes)) != 0)
+        if ((format & ~(ChunkBlkBitsMask | ChunkIndexes | Chunk48Bit)) != 0)
             throw new FsException($"The EROFS inode {ino.Nid} uses a chunk format this program does not know (0x{format:X}).");
         int chunkBits = _blkBits + (format & ChunkBlkBitsMask);
         if (chunkBits > 40) throw new FsException("Corrupt EROFS image: invalid chunk size.");
         int unit = (format & ChunkIndexes) != 0 ? 8 : 4;
         long chunkSize = 1L << chunkBits;
         long chunks = (ino.Size + chunkSize - 1) >> chunkBits;
-        byte[] table = Meta((ino.End + unit - 1) / unit * unit, chunks * unit);
+        byte[] table = Meta(ino.Meta, (ino.End + unit - 1) / unit * unit, chunks * unit);
+        // An 8-byte index keeps the top 16 bits of a 48-bit block number where older images had a zero.
+        ulong mask = unit == 8 && (format & Chunk48Bit) != 0 ? (1UL << 48) - 1 : uint.MaxValue;
         var list = new List<Extent>();
         for (long i = 0; i < chunks; i++)
         {
             int at = (int)(i * unit);
-            uint block = unit == 8 ? Le.U32(table, at + 4) : Le.U32(table, at);
-            if (unit == 8 && block != NullAddr && Le.U16(table, at + 2) != 0)
+            ulong block = unit == 8 ? Le.U32(table, at + 4) | (ulong)Le.U16(table, at) << 32 : Le.U32(table, at);
+            bool hole = ((block ^ ulong.MaxValue) & mask) == 0;
+            if (unit == 8 && !hole && Le.U16(table, at + 2) != 0)
                 throw new FsException("The EROFS image keeps file data on another device (a blob file), which is not part of this file.");
             long start = i << chunkBits, length = Math.Min(chunkSize, ino.Size - start);
-            Extent e = block == NullAddr
+            Extent e = hole
                 ? new Extent(start, length, ExtentKind.Hole, 0)
-                : new Extent(start, length, ExtentKind.Raw, (long)block << _blkBits);
+                : new Extent(start, length, ExtentKind.Raw, (long)(block & mask) << _blkBits);
             // Chunks that follow each other in the image, and runs of holes, become one extent.
             if (list.Count > 0 && list[^1] is { } last && last.Kind == e.Kind && (e.Kind == ExtentKind.Hole || last.Physical + last.Length == e.Physical))
                 list[^1] = last with { Length = last.Length + length };
@@ -565,13 +639,15 @@ public sealed class ErofsReader : IDisposable
     {
         long size = ino.Size;
         long headerPos = (ino.End + 7) & ~7L;
-        byte[] h = Meta(headerPos, 8);
+        byte[] h = Meta(ino.Meta, headerPos, 8);
         if ((h[7] & 0x80) != 0)
         {
             // The whole file is a fragment: the header is its offset in the packed inode.
             return new[] { new Extent(0, size, ExtentKind.Fragment, (long)(Le.U64(h, 0) & ~(1UL << 63))) };
         }
         int advise = Le.U16(h, 4), algorithms = h[6];
+        // Since mkfs.erofs 1.9 a full index may be a list of extent records instead of one entry per cluster.
+        if (ino.Layout == LayoutCompressedFull && (advise & AdviseExtents) != 0) return ExtentRecords(ino, h, headerPos, advise);
         int clusterBits = _blkBits + (h[7] & 15);
         if (clusterBits > 24) throw new FsException("Corrupt EROFS image: invalid cluster size.");
         long clusterSize = 1L << clusterBits;
@@ -610,9 +686,7 @@ public sealed class ErofsReader : IDisposable
 
         if (ino.Layout == LayoutCompressedFull)
         {
-            if ((advise & 1) != 0)
-                throw new FsException("The EROFS image describes compressed files with extent records (mkfs.erofs 1.9), which is not supported.");
-            byte[] index = Meta(headerPos + 16, total * 8);
+            byte[] index = Meta(ino.Meta, headerPos + 16, total * 8);
             for (long lcn = 0; lcn < total; lcn++)
             {
                 int at = (int)(lcn * 8);
@@ -636,8 +710,10 @@ public sealed class ErofsReader : IDisposable
             }
             long first = Math.Min(initial, total), last = total - first - twoByte;
             long bytes = (first + 1) / 2 * 8 + twoByte * 2 + (last + 1) / 2 * 8;
-            byte[] index = new byte[bytes + 8];
-            Meta(indexPos, bytes).CopyTo(index, 0);
+            // Read (and so bounds-checked) before the buffer is made: a damaged size asks for an absurd index.
+            byte[] packed = Meta(ino.Meta, indexPos, bytes);
+            byte[] index = new byte[packed.Length + 8];
+            packed.CopyTo(index, 0);
             int loBits = Math.Max(clusterBits, 12);
             bool big = big1;
 
@@ -754,16 +830,104 @@ public sealed class ErofsReader : IDisposable
         return list.ToArray();
     }
 
+    /// <summary>
+    /// The extent records of mkfs.erofs 1.9: one record per cluster of a fixed size (4 bytes - only the
+    /// compressed length, the data following each other from a start given once - or 8 bytes with a 32-bit
+    /// position), or one record per extent with its logical start (16 or 32 bytes). Positions are in bytes.
+    /// </summary>
+    private Extent[] ExtentRecords(Ino ino, byte[] h, long headerPos, int advise)
+    {
+        long size = ino.Size;
+        int recsz = 4 << ((advise >> 1) & 3);
+        long pos = (headerPos + 8 + recsz - 1) / recsz * recsz;
+        bool fragment = (advise & AdviseFragmentPcluster) != 0, interlaced = (advise & AdviseInterlacedPcluster) != 0;
+        var list = new List<Extent>();
+
+        void Add(long start, long end, uint plen, long pa, bool last)
+        {
+            long length = Math.Min(end, size) - start;
+            if (length <= 0) return;
+            if (last && fragment)
+            {
+                // The tail is a fragment; its offset in the packed inode is spread over the two fields.
+                list.Add(new Extent(start, length, ExtentKind.Fragment, plen | (recsz > 4 ? pa << 32 : 0)));
+                return;
+            }
+            int len = (int)(plen & ExtentLengthMask);
+            if (len == 0)
+            {
+                list.Add(new Extent(start, length, ExtentKind.Hole, 0));
+                return;
+            }
+            if (length > MaxDecodedExtent)
+                throw new FsException($"The EROFS image has a compressed cluster that stands for {length >> 20} MiB of data, which is more than this program unpacks at once.");
+            int format = (int)(plen >> ExtentFormatBit);
+            bool partial = (plen & ExtentPartial) != 0;
+            if (format != 0)
+            {
+                int algorithm = format - 1;
+                if (algorithm >= AlgMax || (_algorithms & (1 << algorithm)) == 0)
+                    throw new FsException($"Corrupt EROFS image: a file uses the compression method {AlgorithmName(algorithm)}, which the superblock does not announce.");
+                list.Add(new Extent(start, length, ExtentKind.Encoded, pa, len, (byte)algorithm, partial));
+            }
+            else if (interlaced && ((pa | len) & (_blkSize - 1)) == 0)
+            {
+                list.Add(new Extent(start, length, ExtentKind.Encoded, pa, len, AlgInterlaced));
+            }
+            else
+            {
+                if (length > len) throw new FsException("Corrupt EROFS image: an uncompressed extent is shorter than its data.");
+                list.Add(new Extent(start, length, ExtentKind.Raw, pa));
+            }
+        }
+
+        if (recsz <= 8)
+        {
+            int clusterBits = _blkBits + (h[7] & 15);
+            long count = (size + (1L << clusterBits) - 1) >> clusterBits;
+            int first = recsz == 4 ? 8 : 0;
+            byte[] t = Meta(ino.Meta, pos, first + count * recsz);
+            long pa = recsz == 4 ? (long)Le.U64(t, 0) : 0;
+            if (pa < 0) throw new FsException("Corrupt EROFS image: invalid extent position.");
+            for (long i = 0; i < count; i++)
+            {
+                int at = (int)(first + i * recsz);
+                uint plen = Le.U32(t, at);
+                long p = recsz == 4 ? pa : Le.U32(t, at + 4);
+                if (recsz == 4) pa += plen & ExtentLengthMask;
+                Add(i << clusterBits, (i + 1) << clusterBits, plen, p, i == count - 1);
+            }
+        }
+        else
+        {
+            long count = Le.U32(h, 0) | (long)Le.U16(h, 6) << 32;
+            if (count <= 0 || count > ino.Meta.Length / recsz) throw new FsException("Corrupt EROFS image: invalid number of extent records.");
+            byte[] t = Meta(ino.Meta, pos, count * recsz);
+            long LogicalStart(long i) => Le.U32(t, (int)(i * recsz) + 12) | (recsz >= 32 ? (long)Le.U32(t, (int)(i * recsz) + 16) << 32 : 0);
+            for (long i = 0; i < count; i++)
+            {
+                int at = (int)(i * recsz);
+                long start = LogicalStart(i), end = i + 1 < count ? LogicalStart(i + 1) : size;
+                if (end < start) throw new FsException("Corrupt EROFS image: the extent records are not in order.");
+                long pa = (long)(Le.U32(t, at + 4) | (ulong)Le.U32(t, at + 8) << 32);
+                if (pa < 0) throw new FsException("Corrupt EROFS image: invalid extent position.");
+                Add(start, end, Le.U32(t, at), pa, i == count - 1);
+            }
+        }
+        if (list.Count == 0) throw new FsException("Corrupt EROFS image: a compressed file has no extents.");
+        return list.ToArray();
+    }
+
     // ------------------------------------------------------------- decoding
 
     /// <summary>Unpacks an encoded extent into <paramref name="dst"/>, which has the length of the extent.</summary>
-    private void Decode(in Extent e, Span<byte> dst)
+    private void Decode(in Extent e, Span<byte> dst, IBlockSource source)
     {
         byte[] raw = ArrayPool<byte>.Shared.Rent(e.PhysicalLength);
         try
         {
             Span<byte> input = raw.AsSpan(0, e.PhysicalLength);
-            _source.ReadExactly(e.Physical, input);
+            source.ReadExactly(e.Physical, input);
             if (e.Algorithm == AlgInterlaced)
             {
                 // The block is rotated so that the data lies where it would in a block-aligned file.
@@ -821,7 +985,7 @@ public sealed class ErofsReader : IDisposable
             if (produced != dst.Length)
                 throw new FsException($"Corrupt EROFS image: a compressed cluster unpacks to {produced} bytes instead of {dst.Length}.");
         }
-        catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException)
+        catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
         {
             throw new FsException($"Corrupt EROFS image: a {AlgorithmName(e.Algorithm)} cluster cannot be unpacked ({ex.Message}).", ex);
         }
@@ -844,7 +1008,8 @@ public sealed class ErofsReader : IDisposable
     }
 
     /// <summary>Reads through a list of extents; keeps the cluster it unpacked last.</summary>
-    private sealed class ExtentReader(ErofsReader reader, Extent[] extents, long length, bool isPacked) : IDisposable
+    /// <param name="meta">Where the inode lies: data next to it (inline tails) is read from there.</param>
+    private sealed class ExtentReader(ErofsReader reader, Extent[] extents, long length, bool isPacked, IBlockSource meta) : IDisposable
     {
         private byte[]? _decoded;
         private int _decodedIndex = -1;
@@ -868,7 +1033,7 @@ public sealed class ErofsReader : IDisposable
                         part.Clear();
                         break;
                     case ExtentKind.Raw:
-                        reader._source.ReadExactly(e.Physical + inside, part);
+                        (e.Inline ? meta : reader._source).ReadExactly(e.Physical + inside, part);
                         break;
                     case ExtentKind.Fragment:
                         if (isPacked) throw new FsException("Corrupt EROFS image: the packed inode refers to itself.");
@@ -883,7 +1048,7 @@ public sealed class ErofsReader : IDisposable
                                 if (_decoded is not null) ArrayPool<byte>.Shared.Return(_decoded);
                                 _decoded = ArrayPool<byte>.Shared.Rent((int)e.Length);
                             }
-                            reader.Decode(e, _decoded.AsSpan(0, (int)e.Length));
+                            reader.Decode(e, _decoded.AsSpan(0, (int)e.Length), e.Inline ? meta : reader._source);
                             _decodedIndex = _index;
                         }
                         _decoded.AsSpan((int)inside, n).CopyTo(part);
@@ -925,7 +1090,7 @@ public sealed class ErofsReader : IDisposable
             covered = e.End;
         }
         if (covered != ino.Size) throw new FsException("Corrupt EROFS image: a part of a file is not mapped to any data.");
-        return new ExtentReader(this, extents, ino.Size, isPacked);
+        return new ExtentReader(this, extents, ino.Size, isPacked, ino.Meta);
     }
 
     private byte[] ReadAll(Ino ino)
@@ -1017,6 +1182,8 @@ public sealed class ErofsReader : IDisposable
         {
             _packed?.Dispose();
             _packed = null;
+            _metabox?.Dispose();
+            _metabox = null;
         }
         if (_ownsSource) _source.Dispose();
     }

@@ -29,6 +29,10 @@ internal static partial class SelfTest
             ("lz4hc, 1 MiB clusters", new ErofsOptions { Compression = ErofsCompression.Lz4Hc, Lz4Level = 3, PclusterSize = 1 << 20 }),
             ("lzma", new ErofsOptions { Compression = ErofsCompression.Lzma, LzmaEffort = 0 }),
             ("lzma, 64 KiB clusters", new ErofsOptions { Compression = ErofsCompression.Lzma, LzmaEffort = 0, PclusterSize = 65536, LzmaDictionarySize = 1 << 16 }),
+            ("deflate", new ErofsOptions { Compression = ErofsCompression.Deflate }),
+            ("deflate level 1, 32 KiB clusters", new ErofsOptions { Compression = ErofsCompression.Deflate, DeflateLevel = 1, PclusterSize = 32768 }),
+            ("zstd", new ErofsOptions { Compression = ErofsCompression.Zstd }),
+            ("zstd level 9, 1 MiB clusters", new ErofsOptions { Compression = ErofsCompression.Zstd, ZstdLevel = 9, PclusterSize = 1 << 20 }),
             ("no inline data, no duplicates, no shared attributes", new ErofsOptions { InlineData = false, Deduplicate = false, ShareXattrs = false }),
             ("one thread, fixed time, name and UUID", new ErofsOptions { Threads = 1, BuildTime = 1700000001, VolumeName = "rootfs", Uuid = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef") }),
         };
@@ -37,6 +41,7 @@ internal static partial class SelfTest
         Test("erofs: layout, superblock and settings kept on saving", () => ErofsLayout(tree));
         Test("erofs: data that does not shrink, large files, many small ones", ErofsData);
         Test("erofs: variants only mkfs.erofs writes are read (image built by hand)", ErofsHandBuilt);
+        Test("erofs: mkfs.erofs 1.9 layouts are read: 48-bit, metabox, extent records (image built by hand)", ErofsHand19);
         Test("erofs: unsupported layouts and invalid options are rejected", () => ErofsLimits(tree));
         Test("erofs: root partition of a disk image is edited in place and enlarged", () => ErofsDisk(tree, reference));
         Test("erofs: a UBI volume is replaced, the other volumes are carried over", () => ErofsUbi(tree, reference));
@@ -167,6 +172,8 @@ internal static partial class SelfTest
             new ErofsOptions { Compression = ErofsCompression.Lz4Hc, Lz4Level = 4 },
             new ErofsOptions { Compression = ErofsCompression.Lz4, PclusterSize = 262144 },
             new ErofsOptions { Compression = ErofsCompression.Lzma, LzmaEffort = 0, PclusterSize = 131072 },
+            new ErofsOptions { Compression = ErofsCompression.Zstd, PclusterSize = 65536 },
+            new ErofsOptions { Compression = ErofsCompression.Deflate },
             new ErofsOptions { Compression = ErofsCompression.None },
         })
         {
@@ -251,13 +258,26 @@ internal static partial class SelfTest
             return nid;
         }
 
-        public byte[] Image(ulong rootNid, ulong packedNid, int prefixCount, uint prefixStart, uint xattrBlock, uint incompat, int algorithms, byte[] configs, long epoch)
+        /// <summary>The metadata area as it is so far: what a metabox holds when this builder makes one.</summary>
+        public byte[] MetaBytes => _meta.AsSpan(0, (_metaPos + Blk - 1) / Blk * Blk).ToArray();
+
+        /// <summary>Overwrites bytes of an inode written before (for data that depends on inode numbers).</summary>
+        public void Patch(ulong nid, int offset, byte[] bytes) => bytes.CopyTo(_meta, (int)(nid & ~(1UL << 63)) * 32 + offset);
+
+        public byte[] Image(ulong rootNid, ulong packedNid, int prefixCount, uint prefixStart, uint xattrBlock, uint incompat, int algorithms, byte[] configs, long epoch,
+            ulong metaboxNid = 0)
         {
             byte[] image = new byte[(1 + MetaBlocks) * Blk + _data.Length];
             Span<byte> sb = image.AsSpan(1024);
             BinaryPrimitives.WriteUInt32LittleEndian(sb, 0xE0F5E1E2);
             sb[12] = 12;
-            BinaryPrimitives.WriteUInt16LittleEndian(sb[14..], (ushort)rootNid);
+            bool wide = (incompat & 0x80) != 0;
+            // The 48-bit layout keeps the root inode number in 64 bits further on; a metabox needs a longer superblock.
+            if (wide) BinaryPrimitives.WriteUInt64LittleEndian(sb[112..], rootNid);
+            else BinaryPrimitives.WriteUInt16LittleEndian(sb[14..], (ushort)rootNid);
+            int slots = metaboxNid != 0 ? 1 : 0;
+            sb[13] = (byte)slots;
+            if (metaboxNid != 0) BinaryPrimitives.WriteUInt64LittleEndian(sb[128..], metaboxNid);
             BinaryPrimitives.WriteUInt64LittleEndian(sb[16..], 30);
             BinaryPrimitives.WriteUInt64LittleEndian(sb[24..], (ulong)epoch);
             BinaryPrimitives.WriteUInt32LittleEndian(sb[36..], (uint)(image.Length / Blk));
@@ -269,7 +289,7 @@ internal static partial class SelfTest
             sb[91] = (byte)prefixCount;
             BinaryPrimitives.WriteUInt32LittleEndian(sb[92..], prefixStart);
             BinaryPrimitives.WriteUInt64LittleEndian(sb[96..], packedNid);
-            configs.CopyTo(sb[128..]);
+            configs.CopyTo(sb[(128 + 16 * slots)..]);
             _meta.CopyTo(image, Blk);
             _data.ToArray().CopyTo(image, (1 + MetaBlocks) * Blk);
             return image;
@@ -559,11 +579,189 @@ internal static partial class SelfTest
         }
     }
 
+    /// <summary>
+    /// The layouts of mkfs.erofs 1.9: the 48-bit superblock, inodes (the root among them) in a metabox, extent
+    /// records of 4, 8 and 16 bytes (a cluster of several blocks, an unaligned uncompressed extent, a hole, a
+    /// partial reference, a fragment as the tail) and 48-bit chunk indexes.
+    /// </summary>
+    private static void ErofsHand19()
+    {
+        const int Reg = 0x81A4, Dir = 0x41ED, FlatPlain = 0, Full = 1, FlatInline = 2, Chunked = 4;
+        const ulong InBox = 1UL << 63;
+        var rnd = new Random(23);
+        var h = new ErofsHand();        // the image and its metadata area
+        var box = new ErofsHand();      // the inodes of the metabox
+        var lz4 = new Lz4FixedEncoder(9);
+        var expected = new Dictionary<string, byte[]>();
+        var entries = new List<(string, ulong, int)>();
+        byte[] Pack(ReadOnlySpan<byte> data, out int taken)
+        {
+            byte[] dst = new byte[4000];
+            int n = lz4.Compress(data, dst, out taken);
+            return dst[..n];
+        }
+        byte[] Records(int pad, byte[] header, params uint[] words)
+        {
+            var w = new MemoryStream();
+            w.Write(new byte[pad]);
+            w.Write(header);
+            foreach (uint x in words) w.Write(BitConverter.GetBytes(x));
+            return w.ToArray();
+        }
+        void File(string name, byte[] content, ulong nid)
+        {
+            expected[name] = content;
+            entries.Add((name, nid, 1));
+        }
+
+        // 4-byte records: clusters of 8 KiB following each other from a start given once.
+        byte[] text = Bytes(rnd, 8192, compressible: true), raw = Bytes(rnd, 8192), last = Bytes(rnd, 1000);
+        byte[] packed8k = Pack(text, out int taken);
+        Check(taken == 8192, "8 KiB of text do not fit one block");
+        uint c0 = h.Cluster(packed8k);
+        h.Blocks(raw);
+        h.Blocks(last);
+        byte[] header4 = new byte[8];
+        header4[4] = 1;                 // extent records of 4 bytes
+        header4[7] = 1;                 // clusters of 2^(12 + 1) bytes
+        byte[] index4 = Records(0, header4, (uint)((ulong)c0 * 4096 & uint.MaxValue), (uint)((ulong)c0 * 4096 >> 32),
+            4096 | 1u << 28, 8192, 1000);
+        File("rec4", text.Concat(raw).Concat(last).ToArray(), h.Inode(Reg, 17384, Full, 3, after: index4));
+
+        // 8-byte records with a fragment as the tail.
+        byte[] block = Bytes(rnd, 4096), tail = Bytes(rnd, 1500);
+        uint b0 = h.Blocks(block);
+        var packedFile = new MemoryStream();
+        packedFile.Write(Bytes(rnd, 333));
+        long tailAt = packedFile.Length;
+        packedFile.Write(tail);
+        ulong packedNid = h.Inode(Reg, packedFile.Length, FlatPlain, h.Blocks(packedFile.ToArray()));
+        byte[] header8 = new byte[8];
+        header8[4] = 1 | 1 << 1 | 0x20; // records of 8 bytes, the last one a fragment
+        File("rec8-fragment", block.Concat(tail).ToArray(), h.Inode(Reg, 5596, Full, 1, after: Records(0, header8, 4096, b0 * 4096u, (uint)tailAt, 0)));
+
+        // 48-bit chunk indexes: the top 16 bits of a block number, the device, the lower 32 bits.
+        byte[] chunked = new byte[3 * 4096];
+        Bytes(rnd, 4096).CopyTo(chunked, 0);
+        Bytes(rnd, 4096).CopyTo(chunked, 8192);
+        uint k0 = h.Blocks(chunked.AsSpan(0, 4096)), k2 = h.Blocks(chunked.AsSpan(8192));
+        var chunkTable = new MemoryStream();
+        foreach (ulong a in new[] { (ulong)k0, ulong.MaxValue, k2 })
+        {
+            chunkTable.Write(BitConverter.GetBytes((ushort)(a >> 32)));
+            chunkTable.Write(new byte[2]);
+            chunkTable.Write(BitConverter.GetBytes((uint)a));
+        }
+        File("chunk48", chunked, h.Inode(Reg, chunked.Length, Chunked, 0x40 | 0x20, after: chunkTable.ToArray()));
+
+        // 16-byte records in the metabox: a compressed cluster, uncompressed data at an unaligned position,
+        // a hole, and the beginning of the first cluster once more (a partial reference).
+        byte[] a10 = Bytes(rnd, 10000, compressible: true), r3 = Bytes(rnd, 3000);
+        byte[] pa = Pack(a10, out int ta);
+        Check(ta == a10.Length, "the test data does not fit one block");
+        uint ca = h.Cluster(pa);
+        uint rb = h.Blocks(new byte[100].Concat(r3).ToArray());
+        byte[] header16 = new byte[16];   // the map header, then 8 bytes up to the first record
+        BinaryPrimitives.WriteUInt32LittleEndian(header16, 4);      // four extents
+        header16[4] = 1 | 2 << 1;
+        uint[] words16 =
+        {
+            4096 | 1u << 28, ca * 4096u, 0, 0,
+            3000, rb * 4096u + 100, 0, 10000,
+            0, 0, 0, 13000,
+            4096 | 1u << 28 | 1u << 27, ca * 4096u, 0, 18000,
+        };
+        // The records start at a multiple of 16 bytes behind the 8-byte map header (which follows the 64-byte inode).
+        File("rec16", a10.Concat(r3).Concat(new byte[5000]).Concat(a10.Take(5000)).ToArray(),
+            InBox | box.Inode(Reg, 23000, Full, 4, after: Records(0, header16, words16)));
+        byte[] small = Encoding.ASCII.GetBytes("an inode in the metabox\n");
+        File("in-metabox", small, InBox | box.Inode(Reg, small.Length, FlatInline, 0xFFFFFFFF, after: small));
+
+        // The root directory lies in the metabox too; its own number is known once it is written.
+        byte[] rootDir = ErofsHand.Directory(entries.Concat(new[] { (".", 0UL, 2), ("..", 0UL, 2) }).ToArray());
+        ulong rootNid = InBox | box.Inode(Dir, rootDir.Length, FlatInline, 0xFFFFFFFF, after: rootDir, links: 2);
+        rootDir = ErofsHand.Directory(entries.Concat(new[] { (".", rootNid, 2), ("..", rootNid, 2) }).ToArray());
+        box.Patch(rootNid, 64, rootDir);
+
+        byte[] metabox = box.MetaBytes;
+        ulong metaboxNid = h.Inode(Reg, metabox.Length, FlatPlain, h.Blocks(metabox));
+        byte[] configs = { 14, 0, 0xFF, 0xFF, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        byte[] image = h.Image(rootNid, packedNid, 0, 0, 0, incompat: 0x1 | 0x2 | 0x4 | 0x20 | 0x80 | 0x100, algorithms: 1, configs, epoch: 1600000000, metaboxNid: metaboxNid);
+
+        string path = WriteFile("hand19.erofs", image);
+        Check(ImageDocument.Detect(path) == ImageFormat.Erofs, "detected as " + ImageDocument.Detect(path));
+        ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false);
+        try
+        {
+            ErofsInfo info = doc.Erofs!;
+            Check(doc.Warnings.Count == 0, "warnings: " + string.Join("; ", doc.Warnings));
+            Check(info.Bits48 && info.Metabox && info.FeatureNames.Contains("48bit") && info.FeatureNames.Contains("metabox"), "features: " + string.Join(' ', info.FeatureNames));
+            Check(doc.Tree.Root.ChildCount == entries.Count, $"{doc.Tree.Root.ChildCount} entries in the root");
+            foreach ((string name, byte[] content) in expected)
+            {
+                FsNode n = doc.Tree.Resolve("/" + name) ?? throw new TestFailure($"'{name}' is missing");
+                Check(n.Inode.Size == content.Length, $"{name}: size {n.Inode.Size}, expected {content.Length}");
+                using var ms = new MemoryStream();
+                using (Stream st = n.Inode.Data!.OpenRead()) st.CopyTo(ms);
+                Check(ms.ToArray().AsSpan().SequenceEqual(content), $"{name}: the content differs");
+            }
+
+            // Saved by FsForge it becomes an image of the layout every kernel with EROFS reads.
+            string reference = Program.DumpToString(doc.Tree);
+            doc = doc.Save(Path.Combine(_dir, "hand19-saved.erofs"), doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir })).Document;
+            Check(!doc.Erofs!.Bits48 && !doc.Erofs.Metabox, "the saved image: " + string.Join(' ', doc.Erofs.FeatureNames));
+            Same(reference, Program.DumpToString(doc.Tree), "saved again");
+        }
+        finally
+        {
+            doc.Dispose();
+        }
+
+        // Damaged copies (superblock, metadata area, metabox, records) are refused cleanly.
+        var fuzz = new Random(5);
+        int metaEnd = (1 + ErofsHand.MetaBlocks) * ErofsHand.Blk;
+        var crashes = new List<string>();
+        int iterations = int.TryParse(Environment.GetEnvironmentVariable("FSFORGE_FUZZ"), out int custom) ? custom : 200;
+        for (int iter = 0; iter < iterations; iter++)
+        {
+            byte[] bad = (byte[])image.Clone();
+            for (int hits = 1 + fuzz.Next(6); hits > 0; hits--)
+            {
+                // The superblock, the metadata area, and the metabox, which lies in the data.
+                int at = fuzz.Next(3) switch { 0 => 1024 + fuzz.Next(160), 1 => fuzz.Next(4096, metaEnd), _ => fuzz.Next(metaEnd, bad.Length) };
+                bad[at] = iter % 2 == 0 ? (byte)fuzz.Next(256) : (byte)(bad[at] ^ (1 << fuzz.Next(8)));
+            }
+            string damaged = WriteFile("hand19-fuzz.erofs", bad);
+            try
+            {
+                using ImageDocument d = ImageDocument.Open(damaged, _dir, searchEmbedded: false);
+                foreach (FsNode n in d.Tree.Walk())
+                {
+                    if (n.Inode.Data is null) continue;
+                    using Stream st = n.Inode.Data.OpenRead();
+                    st.CopyTo(Stream.Null);
+                }
+            }
+            catch (FsException ex) when (ex is not FsUnexpectedException)
+            {
+                // The expected, clean outcome.
+            }
+            catch (Exception ex)
+            {
+                if (crashes.Count < 2) System.IO.File.Copy(damaged, Path.Combine(_dir, $"crash-erofs19-{iter}.bin"), true);
+                crashes.Add($"#{iter} {ex.GetType().Name}: {ex.Message} {ex.InnerException?.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
+            }
+        }
+        Check(crashes.Count == 0, $"{crashes.Count} damaged images caused unexpected exceptions, e.g. " + string.Join(" | ", crashes.Take(2)));
+    }
+
     // ----------------------------------------------------------------- limits
 
     private static void ErofsLimits(FsTree tree)
     {
-        ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { Compression = ErofsCompression.Zstd })));
+        ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { Compression = ErofsCompression.Zstd, ZstdLevel = 23 })));
+        ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { Compression = ErofsCompression.Deflate, DeflateLevel = 0 })));
+        ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { Compression = (ErofsCompression)42 })));
         ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { PclusterSize = 5000 })));
         ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { PclusterSize = 2 << 20 })));
         ExpectFs(() => WriteImage(tree, ErofsSave(new ErofsOptions { VolumeName = "seventeen letters" })));
@@ -588,8 +786,8 @@ internal static partial class SelfTest
             }
             throw new TestFailure(what + " was accepted");
         }
-        Rejected("the 48-bit layout", b => b[1024 + 80] |= 0x80, "48-bit");
-        Rejected("compressed metadata", b => b[1024 + 81] |= 0x01, "metabox");
+        Rejected("a metabox without its inode number", b => b[1024 + 81] |= 0x01, "metabox");
+        Rejected("a newer feature", b => b[1024 + 81] |= 0x02, "features");
         Rejected("an unknown feature", b => b[1024 + 82] |= 0x01, "features");
         Rejected("data on another device", b => { b[1024 + 80] |= 0x08; b[1024 + 86] = 1; }, "device");
         Rejected("directory blocks of another size", b => b[1024 + 90] = 1, "directory blocks");

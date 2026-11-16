@@ -743,6 +743,28 @@
                                 SelectedValue="{Binding ErofsLzmaEffort}"
                                 SelectedValuePath="Value" />
                         </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Уровень zstd'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowErofsZstd, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="150"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ZstdLevels}"
+                                SelectedValue="{Binding ErofsZstdLevel}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Уровень deflate'}"
+                            Style="{StaticResource Row}"
+                            Visibility="{Binding ShowErofsDeflate, Converter={StaticResource BoolToVisibility}}">
+                            <ComboBox
+                                Width="150"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding GzipLevels}"
+                                SelectedValue="{Binding ErofsDeflateLevel}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
                         <HeaderedContentControl Header="{l:Tr 'Хранить хвосты файлов рядом с инодами'}" Style="{StaticResource Row}">
                             <ui:ToggleSwitch IsChecked="{Binding ErofsInlineData}" />
                         </HeaderedContentControl>

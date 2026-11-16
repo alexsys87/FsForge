@@ -212,15 +212,15 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 
 EROFS читается из отдельного образа (`*.erofs`, `system.img` и другие разделы Android после
 распаковки), из раздела образа диска и из тома UBI. Читаются все виды образов, которые делает
-`mkfs.erofs` до версии 1.8 включительно: без сжатия, lz4, lzma, deflate и zstd; кластеры до 1 МБ; хвосты
-рядом с инодом (ztailpacking), фрагменты, дедупликация, файлы из чанков, блоки 512 байт – 4 КБ.
+`mkfs.erofs` до версии 1.9 включительно: без сжатия, lz4, lzma, deflate и zstd; кластеры до 1 МБ; хвосты
+рядом с инодом (ztailpacking), фрагменты, дедупликация, файлы из чанков, блоки 512 байт – 4 КБ;
+48-битная разметка (`-E48bit`) с записями экстентов, метабокс (`-m`), каталоги без «.».
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file is too small to be an EROFS image.`, `Not an EROFS image (bad magic).`, `Corrupt EROFS superblock: invalid block size (2^<N>).` | Суперблок (по смещению 1024) повреждён. | Проверьте образ: `fsck.erofs образ.erofs`, `dump.erofs образ.erofs` в Linux. |
-| `The EROFS image uses the 48-bit layout (mkfs.erofs -E48bit, Linux 6.15), which is not supported.` | Образ сделан `mkfs.erofs` 1.9 с параметром `-E48bit` (адреса блоков шире 32 бит, записи экстентов). | Соберите образ без `-E48bit` или распакуйте его в Linux (`fsck.erofs --extract=папка`) и соберите в FsForge из папки. |
-| `The EROFS image keeps its metadata compressed (mkfs.erofs -Emetabox, Linux 6.17), which is not supported.` | Образ сделан с параметром `-Emetabox`: иноды и каталоги лежат сжатыми в служебном файле. | То же: соберите образ без `-Emetabox` или распакуйте его в Linux. |
-| `The EROFS image describes compressed files with extent records (mkfs.erofs 1.9), which is not supported.` | Новая форма индекса сжатых файлов из `mkfs.erofs` 1.9. | То же. |
+| `Corrupt EROFS image: inode <N> is said to lie in a metabox, but the image has none.`, `…inode <N> lies outside the metabox.`, `…the superblock is too short for a metabox.`, `…invalid metabox inode number.`, `…the metabox lies in itself.`, `…the packed inode lies in the metabox.` | Повреждены суперблок или ссылки на метабокс — отдельный (обычно сжатый) файл образа, в котором `mkfs.erofs -m` хранит иноды. | Получите файл заново; `fsck.erofs образ.erofs` (erofs-utils 1.9) покажет, цел ли он. |
+| `Corrupt EROFS image: invalid number of extent records.`, `…the extent records are not in order.`, `…invalid extent position.`, `…an uncompressed extent is shorter than its data.`, `…a compressed file has no extents.`, `…a file has blocks but no address for them.` | Повреждены записи экстентов (так `mkfs.erofs` 1.9 с `-E48bit` описывает сжатые файлы) или адрес данных файла. | Ошибка относится к одному файлу; остальные читаются. |
 | `The EROFS image uses features this program does not know (incompatible feature flags 0x<…>).`, `The EROFS image uses a compression method this program does not know (methods 0x<…>).`, `The EROFS image uses an LZMA variant this program does not know.`, `The EROFS inode <N> has a format / a data layout this program does not know (…).`, `The EROFS inode <N> uses a chunk format this program does not know (0x<…>).`, `The EROFS image uses directory blocks of their own size, which is not supported.` | Образ сделан более новой версией `mkfs.erofs`, чем знает программа. | Обновите FsForge; пока — распакуйте образ в Linux (`fsck.erofs --extract=папка`). |
 | `The EROFS image keeps file data on <N> more device(s) (blob files), which are not part of this file.`, `The EROFS image keeps file data on another device (a blob file), which is not part of this file.` | Образ сделан с `--blobdev` (образы контейнеров Nydus, composefs): в этом файле только метаданные, содержимое файлов — в отдельных файлах. | Такой образ без его файлов данных прочитать нельзя; откройте образ, собранный одним файлом. |
 | Предупреждение: `The checksum of the EROFS superblock does not match: the image is damaged or was changed without updating it. The kernel refuses to mount such an image.` | Суперблок изменён (например, метка тома исправлена в шестнадцатеричном редакторе) или повреждён. | Образ читается. Сохраните его в FsForge — контрольная сумма будет записана заново. Если суперблок не меняли намеренно, получите файл заново. |
@@ -235,7 +235,6 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 | `Corrupt EROFS image: a file uses the compression method <метод>, which the superblock does not announce.`, `…unknown compression method <N>.`, `…an empty compressed cluster.`, `…a compressed cluster unpacks to <N> bytes instead of <M>.`, `…a <метод> cluster cannot be unpacked (<подробности>).`, `Corrupt LZ4 data.`, `Corrupt LZMA data: …` | Сжатые данные файла повреждены. | Получите образ заново. Остальные файлы читаются. |
 | `The EROFS image has a compressed cluster that stands for <N> MiB of data, which is more than this program unpacks at once.` | Один сжатый кластер описывает больше 64 МБ данных (ядро Linux допускает до 12 МБ). | Скорее всего образ повреждён; если нет — распакуйте его в Linux. |
 | `Corrupt EROFS image: a file keeps data in the packed inode, but the image has none.`, `…a fragment lies outside the packed inode.`, `…the packed inode refers to itself.` | Повреждены фрагменты (хвосты файлов в служебном «упакованном» файле, `-Efragments`). | Ошибка относится к файлу, который читается; см. общие способы. |
-| Предупреждение: `The image is compressed with DEFLATE / ZSTD, which can be read but not written. Saving uses LZMA unless another method is chosen.` | Образ сжат deflate или zstd: программа их читает, но не записывает. | При сохранении выберите lz4hc или lzma. Учтите требования ядра: lzma — Linux 5.16 и новее. |
 
 ## 8. Чтение архивов tar
 
@@ -396,7 +395,7 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `Writing EROFS with the <метод> compressor is not supported; choose LZ4 or LZMA.` | Для записи выбран deflate или zstd (`comp=` в `fsforge-cli`). | Выберите `lz4`, `lz4hc`, `lzma` или `none`. |
+| `Unknown EROFS compression method.`, `The Zstandard level must be between 1 and 22.`, `The DEFLATE level must be between 1 and 9.` | Неверные `comp=` или `level=` в `fsforge-cli`. | `comp=` — `none`, `lz4`, `lz4hc`, `lzma`, `deflate` или `zstd`; уровень deflate 1–9, zstd 1–22. |
 | `The EROFS cluster size must be a multiple of 4 KiB between 4 KiB and 1 MiB.` | Неверный `pcluster=`. | Возьмите 4096 … 1048576, кратно 4096. |
 | `The LZ4HC level must be between 1 and 12.`, `The EROFS LZMA dictionary size must be between 4 KiB and 8 MiB.` | Неверные `level=` или `dict=`. | Исправьте или уберите параметр. |
 | `An EROFS volume name has at most 16 bytes.`; в окне параметров — «Метка тома не длиннее 16 байт.» | Метка тома длиннее 16 байт (русская буква — 2 байта). | Сократите метку. |
@@ -404,7 +403,7 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 | Предупреждение: `'<путь>': the extended attribute '<имя>' was dropped; EROFS holds only user.*, trusted.*, security.* attributes and POSIX ACLs.` | Атрибут из другого пространства имён (например, `system.` кроме ACL). | Атрибут потерян; если нужен — ext или tar pax. |
 | Предупреждение: `'<путь>': the extended attribute '<имя>' was dropped; its name or value is too long for EROFS.`, `'<путь>': the extended attributes take more than 256 KiB and were dropped.` | Имя атрибута длиннее 255 байт, значение больше 65535 байт или все атрибуты объекта вместе больше 256 КБ. | Атрибуты потеряны; сохраните образ в ext4, если они нужны. |
 | `Only UBIFS and SquashFS can be wrapped into a UBI image.` | Для EROFS выбрано «Упаковать в образ UBI» (`ubi=1`). | Новый образ UBI делается только вокруг UBIFS и SquashFS. EROFS, открытый из тома существующего образа UBI, сохраняется в этот том. |
-| Смонтировать образ не удаётся: `erofs: unsupported …`, `can't find valid erofs superblock`, ошибка ввода-вывода при чтении файлов | Ядро устройства старше, чем требует выбранный вид образа: кластеры больше 4 КБ — Linux 5.13, lzma — Linux 5.16 (и `CONFIG_EROFS_FS_ZIP_LZMA`); сам EROFS со сжатием lz4 — Linux 5.4. | Сохраните образ со сжатием lz4hc и кластером 4 КБ — его читает любое ядро с EROFS. |
+| Смонтировать образ не удаётся: `erofs: unsupported …`, `can't find valid erofs superblock`, ошибка ввода-вывода при чтении файлов | Ядро устройства старше, чем требует выбранный вид образа: кластеры больше 4 КБ — Linux 5.13, lzma — Linux 5.16 (и `CONFIG_EROFS_FS_ZIP_LZMA`), deflate — Linux 6.6 (`CONFIG_EROFS_FS_ZIP_DEFLATE`), zstd — Linux 6.10 (`CONFIG_EROFS_FS_ZIP_ZSTD`); сам EROFS со сжатием lz4 — Linux 5.4. | Сохраните образ со сжатием lz4hc и кластером 4 КБ — его читает любое ядро с EROFS. |
 
 EROFS хранит всё, что есть в дереве: владельцев, права, время (с секундной точностью), ссылки,
 устройства, сокеты, жёсткие ссылки, расширенные атрибуты `user.`, `trusted.`, `security.` и POSIX ACL.

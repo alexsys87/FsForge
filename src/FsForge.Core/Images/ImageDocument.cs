@@ -463,9 +463,6 @@ public sealed class ImageDocument : IDisposable
                     OuterCompression = outer, Container = container, Ubi = ubi,
                 };
                 doc._warnings.AddRange(r.Warnings);
-                if (r.Info.Compression is ErofsCompression.Deflate or ErofsCompression.Zstd)
-                    doc._warnings.Add($"The image is compressed with {r.Info.Compression.ToString().ToUpperInvariant()}, which can be read but not written. " +
-                                      "Saving uses LZMA unless another method is chosen.");
             }
             else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
             {
@@ -678,7 +675,7 @@ public sealed class ImageDocument : IDisposable
         {
             // The method, the cluster size and the identity of the image are kept; the effort stays as configured.
             ErofsOptions e = ErofsOptions.FromInfo(Erofs);
-            (e.Lz4Level, e.LzmaEffort, e.Threads) = (o.Erofs.Lz4Level, o.Erofs.LzmaEffort, o.Erofs.Threads);
+            (e.Lz4Level, e.LzmaEffort, e.ZstdLevel, e.DeflateLevel, e.Threads) = (o.Erofs.Lz4Level, o.Erofs.LzmaEffort, o.Erofs.ZstdLevel, o.Erofs.DeflateLevel, o.Erofs.Threads);
             o.Erofs = e;
         }
         // A filesystem that goes into a UBI image is made for the erase blocks of that image.

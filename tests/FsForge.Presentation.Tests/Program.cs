@@ -956,6 +956,10 @@ internal static class Program
                       && s.ShowCommonXattrs && s.ShowAllRoot && !s.ShowNewUbi && !s.WritesDisk,
                     "the dialog does not start with the settings of the source");
                 Check(s.ErofsPclusterSizes.Any(c => c.Value == s.ErofsPclusterSize), "the cluster size of the source is not in the list: " + s.ErofsPclusterSize);
+                s.ErofsCompression = FsForge.Core.Erofs.ErofsCompression.Zstd;
+                Check(s.ShowErofsZstd && !s.ShowErofsDeflate && !s.ShowErofsLzma && s.ErofsNote.Contains("6.10") && s.ErofsZstdLevel == 3, "options of zstd: " + s.ErofsNote);
+                s.ErofsCompression = FsForge.Core.Erofs.ErofsCompression.Deflate;
+                Check(s.ShowErofsDeflate && !s.ShowErofsZstd && s.ErofsNote.Contains("6.6") && s.ErofsDeflateLevel == 6, "options of deflate: " + s.ErofsNote);
                 s.ErofsCompression = FsForge.Core.Erofs.ErofsCompression.Lz4Hc;
                 s.ErofsPclusterSize = 64 * 1024;
                 Check(s.ShowErofsLz4Level && !s.ShowErofsLzma && s.ErofsNote.Contains("5.13"), "options of lz4hc: " + s.ErofsNote);

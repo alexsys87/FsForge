@@ -654,5 +654,10 @@ internal static class EnglishStrings
         ["Хранить хвосты файлов рядом с инодами"] = "Keep file tails next to the inodes",
         ["Хранить общие расширенные атрибуты один раз"] = "Store shared extended attributes once",
         ["EROFS по умолчанию"] = "EROFS defaults",
+        ["zstd — плотно и быстро (Linux 6.10 и новее)"] = "zstd — small and fast (Linux 6.10 and later)",
+        ["deflate — Linux 6.6 и новее"] = "deflate — Linux 6.6 and later",
+        ["Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. Zstandard читает ядро Linux 6.10 и новее с CONFIG_EROFS_FS_ZIP_ZSTD; высокие уровни сжимают заметно медленнее."] = "A cluster is unpacked as a whole: the larger it is, the better the compression and the slower the reading. Zstandard is read by Linux 6.10 and later with CONFIG_EROFS_FS_ZIP_ZSTD; high levels compress much more slowly.",
+        ["Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. DEFLATE читает ядро Linux 6.6 и новее с CONFIG_EROFS_FS_ZIP_DEFLATE."] = "A cluster is unpacked as a whole: the larger it is, the better the compression and the slower the reading. DEFLATE is read by Linux 6.6 and later with CONFIG_EROFS_FS_ZIP_DEFLATE.",
+        ["Уровень deflate"] = "deflate level",
     };
 }

@@ -16,10 +16,10 @@ public enum ErofsCompression
     /// <summary>MicroLZMA: the best ratio, the slowest to write and to read.</summary>
     Lzma,
 
-    /// <summary>DEFLATE (read only).</summary>
+    /// <summary>DEFLATE (Linux 6.6 and later).</summary>
     Deflate,
 
-    /// <summary>Zstandard (read only).</summary>
+    /// <summary>Zstandard (Linux 6.10 and later).</summary>
     Zstd,
 }
 
@@ -61,6 +61,12 @@ public sealed class ErofsInfo
     public bool Deduplicated { get; init; }
     public bool ChunkedFiles => (FeatureIncompat & ErofsFormat.IncompatChunkedFile) != 0;
 
+    /// <summary>The 48-bit layout of mkfs.erofs 1.9 (-E48bit): wider block numbers and inode numbers.</summary>
+    public bool Bits48 { get; init; }
+
+    /// <summary>Inodes (and possibly shared attributes) are kept in a file of their own, which may be compressed (mkfs.erofs -m).</summary>
+    public bool Metabox { get; init; }
+
     /// <summary>Names of the features of the superblock, the way dump.erofs prints them.</summary>
     public IReadOnlyList<string> FeatureNames
     {
@@ -70,6 +76,9 @@ public sealed class ErofsInfo
             if ((FeatureCompat & ErofsFormat.CompatSbChecksum) != 0) names.Add("sb_csum");
             if ((FeatureCompat & ErofsFormat.CompatMtime) != 0) names.Add("mtime");
             if ((FeatureCompat & ErofsFormat.CompatXattrFilter) != 0) names.Add("xattr_filter");
+            if ((FeatureCompat & ErofsFormat.CompatSharedEaInMetabox) != 0) names.Add("shared_ea_in_metabox");
+            if ((FeatureCompat & ErofsFormat.CompatPlainXattrPrefixes) != 0) names.Add("plain_xattr_pfx");
+            if ((FeatureCompat & ErofsFormat.CompatIshareXattrs) != 0) names.Add("ishare_xattrs");
             if ((FeatureIncompat & ErofsFormat.IncompatZeroPadding) != 0) names.Add("0padding");
             if ((FeatureIncompat & ErofsFormat.IncompatComprCfgs) != 0) names.Add(BigPcluster ? "big_pcluster" : "compr_cfgs");
             if ((FeatureIncompat & ErofsFormat.IncompatChunkedFile) != 0) names.Add("chunked_file");
@@ -77,6 +86,8 @@ public sealed class ErofsInfo
             if ((FeatureIncompat & ErofsFormat.IncompatZtailpacking) != 0) names.Add("ztailpacking");
             if ((FeatureIncompat & ErofsFormat.IncompatFragments) != 0) names.Add(Fragments ? "fragments" : "dedupe");
             if ((FeatureIncompat & ErofsFormat.IncompatXattrPrefixes) != 0) names.Add("xattr_prefixes");
+            if ((FeatureIncompat & ErofsFormat.Incompat48Bit) != 0) names.Add("48bit");
+            if ((FeatureIncompat & ErofsFormat.IncompatMetabox) != 0) names.Add("metabox");
             return names;
         }
     }
@@ -101,6 +112,12 @@ public sealed class ErofsOptions
 
     /// <summary>LZMA dictionary size; 0 picks one that suits the cluster size.</summary>
     public int LzmaDictionarySize { get; set; }
+
+    /// <summary>Zstandard level, 1 to 22.</summary>
+    public int ZstdLevel { get; set; } = 3;
+
+    /// <summary>DEFLATE level, 1 to 9.</summary>
+    public int DeflateLevel { get; set; } = 6;
 
     /// <summary>Keep the tail of a file that does not fill a block next to its inode instead of in a block of its own.</summary>
     public bool InlineData { get; set; } = true;
@@ -138,13 +155,14 @@ public sealed class ErofsOptions
         ? LzmaDictionarySize
         : (int)Math.Clamp(BitOperations.RoundUpToPowerOf2((uint)PclusterSize * 8), 1u << 20, (uint)ErofsFormat.MaxExtentBytes);
 
+    /// <summary>The Zstandard window: eight clusters, at most 1 MiB (what mkfs.erofs chooses and the kernel accepts).</summary>
+    public int EffectiveZstdWindow => (int)Math.Min(BitOperations.RoundUpToPowerOf2((uint)PclusterSize * 8), (uint)ErofsFormat.MaxPclusterSize);
+
     /// <summary>Options that reproduce the settings of an existing image as closely as possible.</summary>
     public static ErofsOptions FromInfo(ErofsInfo info) => new()
     {
         Compression = info.Compression switch
         {
-            // Methods that are read but not written fall back to the closest writable one.
-            ErofsCompression.Deflate or ErofsCompression.Zstd => ErofsCompression.Lzma,
             ErofsCompression.Lz4 => ErofsCompression.Lz4Hc,
             var c => c,
         },
@@ -157,8 +175,9 @@ public sealed class ErofsOptions
 
     public void Validate()
     {
-        if (Compression is ErofsCompression.Deflate or ErofsCompression.Zstd)
-            throw new FsException($"Writing EROFS with the {Compression} compressor is not supported; choose LZ4 or LZMA.");
+        if (!Enum.IsDefined(Compression)) throw new FsException("Unknown EROFS compression method.");
+        if (ZstdLevel is < 1 or > 22) throw new FsException("The Zstandard level must be between 1 and 22.");
+        if (DeflateLevel is < 1 or > 9) throw new FsException("The DEFLATE level must be between 1 and 9.");
         if (PclusterSize < ErofsFormat.BlockSize || PclusterSize > ErofsFormat.MaxPclusterSize || PclusterSize % ErofsFormat.BlockSize != 0)
             throw new FsException("The EROFS cluster size must be a multiple of 4 KiB between 4 KiB and 1 MiB.");
         if (Lz4Level is < 1 or > 12) throw new FsException("The LZ4HC level must be between 1 and 12.");
@@ -187,7 +206,7 @@ internal static class ErofsFormat
     public const int MinLzmaDictionary = 4096, MaxLzmaDictionary = 8 << 20;
 
     public const uint CompatSbChecksum = 0x1, CompatMtime = 0x2, CompatXattrFilter = 0x4,
-        CompatSharedEaInMetabox = 0x8, CompatPlainXattrPrefixes = 0x10;
+        CompatSharedEaInMetabox = 0x8, CompatPlainXattrPrefixes = 0x10, CompatIshareXattrs = 0x20;
 
     public const uint IncompatZeroPadding = 0x1, IncompatComprCfgs = 0x2, IncompatChunkedFile = 0x4,
         IncompatDeviceTable = 0x8, IncompatZtailpacking = 0x10, IncompatFragments = 0x20,
@@ -195,7 +214,7 @@ internal static class ErofsFormat
 
     /// <summary>Everything the reader understands; any other bit makes the image unreadable for it.</summary>
     public const uint IncompatSupported = IncompatZeroPadding | IncompatComprCfgs | IncompatChunkedFile | IncompatDeviceTable |
-        IncompatZtailpacking | IncompatFragments | IncompatXattrPrefixes;
+        IncompatZtailpacking | IncompatFragments | IncompatXattrPrefixes | Incompat48Bit | IncompatMetabox;
 
     public const int LayoutFlatPlain = 0, LayoutCompressedFull = 1, LayoutFlatInline = 2, LayoutCompressedCompact = 3, LayoutChunkBased = 4;
 
@@ -216,7 +235,13 @@ internal static class ErofsFormat
 
     public const int PartialRef = 1 << 15;
 
-    public const int ChunkBlkBitsMask = 0x1F, ChunkIndexes = 0x20;
+    public const int ChunkBlkBitsMask = 0x1F, ChunkIndexes = 0x20, Chunk48Bit = 0x40;
+
+    /// <summary>A full index made of extent records (mkfs.erofs 1.9); the record size is in the two bits above.</summary>
+    public const int AdviseExtents = 0x1;
+
+    public const uint ExtentLengthMask = (MaxPclusterSize << 1) - 1, ExtentPartial = 1u << 27;
+    public const int ExtentFormatBit = 28;
     public const uint NullAddr = 0xFFFFFFFF;
 
     public const int DirentSize = 12;

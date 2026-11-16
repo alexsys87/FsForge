@@ -47,8 +47,9 @@ internal static class Program
           container=0|1                                 write the filesystem alone / the whole disk image
           format=squashfs|erofs|ext2|ext3|ext4|ubifs|jffs2|fat|tar  default: by output extension, else the source format
           verify=none|structure|content                 default: structure
+          threads=<n>                                   compression threads (SquashFS, EROFS, tar.xz); default: one per processor
           squashfs: comp=gzip|xz|lz4|zstd block=<bytes> level=<n> effort=0..2 bcj=x86|arm|... nofrag=1 dedup=0 allroot=1
-          erofs:    comp=none|lz4|lz4hc|lzma pcluster=<bytes> level=1..12 (lz4hc) effort=0..2 (lzma) dict=<bytes>
+          erofs:    comp=none|lz4|lz4hc|lzma|deflate|zstd pcluster=<bytes> level=1..12 (lz4hc), 1..9 (deflate), 1..22 (zstd) effort=0..2 (lzma) dict=<bytes>
                     inline=0|1 dedup=0 xattrs=0|1 sharexattrs=0|1 allroot=1 label=<text> uuid=<uuid> time=<unix time>
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
@@ -101,6 +102,7 @@ internal static class Program
                 case "pack": return Pack(args);
                 case "selftest": return SelfTest.Run(args.Length > 1 ? args[1] : null);
                 case "xztest": return XzTest(args);
+                case "lz4test": return Lz4Test(args);
                 case "blocktest": return BlockTest(args);
                 // Positional forms kept for the verification scripts.
                 case "sqrepack": return Convert(Positional(args, "squashfs", "comp", "block", "effort", "bcj"));
@@ -114,6 +116,9 @@ internal static class Program
         catch (FsException ex)
         {
             Console.Error.WriteLine("error: " + ex.Message);
+            // A failure the reader did not anticipate: its origin, for the one who looks into it.
+            if (ex is FsUnexpectedException && Environment.GetEnvironmentVariable("FSFORGE_DEBUG") is not null)
+                Console.Error.WriteLine(ex.InnerException);
             return 1;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException or ArgumentException)
@@ -322,6 +327,7 @@ internal static class Program
             switch (key.ToLowerInvariant())
             {
                 case "format" or "verify" or "container" or "ubi": break;
+                case "threads": s.SquashFs.Threads = s.Tar.Threads = s.Erofs.Threads = int.Parse(value); break;
                 case "comp":
                     if (s.Format == ImageFormat.Tar) s.Tar.Compression = Enum.Parse<ArchiveCompression>(value, true);
                     else if (s.Format == ImageFormat.Ubifs) s.Ubifs.Compression = Enum.Parse<UbifsCompression>(value, true);
@@ -334,6 +340,8 @@ internal static class Program
                     s.SquashFs.GzipLevel = s.Tar.GzipLevel = Math.Clamp(int.Parse(value), 1, 9);
                     s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = int.Parse(value);
                     s.Erofs.Lz4Level = Math.Clamp(int.Parse(value), 1, 12);
+                    s.Erofs.ZstdLevel = Math.Clamp(int.Parse(value), 1, 22);
+                    s.Erofs.DeflateLevel = Math.Clamp(int.Parse(value), 1, 9);
                     break;
                 case "effort": s.SquashFs.XzEffort = s.Tar.XzEffort = s.Erofs.LzmaEffort = int.Parse(value); break;
                 case "bcj": s.SquashFs.XzFilters.Add(Enum.Parse<BcjFilter>(value, true)); break;
@@ -541,6 +549,32 @@ internal static class Program
             total += n;
         }
         Console.WriteLine($"{data.Length} -> {total} ({100.0 * total / Math.Max(1, data.Length):F2}%)");
+        return 0;
+    }
+
+    // lz4test <file> [level] [cluster] : compresses a file into clusters of a fixed size as EROFS does (one thread)
+    // and checks every cluster with the decoder; prints the ratio and the speed.
+    private static int Lz4Test(string[] a)
+    {
+        byte[] data = File.ReadAllBytes(a[1]);
+        int level = a.Length > 2 ? int.Parse(a[2]) : 9, cluster = a.Length > 3 ? int.Parse(a[3]) : 4096;
+        var lz4 = new Lz4FixedEncoder(level);
+        byte[] dst = new byte[cluster], back = new byte[4 << 20];
+        var sw = Stopwatch.StartNew();
+        long packed = 0, clusters = 0;
+        for (int pos = 0; pos < data.Length;)
+        {
+            int window = Math.Min(data.Length - pos, cluster * 4);
+            int n = lz4.Compress(data.AsSpan(pos, window), dst, out int taken);
+            if (n <= 0 || taken <= 0) throw new FsException($"nothing was compressed at {pos}");
+            if (Lz4FixedEncoder.Decompress(dst.AsSpan(0, n), back.AsSpan(0, taken)) != taken || !back.AsSpan(0, taken).SequenceEqual(data.AsSpan(pos, taken)))
+                throw new FsException($"LZ4 round trip failed at {pos}");
+            packed += (n + 4095) & ~4095;
+            clusters++;
+            pos += taken;
+        }
+        double s = sw.Elapsed.TotalSeconds;
+        Console.WriteLine($"{data.Length} -> {packed} ({100.0 * packed / Math.Max(1, data.Length):F2}%) in {clusters} clusters, {s:F2} s, {data.Length / s / 1048576:F0} MiB/s");
         return 0;
     }
 

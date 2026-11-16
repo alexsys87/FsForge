@@ -5,22 +5,29 @@
 #                zstd; clusters of 4 KiB to 1 MiB; compact and full cluster indexes; tails next to the inode
 #                (ztailpacking), fragments in the packed inode, deduplicated clusters; chunk-based files;
 #                blocks of 1 to 4 KiB; short and long inodes; shared attributes and long attribute name
-#                prefixes. Images written by FsForge are checked by fsck.erofs (which unpacks every file),
-#                mounted by the kernel and compared entry by entry with the source tree; a disk image with
-#                an EROFS root partition is edited in place.
+#                prefixes; with mkfs.erofs 1.9 also the 48-bit layout (extent records), the metabox and
+#                directories without ".". Images written by FsForge (every compression method) are checked by
+#                fsck.erofs (which unpacks every file), mounted by the kernel and compared entry by entry with
+#                the source tree; a disk image with an EROFS root partition is edited in place.
 #
-# erofs-utils 1.7 is enough; with a newer mkfs.erofs more variants are made (zstd, -Eall-fragments).
-# A second set of tools can be given in EROFS_UTILS (a folder with mkfs.erofs and fsck.erofs): its images
-# are read as well, and its fsck.erofs checks what FsForge writes.
+# erofs-utils 1.7 is enough; with a newer mkfs.erofs more variants are made (zstd, -Eall-fragments, 1.9
+# layouts). More sets of tools can be given in EROFS_UTILS (folders with mkfs.erofs and fsck.erofs, separated
+# by ":"): their images are read as well, and their fsck.erofs checks what FsForge writes. An image of a compression method
+# that an fsck.erofs or the kernel cannot read (zstd before erofs-utils 1.8 or Linux 6.10, deflate before
+# Linux 6.6) is checked by the others only.
 
-erofs_tools() { # the folders that hold mkfs.erofs: the system one, and $EROFS_UTILS
+erofs_tools() { # the folders that hold mkfs.erofs: the system one, and those of $EROFS_UTILS
   command -v mkfs.erofs >/dev/null && dirname "$(command -v mkfs.erofs)"
-  [ -n "${EROFS_UTILS:-}" ] && [ -x "$EROFS_UTILS/mkfs.erofs" ] && echo "$EROFS_UTILS"
+  local d; local IFS=:
+  for d in ${EROFS_UTILS:-}; do [ -x "$d/mkfs.erofs" ] && [ -x "$d/fsck.erofs" ] && echo "$d"; done
+  return 0
 }
+
+erofs_ver() { "$1/fsck.erofs" -V 2>&1 | sed -n 's/^fsck.erofs[^0-9]*\([0-9][0-9.]*\).*/\1/p' | head -1; }
 
 erofs_mk() { # tools-dir tree|changed name mkfs-options... : an image made by mkfs.erofs, read by FsForge
   local dir=$1 kind=$2 n=$3; shift 3
-  local v; v=$("$dir/fsck.erofs" -V 2>&1 | sed -n 's/^fsck.erofs[^0-9]*\([0-9][0-9.]*\).*/\1/p' | head -1)
+  local v; v=$(erofs_ver "$dir")
   local id=m${v}_$n
   local img=erofs/img/$id.erofs ref=tree.ref
   rm -f $img
@@ -34,7 +41,7 @@ erofs_mk() { # tools-dir tree|changed name mkfs-options... : an image made by mk
   # What the kernel sees in the image is the reference. (mkfs.erofs 1.7 loses the holes of chunk-based files
   # and makes unreadable images with compressed blocks below 4 KiB; some options change owners and times.)
   if mount -o loop,ro $img mnt 2> erofs/out/km.$id.err; then
-    if python3 scan.py mnt > erofs/out/ref.$id.txt 2> erofs/out/ks.$id.err; then umount mnt; ref=erofs/out/ref.$id.txt
+    if python3 scan.py mnt > erofs/out/ref.$id.txt 2> erofs/out/ks.$id.err; then umount mnt; ref=erofs/out/ref.$id.txt; touch erofs/out/k.$id.ok
     else umount mnt; rm -f $img erofs/out/ref.$id.txt; echo "  skip  mkfs.erofs $v $n (the kernel cannot read what this mkfs.erofs made)"; return; fi
   elif [ $kind = changed ]; then rm -f $img; echo "  skip  mkfs.erofs $v $n (the kernel does not mount it: $(head -c 80 erofs/out/km.$id.err))"; return
   else cp $ref erofs/out/ref.$id.txt; fi
@@ -46,8 +53,13 @@ erofs_wr() { # name source ref fsforge-options... : an image written by FsForge,
   local n=$1 src=$2 ref=$3; shift 3
   local img=erofs/img/w_$n.erofs
   if ! $F convert $src $img format=erofs verify=content "$@" 2> erofs/out/w.$n.err; then bad "write erofs $n: $(cat erofs/out/w.$n.err)"; return; fi
-  local r0=1 r1 dir
+  # zstd and deflate are checked by the tools and the kernel that read the images mkfs.erofs made with them.
+  local alg; alg=$($F dump $img 2>&1 >/dev/null | sed -n 's/^erofs .* comp=\([A-Za-z0-9]*\) .*/\1/p' | tr 'A-Z' 'a-z')
+  case $alg in zstd|deflate) ;; *) alg=;; esac
+  local r0=1 r1 dir checked=0
   for dir in $(erofs_tools); do
+    [ -n "$alg" ] && [ ! -f erofs/img/m$(erofs_ver "$dir")_$alg.erofs ] && continue
+    checked=$((checked + 1))
     # --extract makes fsck.erofs unpack (and so decompress) every file.
     rm -rf erofs/x; "$dir/fsck.erofs" --extract=erofs/x $img > erofs/out/fsck.$n.txt 2>&1 || r0=0
     [ $r0 = 1 ] && { python3 scan.py erofs/x | cut -f1,2,7 | grep -v "^/dev/sock\|^/	" > erofs/out/x.$n.txt
@@ -55,7 +67,9 @@ erofs_wr() { # name source ref fsforge-options... : an image written by FsForge,
     rm -rf erofs/x
   done
   local by="fsck.erofs"
-  if [ "$EROFS_KERNEL" = 1 ]; then by="fsck.erofs + kernel"; kmount "erofs_$n" $img $ref && r1=1 || r1=0; else r1=1; fi
+  [ $checked = 0 ] && by="no fsck.erofs reads $alg"
+  if [ "$EROFS_KERNEL" = 1 ] && { [ -z "$alg" ] || ls erofs/out/k.m*_$alg.ok >/dev/null 2>&1; }; then by="$by + kernel"; kmount "erofs_$n" $img $ref && r1=1 || r1=0
+  else r1=1; [ -n "$alg" ] && by="$by; the kernel has no $alg"; fi
   EROFS_WRITTEN="$EROFS_WRITTEN $img"
   [ $r0 = 1 ] && [ $r1 = 1 ] && ok "write erofs $n ($(stat -c %s $img) bytes; $by)" || { bad "write erofs $n: fsck.erofs=$r0 kernel=$r1"; tail -3 erofs/out/fsck.$n.txt | cut -c1-200; }
 }
@@ -103,6 +117,22 @@ erofs_run() {
     erofs_mk $dir changed noxattr -zlz4hc -x-1
     printf '%s\n' '4096 1 bin/.*' '65536 0 f[0-9]*' > erofs/hints
     erofs_mk $dir tree twoalgs -zlz4hc:lzma -C65536 --compress-hints=erofs/hints
+    # mkfs.erofs 1.9: the 48-bit layout (extent records of 4, 8, 16 bytes), the metabox, directories without "."
+    erofs_mk $dir tree b48 -E48bit
+    erofs_mk $dir tree b48_lz4hc -E48bit -zlz4hc
+    erofs_mk $dir tree b48_lzma_64k -E48bit -zlzma -C65536
+    erofs_mk $dir tree b48_lzma_1m -E48bit -zlzma -C1048576
+    erofs_mk $dir tree b48_zstd -E48bit -zzstd
+    erofs_mk $dir tree b48_fragdedupe -E48bit -zlz4hc -Efragments,dedupe
+    erofs_mk $dir tree b48_ztail -E48bit -zlz4hc -Eztailpacking
+    erofs_mk $dir tree b48_chunks -E48bit --chunksize=4096
+    erofs_mk $dir tree metabox -zlz4hc -m4096
+    erofs_mk $dir tree metabox_lzma -zlzma -m4096
+    erofs_mk $dir tree metabox_two -zlz4hc:lzma -m4096:1
+    erofs_mk $dir tree metabox_prefix -zlz4hc -m4096 --xattr-prefix=security.selinux
+    erofs_mk $dir tree metabox_frag -zlz4hc -m4096 -Efragments,dedupe -x1
+    erofs_mk $dir tree dot_omitted -zlz4hc -Edot-omitted
+    erofs_mk $dir tree plain_prefix -zlz4hc -Eplain-xattr-prefixes --xattr-prefix=user.
   done
 
   echo "EROFS: images written by FsForge"
@@ -119,6 +149,10 @@ erofs_run() {
   erofs_wr lz4hc_1m $first $ref comp=lz4hc pcluster=1048576
   erofs_wr lzma_64k $first $ref comp=lzma pcluster=65536
   erofs_wr lzma_1m $first $ref comp=lzma pcluster=1048576 effort=0
+  erofs_wr deflate $first $ref comp=deflate
+  erofs_wr deflate_64k_l1 $first $ref comp=deflate pcluster=65536 level=1
+  erofs_wr zstd $first $ref comp=zstd
+  erofs_wr zstd_1m_l9 $first $ref comp=zstd pcluster=1048576 level=9
   erofs_wr noinline $first $ref comp=lz4hc inline=0
   erofs_wr nodedup $first $ref comp=lz4hc dedup=0
   erofs_wr noshare $first $ref comp=lz4 sharexattrs=0
@@ -130,7 +164,8 @@ erofs_run() {
   erofs_wr same_lzma erofs/img/w_lzma_64k.erofs $ref
   $F dump erofs/img/w_same_lzma.erofs 2>&1 >/dev/null | grep -q "comp=Lzma pcluster=65536" && ok "an EROFS image is saved again with its compression and cluster size" \
     || bad "settings were not kept: $($F dump erofs/img/w_same_lzma.erofs 2>&1 >/dev/null | tail -1)"
-  local m; for m in erofs/img/m*_zstd.erofs erofs/img/m*_everything.erofs erofs/img/m*_bs1k.erofs erofs/img/m*_chunks_4k.erofs; do
+  local m; for m in erofs/img/m*_zstd.erofs erofs/img/m*_everything.erofs erofs/img/m*_bs1k.erofs erofs/img/m*_chunks_4k.erofs \
+                    erofs/img/m*_b48_lzma_64k.erofs erofs/img/m*_metabox_two.erofs; do
     [ -f $m ] && erofs_wr "same_$(basename $m .erofs)" $m erofs/out/ref.$(basename $m .erofs).txt; done
 
   # The other way round: what FsForge wrote, converted to the other formats, still is the same tree.

@@ -626,6 +626,8 @@ internal static partial class SelfTest
             ("erofs lz4hc", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Lz4Level = 3 } }),
             ("erofs lzma 16k", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Lzma, LzmaEffort = 0, PclusterSize = 16384 } }),
             ("erofs uncompressed", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.None } }),
+            ("erofs zstd", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Zstd, PclusterSize = 16384 } }),
+            ("erofs deflate", new SaveOptions { Format = ImageFormat.Erofs, Erofs = new ErofsOptions { Compression = ErofsCompression.Deflate } }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 

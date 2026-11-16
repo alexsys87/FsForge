@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.IO.Compression;
 using System.Security.Cryptography;
 using FsForge.Core.Compression;
 using FsForge.Core.Ext;
@@ -35,7 +36,9 @@ public sealed class ErofsWriter
     private readonly int _pclusterSize, _segmentSize, _algorithm, _dictionary;
     private readonly ConcurrentBag<Codec> _codecs = new();
     private readonly Queue<Pending> _queue = new();
-    private readonly int _maxPending;
+    private readonly int _maxTasks;
+    private readonly SemaphoreSlim _workers;        // at most this many pieces are compressed at a time
+    private int _tasks;                             // compression tasks in the queue
     private readonly Dictionary<ContentKey, FileLayout> _dedup = new();
     private static readonly byte[] Zeros = new byte[Blk];
 
@@ -105,21 +108,106 @@ public sealed class ErofsWriter
     private readonly record struct SegmentResult(byte[] Data, int Length, ExtentRecord[] Extents);
 
     /// <summary>The compressor of one worker.</summary>
-    private sealed class Codec(ErofsOptions o, int dictionary)
+    private sealed class Codec : IDisposable
     {
-        private readonly Lz4FixedEncoder? _lz4 = o.Compression == ErofsCompression.Lzma ? null
-            : new Lz4FixedEncoder(o.Compression == ErofsCompression.Lz4 ? 1 : o.Lz4Level);
-        private readonly Lzma2Encoder? _lzma = o.Compression == ErofsCompression.Lzma ? new Lzma2Encoder(LzmaEncoderSettings.FromEffort(o.LzmaEffort)) : null;
+        private readonly Lz4FixedEncoder? _lz4;
+        private readonly Lzma2Encoder? _lzma;
+        private readonly int _deflateLevel = -1;
+        private readonly MemoryStream _deflated = new();
+        private readonly ZstdSharp.Compressor? _zstd;
+        private readonly int _dictionary;
+        private byte[] _fit = Array.Empty<byte>();
+        private long _lastFit;              // how much input the previous cluster took: neighbours compress alike
 
-        public byte[] Scratch { get; } = new byte[o.PclusterSize];
+        public Codec(ErofsOptions o, int dictionary)
+        {
+            _dictionary = dictionary;
+            Scratch = new byte[o.PclusterSize];
+            switch (o.Compression)
+            {
+                case ErofsCompression.Lzma:
+                    _lzma = new Lzma2Encoder(LzmaEncoderSettings.FromEffort(o.LzmaEffort));
+                    break;
+                case ErofsCompression.Deflate:
+                    _deflateLevel = o.DeflateLevel;
+                    break;
+                case ErofsCompression.Zstd:
+                    _zstd = new ZstdSharp.Compressor(o.ZstdLevel);
+                    // The kernel refuses a frame whose window is larger than the one the superblock announces.
+                    _zstd.SetParameter(ZstdSharp.Unsafe.ZSTD_cParameter.ZSTD_c_windowLog, System.Numerics.BitOperations.Log2((uint)dictionary));
+                    break;
+                default:
+                    _lz4 = new Lz4FixedEncoder(o.Compression == ErofsCompression.Lz4 ? 1 : o.Lz4Level);
+                    break;
+            }
+        }
+
+        public byte[] Scratch { get; }
+
+        /// <summary>DEFLATE and Zstandard compress a whole input: the input is searched for, see <see cref="Fit"/>.</summary>
+        public bool Searches => _deflateLevel >= 0 || _zstd is not null;
 
         /// <summary>Fills <see cref="Scratch"/> with as much of the input as fits; returns the compressed size.</summary>
         public int Compress(ReadOnlySpan<byte> src, out int consumed)
         {
             if (_lz4 is not null) return _lz4.Compress(src, Scratch, out consumed);
-            int n = _lzma!.EncodeMicroLzma(src, Scratch, dictionary, out consumed);
-            return Math.Max(n, 0);
+            if (_lzma is not null) return Math.Max(_lzma.EncodeMicroLzma(src, Scratch, _dictionary, out consumed), 0);
+            int size = Fit(src, out consumed);
+            // A DEFLATE stream that starts with a stored block may start with a zero byte, which would be taken
+            // for padding; its unused bits are set instead (as mkfs.erofs does).
+            if (size > 0 && _deflateLevel >= 0 && Scratch[0] == 0) Scratch[0] = 1 << 3;
+            return size;
         }
+
+        /// <summary>
+        /// A long beginning of the input whose compressed form fits into the cluster (the search of mkfs.erofs):
+        /// the length the previous cluster took, a guess from the ratio, then halving between what fits and
+        /// what does not, until the two are less than 1 % apart.
+        /// </summary>
+        private int Fit(ReadOnlySpan<byte> src, out int consumed)
+        {
+            int cap = Scratch.Length;
+            if (_fit.Length < cap + 64) _fit = new byte[cap + 64];
+            long fits = 0, tooLong = (long)src.Length + 1;
+            int best = 0;
+            long m = _lastFit > 0 ? _lastFit * 15 / 16 : cap * 4L;
+            while (true)
+            {
+                m = Math.Min(Math.Max(m, fits + 1), tooLong - 1);
+                int size = Once(src[..(int)m]);
+                if (size > 0 && size <= cap)
+                {
+                    _fit.AsSpan(0, size).CopyTo(Scratch);
+                    fits = m;
+                    best = size;
+                    if (tooLong - fits <= Math.Max(1, fits >> 7) || size + 32 >= cap) break;
+                    // The guess from the ratio stays below what does not fit.
+                    m = Math.Min(cap * m / size, fits + (tooLong - fits) * 3 / 4);
+                }
+                else
+                {
+                    tooLong = m;
+                    if (tooLong - fits <= Math.Max(1, fits >> 7)) break;
+                    m = (fits + tooLong) / 2;
+                }
+            }
+            if (fits > 0) _lastFit = fits;
+            consumed = (int)fits;
+            return best;
+        }
+
+        private int Once(ReadOnlySpan<byte> src)
+        {
+            if (_zstd is not null) return _zstd.TryWrap(src, _fit, out int written) ? written : -1;
+            // zlib of the runtime: a bare stream with the 32 KiB window the kernel inflates with.
+            _deflated.SetLength(0);
+            using (DeflateStream d = ZLibLevels.OpenDeflate(_deflated, _deflateLevel, leaveOpen: true)) d.Write(src);
+            if (_deflated.Length > _fit.Length) return -1;
+            _deflated.GetBuffer().AsSpan(0, (int)_deflated.Length).CopyTo(_fit);
+            return (int)_deflated.Length;
+        }
+
+        public void Dispose() => _zstd?.Dispose();
     }
 
     // ------------------------------------------------------------------ setup
@@ -137,12 +225,20 @@ public sealed class ErofsWriter
         _compress = options.Compression != ErofsCompression.None;
         _pclusterSize = options.PclusterSize;
         _big = _compress && _pclusterSize > Blk;
-        _algorithm = options.Compression == ErofsCompression.Lzma ? AlgLzma : AlgLz4;
-        _dictionary = options.EffectiveLzmaDictionary;
+        _algorithm = options.Compression switch
+        {
+            ErofsCompression.Lzma => AlgLzma,
+            ErofsCompression.Deflate => AlgDeflate,
+            ErofsCompression.Zstd => AlgZstd,
+            _ => AlgLz4,
+        };
+        _dictionary = options.Compression == ErofsCompression.Zstd ? options.EffectiveZstdWindow : options.EffectiveLzmaDictionary;
         // Clusters never cross a segment, so that the segments of a file can be compressed side by side.
         _segmentSize = Math.Clamp(_pclusterSize * 32, 4 << 20, 16 << 20);
         int threads = options.Threads > 0 ? options.Threads : Environment.ProcessorCount;
-        _maxPending = Math.Max(2, threads * 2);
+        // Every worker gets a few pieces ahead; the markers between them (start and end of a file) cost nothing.
+        _maxTasks = Math.Max(2, threads * 4);
+        _workers = new SemaphoreSlim(threads, threads);
     }
 
     /// <summary>Writes the image at the current position of <paramref name="output"/> (must be seekable).</summary>
@@ -158,11 +254,13 @@ public sealed class ErofsWriter
         }
         finally
         {
+            while (w._codecs.TryTake(out Codec? c)) c.Dispose();
             foreach (Pending p in w._queue)
             {
                 try { p.Task?.Wait(); } catch { /* the first error is the one reported */ }
             }
             w._spool?.Dispose();
+            w._workers.Dispose();
         }
         return w.Warnings;
     }
@@ -283,15 +381,26 @@ public sealed class ErofsWriter
         {
             // A record per compression method: its length, then its parameters.
             Span<byte> cfg = sb[SuperSize..];
-            Le.W16(cfg, 0, 14);
-            if (_algorithm == AlgLz4)
+            switch (_algorithm)
             {
-                Le.W16(cfg, 2, 0xFFFF);                         // the longest match distance
-                Le.W16(cfg, 4, _pclusterSize >> BlkBits);
-            }
-            else
-            {
-                Le.W32(cfg, 2, (uint)_dictionary);
+                case AlgLz4:
+                    Le.W16(cfg, 0, 14);
+                    Le.W16(cfg, 2, 0xFFFF);                     // the longest match distance
+                    Le.W16(cfg, 4, _pclusterSize >> BlkBits);
+                    break;
+                case AlgLzma:
+                    Le.W16(cfg, 0, 14);
+                    Le.W32(cfg, 2, (uint)_dictionary);
+                    break;
+                case AlgDeflate:
+                    Le.W16(cfg, 0, 6);
+                    cfg[2] = 15;                                // window bits
+                    break;
+                default:
+                    Le.W16(cfg, 0, 6);
+                    cfg[2] = 0;                                 // format
+                    cfg[3] = (byte)(System.Numerics.BitOperations.Log2((uint)_dictionary) - 10);   // window log - 10
+                    break;
             }
         }
         Le.W32(sb, 4, ExtJournal.Crc32c(~0u, sb));
@@ -422,9 +531,10 @@ public sealed class ErofsWriter
 
     private void Enqueue(Pending p)
     {
-        while (_queue.Count >= _maxPending || (_pendingBytes > PendingBytesLimit && _queue.Count > 0)) Drain();
+        while (_queue.Count > 0 && ((p.Task is not null && _tasks >= _maxTasks) || _pendingBytes > PendingBytesLimit)) Drain();
         _queue.Enqueue(p);
         _pendingBytes += p.Bytes;
+        if (p.Task is not null) _tasks++;
     }
 
     private void DrainAll()
@@ -437,6 +547,7 @@ public sealed class ErofsWriter
     {
         Pending p = _queue.Dequeue();
         _pendingBytes -= p.Bytes;
+        if (p.Task is not null) _tasks--;
         FileLayout layout = p.Layout!;
         if (p.Start)
         {
@@ -517,7 +628,7 @@ public sealed class ErofsWriter
                 for (int offset = 0; offset < size; offset += _segmentSize)
                 {
                     int start = offset, length = (int)Math.Min(_segmentSize, size - offset);
-                    Enqueue(new Pending { Layout = layout, Task = Task.Run(() => CompressSegment(content, start, length)) });
+                    Enqueue(new Pending { Layout = layout, Task = StartCompression(content, start, length) });
                 }
                 // The content stays with the queue: the file may still turn out not to be worth compressing.
                 Enqueue(new Pending { Layout = layout, End = true, Item = item, Content = content, Bytes = size });
@@ -575,7 +686,7 @@ public sealed class ErofsWriter
                 ArrayPool<byte>.Shared.Return(buffer);
                 throw;
             }
-            Enqueue(new Pending { Layout = layout, Buffer = buffer, Bytes = length, Task = Task.Run(() => CompressSegment(buffer, 0, length)) });
+            Enqueue(new Pending { Layout = layout, Buffer = buffer, Bytes = length, Task = StartCompression(buffer, 0, length) });
             left -= length;
             _bytesDone += length;
             Report("data", null);
@@ -659,6 +770,20 @@ public sealed class ErofsWriter
         return _spool.Append(new MemoryStream(copy, writable: false), copy.Length);
     }
 
+    /// <summary>Compresses a piece of a file on a worker as soon as one of the allowed workers is free.</summary>
+    private Task<SegmentResult> StartCompression(byte[] buffer, int offset, int length) => Task.Run(async () =>
+    {
+        await _workers.WaitAsync(_ct).ConfigureAwait(false);
+        try
+        {
+            return CompressSegment(buffer, offset, length);
+        }
+        finally
+        {
+            _workers.Release();
+        }
+    });
+
     /// <summary>
     /// Compresses a piece of a file into clusters. A cluster takes as much data as fits into it; data that
     /// does not shrink is stored as plain blocks.
@@ -673,7 +798,8 @@ public sealed class ErofsWriter
         {
             int pos = 0, op = 0;
             // How much input a cluster is offered at first; more follows when all of it fitted.
-            int firstWindow = _pclusterSize * (_algorithm == AlgLzma ? 8 : 4);
+            // DEFLATE and Zstandard search the length themselves and get everything at once.
+            int firstWindow = codec.Searches ? MaxExtentBytes : _pclusterSize * (_algorithm == AlgLzma ? 8 : 4);
             while (pos < length)
             {
                 int remaining = length - pos;

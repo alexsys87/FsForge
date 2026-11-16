@@ -67,6 +67,8 @@ public static class OptionLists
     {
         new Choice<ErofsCompression>(ErofsCompression.Lz4Hc, L.T("lz4hc — быстрая распаковка, сжатие плотнее lz4")),
         new Choice<ErofsCompression>(ErofsCompression.Lzma, L.T("lzma — лучшее сжатие (Linux 5.16 и новее)")),
+        new Choice<ErofsCompression>(ErofsCompression.Zstd, L.T("zstd — плотно и быстро (Linux 6.10 и новее)")),
+        new Choice<ErofsCompression>(ErofsCompression.Deflate, L.T("deflate — Linux 6.6 и новее")),
         new Choice<ErofsCompression>(ErofsCompression.Lz4, L.T("lz4 — самая быстрая запись")),
         new Choice<ErofsCompression>(ErofsCompression.None, L.T("без сжатия")),
     };
@@ -395,7 +397,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     private void RaiseCompression()
     {
         foreach (string p in new[] { nameof(ShowXz), nameof(ShowGzip), nameof(ShowZstd), nameof(ShowBcj), nameof(TarStoresXattrs),
-                     nameof(ShowErofsCluster), nameof(ShowErofsLz4Level), nameof(ShowErofsLzma), nameof(ErofsNote), nameof(HasErofsNote) }) OnPropertyChanged(p);
+                     nameof(ShowErofsCluster), nameof(ShowErofsLz4Level), nameof(ShowErofsLzma), nameof(ShowErofsZstd), nameof(ShowErofsDeflate),
+                     nameof(ErofsNote), nameof(HasErofsNote) }) OnPropertyChanged(p);
     }
 
     public bool ShowXz => (IsSquash && _o.SquashFs.Compression == SquashCompression.Xz) || (IsTar && _o.Tar.Compression == ArchiveCompression.Xz);
@@ -458,6 +461,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     public int ErofsLz4Level { get => _o.Erofs.Lz4Level; set { _o.Erofs.Lz4Level = value; OnPropertyChanged(); } }
     public int ErofsLzmaEffort { get => _o.Erofs.LzmaEffort; set { _o.Erofs.LzmaEffort = value; OnPropertyChanged(); } }
+    public int ErofsZstdLevel { get => _o.Erofs.ZstdLevel; set { _o.Erofs.ZstdLevel = value; OnPropertyChanged(); } }
+    public int ErofsDeflateLevel { get => _o.Erofs.DeflateLevel; set { _o.Erofs.DeflateLevel = value; OnPropertyChanged(); } }
     public bool ErofsInlineData { get => _o.Erofs.InlineData; set { _o.Erofs.InlineData = value; OnPropertyChanged(); } }
     public bool ErofsDeduplicate { get => _o.Erofs.Deduplicate; set { _o.Erofs.Deduplicate = value; OnPropertyChanged(); } }
     public bool ErofsShareXattrs { get => _o.Erofs.ShareXattrs; set { _o.Erofs.ShareXattrs = value; OnPropertyChanged(); } }
@@ -468,6 +473,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool ShowErofsCluster => IsErofs && _o.Erofs.Compression != ErofsCompression.None;
     public bool ShowErofsLz4Level => IsErofs && _o.Erofs.Compression == ErofsCompression.Lz4Hc;
     public bool ShowErofsLzma => IsErofs && _o.Erofs.Compression == ErofsCompression.Lzma;
+    public bool ShowErofsZstd => IsErofs && _o.Erofs.Compression == ErofsCompression.Zstd;
+    public bool ShowErofsDeflate => IsErofs && _o.Erofs.Compression == ErofsCompression.Deflate;
 
     /// <summary>What the chosen method and cluster size ask of the kernel.</summary>
     public string ErofsNote
@@ -478,6 +485,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             bool big = _o.Erofs.PclusterSize > 4096;
             if (_o.Erofs.Compression == ErofsCompression.Lzma)
                 return L.T("Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. LZMA читает ядро Linux 5.16 и новее с CONFIG_EROFS_FS_ZIP_LZMA.");
+            if (_o.Erofs.Compression == ErofsCompression.Zstd)
+                return L.T("Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. Zstandard читает ядро Linux 6.10 и новее с CONFIG_EROFS_FS_ZIP_ZSTD; высокие уровни сжимают заметно медленнее.");
+            if (_o.Erofs.Compression == ErofsCompression.Deflate)
+                return L.T("Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. DEFLATE читает ядро Linux 6.6 и новее с CONFIG_EROFS_FS_ZIP_DEFLATE.");
             return big
                 ? L.T("Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. Кластеры больше 4 КБ читает ядро Linux 5.13 и новее.")
                 : L.T("Кластер распаковывается целиком: чем он больше, тем плотнее сжатие и медленнее чтение. Кластеры по 4 КБ читает любое ядро с поддержкой EROFS.");
