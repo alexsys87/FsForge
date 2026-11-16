@@ -119,8 +119,7 @@ public static class ArchiveCodec
 
     public static Stream OpenCompressor(Stream output, TarOptions o) => o.Compression switch
     {
-        ArchiveCompression.Gzip => new GZipStream(output,
-            new ZLibCompressionOptions { CompressionLevel = Math.Clamp(o.GzipLevel, 1, 9) }, leaveOpen: true),
+        ArchiveCompression.Gzip => Compression.ZLibLevels.OpenGZip(output, Math.Clamp(o.GzipLevel, 1, 9), leaveOpen: true),
         ArchiveCompression.Xz => new XzOutputStream(output, o.XzEffort, 1 << 22, o.Threads, leaveOpen: true),
         ArchiveCompression.Zstd => new ZstdSharp.CompressionStream(output, Math.Clamp(o.ZstdLevel, 1, 22), leaveOpen: true),
         _ => new PassThroughStream(output),

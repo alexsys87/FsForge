@@ -62,8 +62,7 @@ public sealed class ZlibCodec : IBlockCodec
     public int Compress(ReadOnlySpan<byte> src, Span<byte> dst)
     {
         using var ms = new MemoryStream(src.Length / 2 + 64);
-        var options = new ZLibCompressionOptions { CompressionLevel = _level };
-        using (var z = new ZLibStream(ms, options, leaveOpen: true))
+        using (var z = ZLibLevels.OpenZLib(ms, _level, leaveOpen: true))
             z.Write(src);
         if (ms.Length > dst.Length) return -1;
         ms.GetBuffer().AsSpan(0, (int)ms.Length).CopyTo(dst);

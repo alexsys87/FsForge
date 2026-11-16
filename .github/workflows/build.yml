@@ -11,50 +11,57 @@ permissions:
 
 jobs:
   build:
-    name: WPF .NET 10 / Windows x64 / MSI
+    name: WPF .NET ${{ matrix.dotnet }} / Windows x64 / MSI
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dotnet: ['8', '10']
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v5
 
+      # global.json selects SDK 10; SDK 8 also supplies the runtime for net8 tests.
       - uses: actions/setup-dotnet@v5
         with:
-          global-json-file: global.json
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
-      - name: Build solution
-        run: dotnet build FsForge.sln -c Release
+      - name: Build WPF
+        run: dotnet build src/FsForge.App -c Release -f net${{ matrix.dotnet }}.0-windows
 
       - name: Core self-test
-        run: dotnet run --project tools/FsForge.Cli -c Release --no-build -- selftest
+        run: dotnet run --project tools/FsForge.Cli -c Release -f net${{ matrix.dotnet }}.0 -- selftest
 
       - name: Application scenario tests
-        run: dotnet run --project tests/FsForge.Presentation.Tests -c Release --no-build
+        run: dotnet run --project tests/FsForge.Presentation.Tests -c Release -f net${{ matrix.dotnet }}.0
 
       - name: Check XAML bindings
         run: |
-          dotnet run --project tests/FsForge.Presentation.Tests -c Release --no-build -- --dump-properties > props.txt
+          dotnet run --project tests/FsForge.Presentation.Tests -c Release -f net${{ matrix.dotnet }}.0 --no-build -- --dump-properties > props.txt
           python tests/check-bindings.py props.txt
 
       - name: Check translations
         run: python tests/check-translations.py
 
       - name: Publish framework-dependent WPF
-        run: dotnet publish src/FsForge.App -c Release -r win-x64 --self-contained false -o publish/framework-dependent
+        run: dotnet publish src/FsForge.App -c Release -f net${{ matrix.dotnet }}.0-windows -r win-x64 --self-contained false -o publish/framework-dependent
 
       - uses: actions/upload-artifact@v6
         with:
-          name: FsForge-win-x64
+          name: FsForge-net${{ matrix.dotnet }}-win-x64
           path: publish/framework-dependent
           if-no-files-found: error
 
       - name: Publish standalone single exe
-        run: dotnet publish src/FsForge.App -p:PublishProfile=win-x64-standalone -o publish/standalone
+        run: dotnet publish src/FsForge.App -f net${{ matrix.dotnet }}.0-windows -p:PublishProfile=win-x64-standalone -o publish/standalone
 
       - uses: actions/upload-artifact@v6
         with:
-          name: FsForge-win-x64-standalone
+          name: FsForge-net${{ matrix.dotnet }}-win-x64-standalone
           path: publish/standalone/FsForge.exe
           if-no-files-found: error
 
@@ -65,23 +72,23 @@ jobs:
 
       - name: Build MSI from standalone application
         run: |
-          ./installer/Build-Msi.ps1 -PublishDirectory publish/standalone -ProductVersion "0.1.${{ github.run_number }}" -WixPath wix -OutputPath "artifacts/FsForge-win-x64.msi"
+          ./installer/Build-Msi.ps1 -PublishDirectory publish/standalone -DotNetMajor ${{ matrix.dotnet }} -ProductVersion "0.1.${{ github.run_number }}" -WixPath wix -OutputPath "artifacts/FsForge-net${{ matrix.dotnet }}-win-x64.msi"
 
       - name: Test MSI installation and removal
         run: |
-          ./installer/Test-Msi.ps1 -MsiPath "artifacts/FsForge-win-x64.msi" -PublishDirectory publish/standalone -InstallDirectory "$env:RUNNER_TEMP/FsForge-MSI" -LogDirectory artifacts/msi-logs
+          ./installer/Test-Msi.ps1 -MsiPath "artifacts/FsForge-net${{ matrix.dotnet }}-win-x64.msi" -PublishDirectory publish/standalone -InstallDirectory "$env:RUNNER_TEMP/FsForge-MSI-net${{ matrix.dotnet }}" -LogDirectory artifacts/msi-logs
 
       - name: Upload MSI logs
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: FsForge-msi-logs
+          name: FsForge-net${{ matrix.dotnet }}-msi-logs
           path: artifacts/msi-logs
           if-no-files-found: ignore
 
       - name: Upload MSI installer
         uses: actions/upload-artifact@v6
         with:
-          name: FsForge-win-x64-msi
+          name: FsForge-net${{ matrix.dotnet }}-win-x64-msi
           path: artifacts/*.msi
           if-no-files-found: error

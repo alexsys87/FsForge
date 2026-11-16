@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$PublishDirectory,
+    [Parameter(Mandatory)][ValidateSet('8', '10')][string]$DotNetMajor,
     [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.1.0',
     [string]$WixPath = 'wix',
     [string]$OutputPath
@@ -17,12 +18,15 @@ $publish = (Resolve-Path -LiteralPath $PublishDirectory).Path
 if (-not (Test-Path -LiteralPath (Join-Path $publish 'FsForge.exe') -PathType Leaf)) {
     throw 'The publish directory must contain FsForge.exe.'
 }
-if (-not $OutputPath) { $OutputPath = "artifacts/FsForge-win-x64.msi" }
+if (-not $OutputPath) { $OutputPath = "artifacts/FsForge-net$DotNetMajor-win-x64.msi" }
 $output = [IO.Path]::GetFullPath($OutputPath)
 $outputDirectory = Split-Path -Parent $output
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
-$wxsPath = Join-Path $outputDirectory "FsForge.wxs"
-$upgradeCode = '{36556991-53B2-48DE-81B4-D1EC15E89D89}'
+$wxsPath = Join-Path $outputDirectory "FsForge-net$DotNetMajor.wxs"
+$upgradeCodes = @{
+    '8' = '{C3F4CCA6-D60E-4FDF-B515-30AEA4A44E7E}'
+    '10' = '{36556991-53B2-48DE-81B4-D1EC15E89D89}'
+}
 $ns = 'http://wixtoolset.org/schemas/v4/wxs'
 $uiNs = 'http://wixtoolset.org/schemas/v4/wxs/ui'
 $doc = [xml]"<Wix xmlns='$ns' xmlns:ui='$uiNs'/>"
@@ -33,15 +37,15 @@ function Add-Element($Parent, [string]$Name, [hashtable]$Attributes = @{}) {
     return $node
 }
 function Get-StableId([string]$Prefix, [string]$RelativePath) {
-    $bytes = [Text.Encoding]::UTF8.GetBytes("fsforge/$($RelativePath.ToLowerInvariant())")
+    $bytes = [Text.Encoding]::UTF8.GetBytes("net${DotNetMajor}/$($RelativePath.ToLowerInvariant())")
     $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
     return "$Prefix$hash"
 }
 $package = Add-Element $doc.DocumentElement 'Package' @{
-    Name = "FsForge"; Manufacturer = 'FsForge'; Version = $ProductVersion
-    UpgradeCode = $upgradeCode; Scope = 'perMachine'; Language = '1033'
+    Name = "FsForge (.NET $DotNetMajor)"; Manufacturer = 'FsForge'; Version = $ProductVersion
+    UpgradeCode = $upgradeCodes[$DotNetMajor]; Scope = 'perMachine'; Language = '1033'
 }
-[void](Add-Element $package 'MajorUpgrade' @{ DowngradeErrorMessage = 'A newer version of FsForge is already installed.' })
+[void](Add-Element $package 'MajorUpgrade' @{ DowngradeErrorMessage = 'A newer version of this FsForge variant is already installed.' })
 [void](Add-Element $package 'MediaTemplate' @{ EmbedCab = 'yes' })
 [void](Add-Element $package 'Icon' @{ Id = 'FsForge.exe'; SourceFile = (Join-Path $PSScriptRoot '../src/FsForge.App/Assets/app.ico') })
 [void](Add-Element $package 'Property' @{ Id = 'ARPPRODUCTICON'; Value = 'FsForge.exe' })
@@ -62,9 +66,9 @@ $ui = Add-Element $package 'UI'
     Order = '3'; Condition = '1'
 })
 $programFiles = Add-Element $package 'StandardDirectory' @{ Id = 'ProgramFiles64Folder' }
-$install = Add-Element $programFiles 'Directory' @{ Id = 'INSTALLFOLDER'; Name = "FsForge" }
+$install = Add-Element $programFiles 'Directory' @{ Id = 'INSTALLFOLDER'; Name = "FsForge-net$DotNetMajor" }
 $menu = Add-Element $package 'StandardDirectory' @{ Id = 'ProgramMenuFolder' }
-$appMenu = Add-Element $menu 'Directory' @{ Id = 'ApplicationProgramsFolder'; Name = "FsForge" }
+$appMenu = Add-Element $menu 'Directory' @{ Id = 'ApplicationProgramsFolder'; Name = "FsForge (.NET $DotNetMajor)" }
 $desktop = Add-Element $package 'StandardDirectory' @{ Id = 'DesktopFolder' }
 $feature = Add-Element $package 'Feature' @{ Id = 'MainFeature'; Title = 'FsForge'; Level = '1' }
 $directories = @{ '' = $install }
@@ -94,24 +98,24 @@ foreach ($file in (Get-ChildItem -LiteralPath $publish -File -Recurse | Sort-Obj
 }
 $menuComponent = Add-Element $appMenu 'Component' @{ Id = 'MenuCleanup'; Guid = '*'; Bitness = 'always64' }
 [void](Add-Element $menuComponent 'Shortcut' @{
-    Id = 'StartMenuShortcut'; Name = "FsForge"
+    Id = 'StartMenuShortcut'; Name = "FsForge (.NET $DotNetMajor)"
     Target = '[INSTALLFOLDER]FsForge.exe'; WorkingDirectory = 'INSTALLFOLDER'
     Icon = 'FsForge.exe'; IconIndex = '0'; Advertise = 'no'
 })
 [void](Add-Element $menuComponent 'RemoveFolder' @{ Id = 'RemoveAppMenu'; On = 'uninstall' })
 [void](Add-Element $menuComponent 'RegistryValue' @{
-    Root = 'HKCU'; Key = "Software\FsForge\Installer"; Name = 'Installed'
+    Root = 'HKCU'; Key = "Software\FsForge\Installer\net$DotNetMajor"; Name = 'Installed'
     Type = 'integer'; Value = '1'; KeyPath = 'yes'
 })
 [void](Add-Element $feature 'ComponentRef' @{ Id = 'MenuCleanup' })
 $desktopComponent = Add-Element $desktop 'Component' @{ Id = 'DesktopShortcutComponent'; Guid = '*'; Bitness = 'always64' }
 [void](Add-Element $desktopComponent 'Shortcut' @{
-    Id = 'DesktopShortcut'; Name = "FsForge"
+    Id = 'DesktopShortcut'; Name = "FsForge (.NET $DotNetMajor)"
     Target = '[INSTALLFOLDER]FsForge.exe'; WorkingDirectory = 'INSTALLFOLDER'
     Icon = 'FsForge.exe'; IconIndex = '0'; Advertise = 'no'
 })
 [void](Add-Element $desktopComponent 'RegistryValue' @{
-    Root = 'HKCU'; Key = "Software\FsForge\Installer"; Name = 'DesktopShortcutInstalled'
+    Root = 'HKCU'; Key = "Software\FsForge\Installer\net$DotNetMajor"; Name = 'DesktopShortcutInstalled'
     Type = 'integer'; Value = '1'; KeyPath = 'yes'
 })
 [void](Add-Element $feature 'ComponentRef' @{ Id = 'DesktopShortcutComponent' })
