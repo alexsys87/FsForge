@@ -1,0 +1,122 @@
+# Builds a self-contained x64 MSI from a published FsForge directory.
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$PublishDirectory,
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$ProductVersion = '0.1.0',
+    [string]$WixPath = 'wix',
+    [string]$OutputPath
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$version = [version]$ProductVersion
+if ($version.Major -gt 255 -or $version.Minor -gt 255 -or $version.Build -gt 65535) {
+    throw 'MSI version limits: major/minor <= 255, build <= 65535.'
+}
+$publish = (Resolve-Path -LiteralPath $PublishDirectory).Path
+if (-not (Test-Path -LiteralPath (Join-Path $publish 'FsForge.exe') -PathType Leaf)) {
+    throw 'The publish directory must contain FsForge.exe.'
+}
+if (-not $OutputPath) { $OutputPath = "artifacts/FsForge-win-x64.msi" }
+$output = [IO.Path]::GetFullPath($OutputPath)
+$outputDirectory = Split-Path -Parent $output
+New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+$wxsPath = Join-Path $outputDirectory "FsForge.wxs"
+$upgradeCode = '{36556991-53B2-48DE-81B4-D1EC15E89D89}'
+$ns = 'http://wixtoolset.org/schemas/v4/wxs'
+$uiNs = 'http://wixtoolset.org/schemas/v4/wxs/ui'
+$doc = [xml]"<Wix xmlns='$ns' xmlns:ui='$uiNs'/>"
+function Add-Element($Parent, [string]$Name, [hashtable]$Attributes = @{}) {
+    $node = $doc.CreateElement($Name, $ns)
+    foreach ($key in $Attributes.Keys) { $node.SetAttribute($key, [string]$Attributes[$key]) }
+    [void]$Parent.AppendChild($node)
+    return $node
+}
+function Get-StableId([string]$Prefix, [string]$RelativePath) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes("fsforge/$($RelativePath.ToLowerInvariant())")
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+    return "$Prefix$hash"
+}
+$package = Add-Element $doc.DocumentElement 'Package' @{
+    Name = "FsForge"; Manufacturer = 'FsForge'; Version = $ProductVersion
+    UpgradeCode = $upgradeCode; Scope = 'perMachine'; Language = '1033'
+}
+[void](Add-Element $package 'MajorUpgrade' @{ DowngradeErrorMessage = 'A newer version of FsForge is already installed.' })
+[void](Add-Element $package 'MediaTemplate' @{ EmbedCab = 'yes' })
+[void](Add-Element $package 'Icon' @{ Id = 'FsForge.exe'; SourceFile = (Join-Path $PSScriptRoot '../src/FsForge.App/Assets/app.ico') })
+[void](Add-Element $package 'Property' @{ Id = 'ARPPRODUCTICON'; Value = 'FsForge.exe' })
+$wixUi = $doc.CreateElement('ui', 'WixUI', $uiNs)
+$wixUi.SetAttribute('Id', 'WixUI_InstallDir')
+$wixUi.SetAttribute('InstallDirectory', 'INSTALLFOLDER')
+[void]$package.AppendChild($wixUi)
+[void](Add-Element $package 'UIRef' @{ Id = 'WixUI_ErrorProgressText' })
+# The repository has no product EULA. Skip WiX's placeholder license page.
+# For NewDialog events Windows Installer uses the last matching event.
+$ui = Add-Element $package 'UI'
+[void](Add-Element $ui 'Publish' @{
+    Dialog = 'WelcomeDlg'; Control = 'Next'; Event = 'NewDialog'; Value = 'InstallDirDlg'
+    Order = '3'; Condition = 'NOT Installed'
+})
+[void](Add-Element $ui 'Publish' @{
+    Dialog = 'InstallDirDlg'; Control = 'Back'; Event = 'NewDialog'; Value = 'WelcomeDlg'
+    Order = '3'; Condition = '1'
+})
+$programFiles = Add-Element $package 'StandardDirectory' @{ Id = 'ProgramFiles64Folder' }
+$install = Add-Element $programFiles 'Directory' @{ Id = 'INSTALLFOLDER'; Name = "FsForge" }
+$menu = Add-Element $package 'StandardDirectory' @{ Id = 'ProgramMenuFolder' }
+$appMenu = Add-Element $menu 'Directory' @{ Id = 'ApplicationProgramsFolder'; Name = "FsForge" }
+$desktop = Add-Element $package 'StandardDirectory' @{ Id = 'DesktopFolder' }
+$feature = Add-Element $package 'Feature' @{ Id = 'MainFeature'; Title = 'FsForge'; Level = '1' }
+$directories = @{ '' = $install }
+function Get-DirectoryNode([string]$RelativePath) {
+    if ($directories.ContainsKey($RelativePath)) { return $directories[$RelativePath] }
+    $parentPath = [IO.Path]::GetDirectoryName($RelativePath)
+    if (-not $parentPath) { $parentPath = '' }
+    $parentNode = Get-DirectoryNode $parentPath
+    $node = Add-Element $parentNode 'Directory' @{
+        Id = (Get-StableId 'D' $RelativePath); Name = [IO.Path]::GetFileName($RelativePath)
+    }
+    $directories[$RelativePath] = $node
+    return $node
+}
+foreach ($file in (Get-ChildItem -LiteralPath $publish -File -Recurse | Sort-Object FullName)) {
+    $relative = [IO.Path]::GetRelativePath($publish, $file.FullName)
+    $parentPath = [IO.Path]::GetDirectoryName($relative)
+    if (-not $parentPath) { $parentPath = '' }
+    $parentNode = Get-DirectoryNode $parentPath
+    $componentId = Get-StableId 'C' $relative
+    $component = Add-Element $parentNode 'Component' @{ Id = $componentId; Guid = '*'; Bitness = 'always64' }
+    $fileNode = Add-Element $component 'File' @{
+        Id = (Get-StableId 'F' $relative); Source = $file.FullName; KeyPath = 'yes'
+    }
+    # The Start menu shortcut is authored below with an explicit exe target and icon index.
+    [void](Add-Element $feature 'ComponentRef' @{ Id = $componentId })
+}
+$menuComponent = Add-Element $appMenu 'Component' @{ Id = 'MenuCleanup'; Guid = '*'; Bitness = 'always64' }
+[void](Add-Element $menuComponent 'Shortcut' @{
+    Id = 'StartMenuShortcut'; Name = "FsForge"
+    Target = '[INSTALLFOLDER]FsForge.exe'; WorkingDirectory = 'INSTALLFOLDER'
+    Icon = 'FsForge.exe'; IconIndex = '0'; Advertise = 'no'
+})
+[void](Add-Element $menuComponent 'RemoveFolder' @{ Id = 'RemoveAppMenu'; On = 'uninstall' })
+[void](Add-Element $menuComponent 'RegistryValue' @{
+    Root = 'HKCU'; Key = "Software\FsForge\Installer"; Name = 'Installed'
+    Type = 'integer'; Value = '1'; KeyPath = 'yes'
+})
+[void](Add-Element $feature 'ComponentRef' @{ Id = 'MenuCleanup' })
+$desktopComponent = Add-Element $desktop 'Component' @{ Id = 'DesktopShortcutComponent'; Guid = '*'; Bitness = 'always64' }
+[void](Add-Element $desktopComponent 'Shortcut' @{
+    Id = 'DesktopShortcut'; Name = "FsForge"
+    Target = '[INSTALLFOLDER]FsForge.exe'; WorkingDirectory = 'INSTALLFOLDER'
+    Icon = 'FsForge.exe'; IconIndex = '0'; Advertise = 'no'
+})
+[void](Add-Element $desktopComponent 'RegistryValue' @{
+    Root = 'HKCU'; Key = "Software\FsForge\Installer"; Name = 'DesktopShortcutInstalled'
+    Type = 'integer'; Value = '1'; KeyPath = 'yes'
+})
+[void](Add-Element $feature 'ComponentRef' @{ Id = 'DesktopShortcutComponent' })
+$doc.Save($wxsPath)
+& $WixPath build $wxsPath -arch x64 -ext WixToolset.UI.wixext -culture en-US -o $output
+if ($LASTEXITCODE -ne 0) { throw "WiX build failed with exit code $LASTEXITCODE." }
+if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw 'WiX did not create an MSI.' }
+Write-Host "Created $output"

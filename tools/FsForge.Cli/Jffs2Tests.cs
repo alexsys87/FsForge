@@ -268,9 +268,10 @@ internal static partial class SelfTest
         byte[] trunc = Content("/trunc");
         byte[] expectTrunc = Fill('T', 3000).Concat(new byte[5000]).Concat(Fill('Z', 100)).Concat(new byte[900]).ToArray();
         Check(trunc.AsSpan().SequenceEqual(expectTrunc), "truncate and extend with a hole");
-        Check(doc.Jffs2.ObsoleteNodes == 1 && doc.Jffs2.DamagedNodes >= 2, $"obsolete {doc.Jffs2.ObsoleteNodes}, damaged {doc.Jffs2.DamagedNodes}");
+        Jffs2Info info = doc.Jffs2!;
+        Check(info.ObsoleteNodes == 1 && info.DamagedNodes >= 2, $"obsolete {info.ObsoleteNodes}, damaged {info.DamagedNodes}");
         Check(doc.Warnings.Any(w => w.Contains("damaged JFFS2 node")), "no warning about the damaged nodes");
-        Check(doc.Jffs2.EraseBlockSize == 16384 && doc.Jffs2.EraseBlockSizeKnown, "erase block size " + doc.Jffs2.EraseBlockSize);
+        Check(info.EraseBlockSize == 16384 && info.EraseBlockSizeKnown, "erase block size " + info.EraseBlockSize);
 
         // Saved again, the image holds just the current state, and reads the same.
         string again = Path.Combine(_dir, "log2.jffs2");

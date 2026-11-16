@@ -255,6 +255,14 @@ dotnet publish src/FsForge.App -c Release -r win-x64 --self-contained false -p:P
 
 Образ можно передать программе аргументом командной строки («Открыть с помощью»).
 
+### Сборка на GitHub
+
+`.github/workflows/build.yml` (Windows x64, .NET 10) собирает решение, прогоняет `fsforge-cli selftest`,
+сценарии `FsForge.Presentation.Tests`, `tests/check-bindings.py` и `tests/check-translations.py`, затем
+публикует единый самодостаточный `FsForge.exe` (профиль `win-x64-standalone`), собирает из него MSI-установщик
+(WiX 5, `installer/Build-Msi.ps1`) и проверяет установку и удаление (`installer/Test-Msi.ps1`).
+Артефакты: `FsForge-win-x64-standalone` (exe), `FsForge-win-x64-msi`, `FsForge-win-x64` (зависит от .NET).
+
 ## Консольная утилита
 
 ```
