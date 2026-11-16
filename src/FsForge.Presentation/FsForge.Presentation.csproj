@@ -2,7 +2,7 @@
 
   <!-- View models, settings and application logic. No dependency on WPF, so it builds and is tested on any OS. -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
