@@ -158,7 +158,8 @@ internal static partial class SelfTest
             UbifsOptions again = doc.CreateSaveOptions().Ubifs;
             Check(again is { LebSize: 129024, MinIoSize: 2048, MaxLebCount: 3000, Fanout: 16, Compression: UbifsCompression.Zstd, SpaceFixup: true } && again.Uuid == o.Ubifs.Uuid
                   && again.JournalBytes == u.JournalBytes && again.LogLebs == u.LogLebs, "options taken from the image");
-            Check(UbifsReader.MinimumVolumeLebs(new FileBlockSource(path)) >= u.LebCount, "minimum volume size");
+            using (var src = new FileBlockSource(path))
+                Check(UbifsReader.MinimumVolumeLebs(src) >= u.LebCount, "minimum volume size");
         }
 
         foreach (Action<UbifsOptions> spoil in new Action<UbifsOptions>[]

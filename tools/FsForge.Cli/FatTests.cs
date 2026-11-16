@@ -133,7 +133,8 @@ internal static partial class SelfTest
         // Without a choice the root filesystem opens, not the boot partition.
         using (ImageDocument d = ImageDocument.Open(path, _dir))
             Check(d.Format == ImageFormat.Ext && d.Container!.Partition.Number == 2, "default partition: " + d.Container?.Partition.Number);
-        PartitionTable table = PartitionTable.Read(new FileBlockSource(path))!;
+        PartitionTable table;
+        using (var src = new FileBlockSource(path)) table = PartitionTable.Read(src)!;
         Check(table.Editable.Count == 2 && table.Partitions[0].IsEditable && table.Partitions[0].ContentName == "FAT32", "the FAT partition is not editable");
 
         ImageDocument doc = ImageDocument.Open(path, _dir, partition: 1);
