@@ -917,6 +917,9 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 Add(L.T("Заголовок uImage"), L.F("{0} {1}, тип {2}, сжатие {3}, адрес загрузки 0x{4:X8}, точка входа 0x{5:X8}",
                     ui.OsName, ui.ArchitectureName, ui.TypeName, ui.CompressionName, ui.LoadAddress, ui.EntryPoint));
                 Add(L.T("Контрольная сумма данных"), ui.DataCrcMatches ? L.T("совпадает") : L.T("не совпадает (образ изменён или повреждён)"));
+                if (ui.FwtoolChecksumsValid is { } fwOk)
+                    Add(L.T("Метаданные OpenWrt (fwtool)"), (fwOk ? L.T("контрольные суммы верны, при сохранении пересчитываются") : L.T("контрольные суммы неверны, переносятся без изменений")) +
+                                                            (ui.FwtoolSigned ? L.T("; есть подпись — после изменения она не совпадёт") : ""));
             }
             foreach (Core.Firmware.FirmwarePart p in fw.Image.Parts)
             {

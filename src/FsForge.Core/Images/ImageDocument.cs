@@ -1429,6 +1429,8 @@ public sealed class ImageDocument : IDisposable
         }
         if (written.Image is UImage { DataCrcMatches: false })
             problems.Add("The CRC-32 of the data of the written uImage does not match its header.");
+        if (source.Image is UImage { FwtoolChecksumsValid: true } && written.Image is not UImage { FwtoolChecksumsValid: true })
+            problems.Add("The checksums of the OpenWrt metadata (fwtool) blocks of the written firmware are wrong.");
         var after = written.Image.FixedSections(written.Part).ToDictionary(s => s.Name, s => s.Data);
         byte[] x = new byte[1 << 20], y = new byte[1 << 20];
         foreach ((string name, IBlockSource a) in source.Image.FixedSections(source.Part))

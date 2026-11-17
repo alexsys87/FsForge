@@ -42,6 +42,21 @@ public sealed class UImage : FirmwareImage
     /// <summary>The root filesystem found behind the image, outside what the header covers.</summary>
     private FirmwarePart? _trailing;
 
+    /// <summary>OpenWrt's metadata and signature blocks at the end of the file, when their checksums are right.</summary>
+    private Fwtool? _fwtool;
+
+    /// <summary>
+    /// The file ends with OpenWrt's fwtool blocks (metadata, signature): true when their checksums are right (they
+    /// are made again when the firmware is rebuilt), false when they are not, null when there are none.
+    /// </summary>
+    public bool? FwtoolChecksumsValid { get; private set; }
+
+    /// <summary>The fwtool blocks hold a signature, which a rebuilt firmware no longer matches.</summary>
+    public bool FwtoolSigned => _fwtool?.HasSignature == true;
+
+    /// <summary>Where the firmware ends without OpenWrt's fwtool blocks.</summary>
+    private long ContentEnd => _fwtool?.ContentEnd ?? Source.Length;
+
     public string Name { get; private init; } = "";
     public byte Os { get; private init; }
     public byte Architecture { get; private init; }
@@ -113,6 +128,11 @@ public sealed class UImage : FirmwareImage
     private void ReadParts(CancellationToken ct)
     {
         long end = HeaderSize + (long)DataSize;
+        if (Fwtool.Read(Source, Math.Min(end, Source.Length), ct) is { } fw)
+        {
+            FwtoolChecksumsValid = fw.CrcValid;
+            if (fw.CrcValid) _fwtool = fw;
+        }
         if (end > Source.Length)
             Warnings.Add($"The uImage header gives {DataSize} bytes of data, but the file ends {end - Source.Length} bytes before that: it is truncated.");
         else
@@ -257,13 +277,13 @@ public sealed class UImage : FirmwareImage
                     pieces.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
                     pos = at + 4;
                 }
-                pieces.Add(Slice(tail.Rest, Source.Length));
+                pieces.Add(Slice(tail.Rest, ContentEnd));
             }
-            else if (tail.Start < Source.Length)
+            else if (tail.Start < ContentEnd)
             {
                 long at = Shifted(tail.Start, newEnd, tail.Align);
                 pieces.Add(Fill(at - newEnd, tail.Fill));
-                pieces.Add(Slice(tail.Start, Source.Length));
+                pieces.Add(Slice(tail.Start, ContentEnd));
             }
             else if (tail.Align > 1)
                 pieces.Add(Fill(RoundUp(newEnd, tail.Align) - newEnd, tail.Fill));
@@ -308,20 +328,24 @@ public sealed class UImage : FirmwareImage
                 long at = Shifted(_trailing.Offset, newEnd, Alignment(_trailing.Offset));
                 byte fill = _trailing.Offset > _end ? Source.ReadBytes(_end, 1)[0] : (byte)0xFF;
                 pieces.Add(Fill(at - newEnd, fill));
-                pieces.Add(Slice(_trailing.Offset, Source.Length));
+                pieces.Add(Slice(_trailing.Offset, ContentEnd));
             }
-            else pieces.Add(Slice(_end, Source.Length));
+            else pieces.Add(Slice(_end, ContentEnd));
         }
 
-        long total = pieces.Sum(p => p.Length);
+        long total = pieces.Sum(p => p.Length) + (Source.Length - ContentEnd);
         if (total > Source.Length)
             warnings.Add($"The firmware grew from {DiskText.Size(Source.Length)} to {DiskText.Size(total)}: make sure it still fits into the flash partition it is written to.");
-        if (HasFwtoolTrailer())
-            warnings.Add("The firmware ends with an OpenWrt metadata or signature block (fwtool). It was carried over unchanged, but it was made for the old image: " +
-                         "its checksum or signature may no longer match, and sysupgrade may then refuse the file or need -F.");
+        if (_fwtool is null && HasFwtoolTrailer())
+            warnings.Add("The firmware ends with an OpenWrt metadata or signature block (fwtool) whose checksum does not match the file it came with. It was carried over unchanged: " +
+                         "sysupgrade may refuse the file or need -F.");
+        else if (_fwtool?.HasSignature == true)
+            warnings.Add("The firmware is signed (an OpenWrt fwtool signature block). The checksums of its metadata and signature blocks were made again, " +
+                         "but the signature belongs to the old image: a device that checks image signatures will refuse it.");
 
         byte[] buf = new byte[1 << 20];
         long done = 0;
+        uint crc = ~0u;
         foreach (IBlockSource piece in pieces)
         {
             for (long o = 0; o < piece.Length;)
@@ -330,11 +354,14 @@ public sealed class UImage : FirmwareImage
                 int n = (int)Math.Min(buf.Length, piece.Length - o);
                 piece.ReadExactly(o, buf.AsSpan(0, n));
                 output.Write(buf, 0, n);
+                if (_fwtool is not null) crc = Fwtool.RawUpdate(crc, buf.AsSpan(0, n));
                 o += n;
                 done += n;
                 progress?.Report(new ProgressInfo("write", done, total));
             }
         }
+        // OpenWrt's metadata (and signature) behind the new image, their checksums made over it.
+        _fwtool?.Write(output, Source, crc, ct);
     }
 
     /// <summary>
@@ -349,16 +376,19 @@ public sealed class UImage : FirmwareImage
         _header.AsSpan(28, 36).CopyTo(fields.AsSpan(12));
         yield return ("header", new MemoryBlockSource(fields));
         foreach (FirmwarePart p in Parts)
-            if (p.Name != open.Name) yield return (p.Name, Open(p));
+            if (p.Name != open.Name)
+                yield return (p.Name, ReferenceEquals(p, _trailing) ? new SubBlockSource(Source, p.Offset, ContentEnd - p.Offset, ownsInner: false) : Open(p));
         if (_trailing is not null && open.Name == _trailing.Name)
         {
             Tail tail = TailOf(_trailing);
             // Behind a new filesystem one marker can serve more block sizes than before (an 8 KiB boundary may also be
             // the first 16 KiB one), so only what follows the markers is compared.
             if (tail.Markers.Count > 0)
-                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, Source.Length - tail.Rest, ownsInner: false));
-            else yield return ("data after " + _trailing.Name, new SubBlockSource(Source, tail.Start, Source.Length - tail.Start, ownsInner: false));
+                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, ContentEnd - tail.Rest, ownsInner: false));
+            else yield return ("data after " + _trailing.Name, new SubBlockSource(Source, tail.Start, ContentEnd - tail.Start, ownsInner: false));
         }
+        if (_fwtool is not null)
+            foreach ((string name, IBlockSource data) in _fwtool.Sections(Source)) yield return (name, data);
     }
 
     /// <summary>What follows a root filesystem behind the image.</summary>
@@ -378,7 +408,7 @@ public sealed class UImage : FirmwareImage
     /// </summary>
     private Tail TailOf(FirmwarePart part)
     {
-        long eof = Source.Length;
+        long eof = ContentEnd;
         long fsEnd = part.Packed is null ? part.Offset + FilesystemLength(part.Offset, part.Content) : eof;
         long start = fsEnd;
         byte[] buf = new byte[1 << 16];
@@ -418,7 +448,7 @@ public sealed class UImage : FirmwareImage
     /// </summary>
     private long FilesystemLength(long at, PartitionContent content)
     {
-        long rest = Source.Length - at;
+        long rest = ContentEnd - at;
         long length = 0;
         try
         {

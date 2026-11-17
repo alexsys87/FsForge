@@ -270,7 +270,7 @@ internal static partial class SelfTest
         FsTree tree = SmallTree(36, 6);
         byte[] kernel = PadTo(BuildUImage(UbMips, UbKernel, UbLzma, "OpenWrt Linux", Bytes(rnd, 200000), 0x80060000), 65536, 0xFF);
         // As OpenWrt's padjffs2 leaves it: 0xdeadc0de at the 4, 8, 16, 32 and 64 KiB boundaries behind the SquashFS,
-        // then a metadata block of fwtool at the end.
+        // then the metadata and signature blocks of fwtool at the end.
         var fw = new List<byte>(kernel);
         fw.AddRange(Squash(tree));
         foreach (int b in new[] { 4096, 8192, 16384, 32768, 65536 })
@@ -278,12 +278,11 @@ internal static partial class SelfTest
             while (fw.Count % b != 0) fw.Add(0xFF);
             fw.AddRange(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE });
         }
-        byte[] meta = Encoding.ASCII.GetBytes("{\"supported_devices\":[\"board\"]}");
-        fw.AddRange(meta);
-        fw.AddRange("FWx0"u8.ToArray().Concat(new byte[] { 1, 2, 3, 4, 1, 0, 0, 0, 0, 0, 0, (byte)(meta.Length + 16) }));
+        byte[] meta = new byte[8].Concat(Encoding.ASCII.GetBytes("{\"supported_devices\":[\"board\"]}")).ToArray(), signature = Bytes(rnd, 100);
+        AppendFwtool(fw, 1, meta);
+        AppendFwtool(fw, 0, signature);
         byte[] original = fw.ToArray();
-        int tailStart = Markers(original)[0];
-        byte[] tail = original[tailStart..];
+        Check(FwtoolBlocks(original) is [{ Type: 1 }, { Type: 0 }], "the fwtool blocks of the test image");
         string path = WriteFile("rebuild-sysupgrade.bin", original);
 
         // A file that makes the SquashFS grow past several of the boundaries, then removed again.
@@ -299,7 +298,7 @@ internal static partial class SelfTest
                 Check(doc.WritesContainer(o) && doc.WritesFirmware(o), what + ": the firmware is written");
                 ImageDocument.SaveResult r = doc.Save(path, o);
                 doc = r.Document!;
-                Check(r.Warnings.Any(w => w.Contains("fwtool")) && (grow == 0 || r.Warnings.Any(w => w.Contains("grew"))), what + ": warnings " + string.Join(" | ", r.Warnings));
+                Check(r.Warnings.Any(w => w.Contains("fwtool signature")) && (grow == 0 || r.Warnings.Any(w => w.Contains("grew"))), what + ": warnings " + string.Join(" | ", r.Warnings));
                 Check(doc.Firmware is { Part.Name: "rootfs" } && (doc.Tree.Resolve("/big") is not null) == (grow > 0), what + ": reopened");
             }
             finally
@@ -316,11 +315,68 @@ internal static partial class SelfTest
             foreach (int block in new[] { 4096, 8192, 16384, 32768, 65536 })
                 Check(marks.Contains((int)((fsEnd + block - 1) / block * block)), what + $": no marker at the first {block / 1024} KiB boundary; markers at " +
                                                                                  string.Join(",", marks.Select(m => $"0x{m:X}")));
-            Check(marks[0] >= fsEnd && after.AsSpan(marks[^1] + 4).SequenceEqual(tail.AsSpan(Markers(original)[^1] - tailStart + 4)),
-                what + ": the data behind the markers changed");
+            // Behind the markers: the fwtool blocks with the same payloads, their checksums made over the new file.
+            List<(byte Type, byte[] Payload)>? blocks = FwtoolBlocks(after);
+            Check(marks[0] >= fsEnd && blocks is [{ Type: 1 } m, { Type: 0 } sg] && m.Payload.SequenceEqual(meta) && sg.Payload.SequenceEqual(signature)
+                  && after.Length == marks[^1] + 4 + meta.Length + signature.Length + 32, what + ": the fwtool blocks behind the markers");
             if (grow > 0) grownLength = after.Length;
             else Check(after.Length < grownLength, "the firmware did not shrink when the file was removed");
         }
+
+        // A block whose checksum was already wrong is not taken for fwtool's: carried over byte for byte, with a warning.
+        byte[] wrong = (byte[])original.Clone();
+        wrong[^12] ^= 1;
+        path = WriteFile("rebuild-wrong-fwtool.bin", wrong);
+        using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
+        {
+            Check(doc.Firmware?.Image is UImage { FwtoolChecksumsValid: false }, "a wrong fwtool checksum is recognized");
+            doc.Tree.CreateFile(doc.Tree.Root, "small", new MemoryFileData(Bytes(rnd, 100)));
+            ImageDocument.SaveResult r = doc.Save(path, doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir }));
+            r.Document?.Dispose();
+            Check(r.Warnings.Any(w => w.Contains("whose checksum does not match")), "wrong fwtool checksum: warnings " + string.Join(" | ", r.Warnings));
+        }
+        byte[] kept = File.ReadAllBytes(path);
+        int keptAt = Markers(kept)[^1] + 4, wrongAt = Markers(wrong)[^1] + 4;
+        Check(kept.AsSpan(keptAt).SequenceEqual(wrong.AsSpan(wrongAt)), "a block with a wrong checksum was changed");
+    }
+
+    /// <summary>fwtool's CRC step: the reflected CRC-32 started at ~0 and not inverted at the end, bit by bit.</summary>
+    private static uint FwtoolCrc(IEnumerable<byte> data)
+    {
+        uint c = 0xFFFFFFFF;
+        foreach (byte b in data)
+        {
+            c ^= b;
+            for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB88320 : c >> 1;
+        }
+        return c;
+    }
+
+    /// <summary>Appends a block as fwtool -I / -S does: the payload, then the trailer with the CRC of everything in front of it.</summary>
+    private static void AppendFwtool(List<byte> file, byte type, byte[] payload)
+    {
+        file.AddRange(payload);
+        byte[] t = new byte[16];
+        "FWx0"u8.CopyTo(t);
+        BinaryPrimitives.WriteUInt32BigEndian(t.AsSpan(4), FwtoolCrc(file));
+        t[8] = type;
+        BinaryPrimitives.WriteUInt32BigEndian(t.AsSpan(12), (uint)(payload.Length + 16));
+        file.AddRange(t);
+    }
+
+    /// <summary>The fwtool blocks at the end of a file, oldest first, as fwtool -i reads them; null when a checksum is wrong.</summary>
+    private static List<(byte Type, byte[] Payload)>? FwtoolBlocks(byte[] file)
+    {
+        var list = new List<(byte, byte[])>();
+        int end = file.Length;
+        while (end >= 16 && file.AsSpan(end - 16, 4).SequenceEqual("FWx0"u8))
+        {
+            int size = (int)BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(end - 4));
+            if (BinaryPrimitives.ReadUInt32BigEndian(file.AsSpan(end - 12)) != FwtoolCrc(file.Take(end - 16))) return null;
+            list.Insert(0, (file[end - 8], file[(end - size)..(end - 16)]));
+            end -= size;
+        }
+        return list;
     }
 
     private static void UImageRebuildInner()

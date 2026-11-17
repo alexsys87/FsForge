@@ -10,6 +10,9 @@
 #               take the changed part out of it and the reference tool (unsquashfs, GNU cpio) unpack it with the change,
 #               the kernel must stay byte for byte, and OpenWrt's 0xdeadc0de marker must sit on the first erase block
 #               boundary behind the new SquashFS. The filesystem alone is only written under another name.
+#               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
+#               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
+#               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
 
 fw_run() {
   if ! command -v mkimage >/dev/null; then echo "uImage: skipped (u-boot-tools with mkimage is not installed)"; return; fi
@@ -76,6 +79,18 @@ PY
     rm -rf fw/un2; unsquashfs -n -d fw/un2 fw/w_root.sqfs > /dev/null 2>&1 && cmp -s fw/un2/big.bin fw/big.bin && [ -e fw/un2/etc ] \
       && ok "sysupgrade: unsquashfs unpacks the new root filesystem" || bad "unsquashfs on the rebuilt sysupgrade image"
   else bad "edit sysupgrade: $(cat fw/w_sys.err)"; fi
+
+  local fwtool=${FWTOOL:-$(command -v fwtool || true)}
+  if [ -n "$fwtool" ] && [ -x "$fwtool" ]; then
+    cp fw/sysupgrade.bin fw/w_meta.bin
+    printf '{"metadata_version":"1.1","supported_devices":["vendor,board"]}' > fw/meta.json; head -c 64 /dev/urandom > fw/sig.bin
+    "$fwtool" -I fw/meta.json fw/w_meta.bin && "$fwtool" -S fw/sig.bin fw/w_meta.bin
+    if $F edit fw/w_meta.bin fw/w_meta.bin "add:/:fw/big.bin" > /dev/null 2> fw/w_meta.err; then
+      rm -f fw/o.json fw/o.sig
+      "$fwtool" -q -i fw/o.json fw/w_meta.bin && "$fwtool" -q -s fw/o.sig fw/w_meta.bin && cmp -s fw/o.json fw/meta.json && cmp -s fw/o.sig fw/sig.bin \
+        && ok "fwtool: metadata and signature of the rebuilt sysupgrade image pass fwtool's checksum" || bad "fwtool rejects the rebuilt image"
+    else bad "edit sysupgrade with fwtool blocks: $(cat fw/w_meta.err)"; fi
+  else echo "  --    fwtool checks skipped: set FWTOOL to the fwtool of an OpenWrt build"; fi
 
   if [ -e fw/uInitrd ]; then
     cp fw/uInitrd fw/w_initrd; echo added > fw/added.txt

@@ -286,6 +286,8 @@ internal static class Program
             if (fw.Image is FsForge.Core.Firmware.UImage ui)
                 Console.WriteLine($"             {ui.OsName} {ui.ArchitectureName} {ui.TypeName}, compression {ui.CompressionName}, load 0x{ui.LoadAddress:X8}, entry 0x{ui.EntryPoint:X8}, " +
                                   $"{ui.DataSize} bytes of data, data CRC {(ui.DataCrcMatches ? "ok" : "wrong")}");
+            if (fw.Image is FsForge.Core.Firmware.UImage { FwtoolChecksumsValid: { } fwOk } signed)
+                Console.WriteLine($"             OpenWrt metadata (fwtool): checksums {(fwOk ? "ok" : "wrong")}{(signed.FwtoolSigned ? ", signed" : "")}");
             foreach (FsForge.Core.Firmware.FirmwarePart p in fw.Image.Parts)
                 Console.WriteLine($"  {(ReferenceEquals(p, fw.Part) ? '*' : ' ')} {p}");
         }
