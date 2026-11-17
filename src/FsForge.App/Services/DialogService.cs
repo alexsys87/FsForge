@@ -18,7 +18,7 @@ public sealed class DialogService : IDialogService
     private static string AllFiles => L.T("Все файлы") + "|*.*";
 
     private static string ImageFilter =>
-        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.cramfs;*.romfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.gz;*.xz;*.zst|" +
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.cramfs;*.romfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpio.lz4;*.cpgz;*.gz;*.xz;*.zst;*.lz4|" +
         L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|EROFS|*.erofs;*.erofs.img;*.img|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
         "CramFS|*.cramfs;*.img;*.bin|romfs|*.romfs;*.img;*.bin|" +
@@ -26,7 +26,8 @@ public sealed class DialogService : IDialogService
         "JFFS2|*.jffs2;*.jffs2.gz;*.bin;*.img|" +
         "FAT|*.vfat;*.fat;*.img;*.bin|" +
         L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" +
-        L.T("Архивы cpio (initramfs)") + "|*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpgz;*.img;*.gz;*.xz;*.zst|" + AllFiles;
+        L.T("Архивы cpio (initramfs)") + "|*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpio.lz4;*.cpgz;*.img;*.gz;*.xz;*.zst;*.lz4|" +
+        L.T("Образы Android (super, boot, vendor_boot)") + "|super*.img;*boot*.img;recovery*.img;*.img|" + AllFiles;
 
     private readonly Func<Window?> _owner;
     private readonly Func<SnackbarPresenter?> _snackbar;

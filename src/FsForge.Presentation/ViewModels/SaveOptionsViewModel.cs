@@ -190,6 +190,7 @@ public static class OptionLists
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.cpio.gz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Zstd, L.T("zstd (.cpio.zst) — Linux 5.9 и новее")),
         new Choice<ArchiveCompression>(ArchiveCompression.Xz, "xz (.cpio.xz)"),
+        new Choice<ArchiveCompression>(ArchiveCompression.Lz4, L.T("lz4 (.cpio.lz4) — как у ramdisk Android")),
         new Choice<ArchiveCompression>(ArchiveCompression.None, L.T("без сжатия (.cpio)")),
     };
 
@@ -294,6 +295,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ContainerSummary = L.F("{0} — образ UBI (блоки стирания по {1}, томов: {2}). ", Path.GetFileName(doc.FilePath), Fmt.Size(ubi.Image.PebSize), ubi.Image.Volumes.Count) +
                                L.F("Открыт том {0}: {1}, {2}.", Fmt.VolumeName(ubi.Volume), Fmt.VolumeContent(ubi.Volume), Fmt.Size(ubi.Volume.Length));
 
+        if (doc.Android is { } android)
+            ContainerSummary = L.F("{0} — {1}. ", Path.GetFileName(doc.FilePath), Fmt.AndroidKind(android.Image)) +
+                               L.F("Открыт {0}: {1}, {2}.", Fmt.AndroidPartName(android.Image, android.Part), Fmt.AndroidPartContent(android.Part), Fmt.Size(android.Part.Length));
+
         if (doc.Container is { } disk)
         {
             PartitionInfo p = disk.Partition;
@@ -304,14 +309,23 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- disk image the filesystem was opened from
     /// <summary>The document came from a partition of a disk image or from a volume of a UBI image.</summary>
-    public bool HasContainer => _doc.Container is not null || _doc.Ubi is not null;
+    public bool HasContainer => _doc.Container is not null || _doc.Ubi is not null || _doc.Android is not null;
+
+    /// <summary>The container is an Android image: super.img (logical partitions) or a boot image (ramdisk).</summary>
+    public bool IsAndroidContainer => _doc.Android is not null;
+
+    private bool IsSuperContainer => _doc.Android?.Image.Kind == FsForge.Core.Android.AndroidImageKind.Super;
 
     /// <summary>The container is a UBI image (volumes) and not a disk image (partitions).</summary>
     public bool IsUbiContainer => _doc.Ubi is not null;
 
-    public string ContainerTitle => IsUbiContainer ? L.T("Образ UBI") : L.T("Образ диска");
+    public string ContainerTitle => IsUbiContainer ? L.T("Образ UBI") : IsAndroidContainer ? L.T("Образ Android") : L.T("Образ диска");
 
-    public string ContainerToggleText => IsUbiContainer
+    public string ContainerToggleText => IsAndroidContainer
+        ? IsSuperContainer
+            ? L.T("Сохранить super.img целиком: остальные логические разделы остаются как были")
+            : L.T("Сохранить загрузочный образ целиком: ядро, DTB и остальное остаются как были")
+        : IsUbiContainer
         ? L.T("Сохранить образ UBI целиком: остальные тома остаются как были")
         : L.T("Сохранить образ диска целиком: таблица разделов и остальные разделы остаются как были");
 
@@ -335,12 +349,31 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
-    public bool WritesDisk => HasContainer && _o.KeepContainer && !IsTar && !IsCpio && !IsJffs2 && !(IsFat && IsUbiContainer);
+    public bool WritesDisk => HasContainer && _o.KeepContainer && (IsAndroidContainer
+        ? IsSuperContainer ? !IsTar && !IsCpio && !IsJffs2 && !IsUbifs : IsCpio
+        : !IsTar && !IsCpio && !IsJffs2 && !(IsFat && IsUbiContainer));
 
     public string ContainerNote
     {
         get
         {
+            if (_doc.Android is { } android)
+            {
+                string part = Fmt.AndroidPartName(android.Image, android.Part);
+                if (!IsSuperContainer && !IsCpio)
+                    return L.T("В загрузочном образе ramdisk — архив cpio; другой формат сохраняется отдельным файлом, образ при этом не меняется.");
+                if (IsSuperContainer && (IsTar || IsCpio || IsJffs2 || IsUbifs))
+                    return L.T("Этот формат сохраняется отдельным файлом: в логический раздел super.img он не записывается.");
+                if (!_o.KeepContainer)
+                    return IsSuperContainer
+                        ? L.T("Будет записана только файловая система раздела — её можно прошить командой fastboot flash в раздел с тем же именем.")
+                        : L.T("Будет записан только архив ramdisk, без ядра и заголовка загрузочного образа.");
+                return IsSuperContainer
+                    ? L.F("super.img записывается заново: заменяется только {0}, остальные разделы и группы остаются на своих местах. ", part) +
+                      L.T("Если раздел перестанет помещаться на прежнее место, он займёт свободное место super. Метаданные записываются во все слоты; sparse-образ остаётся sparse.")
+                    : L.F("Загрузочный образ записывается заново: заменяется только {0}, размеры и контрольная сумма в заголовке пересчитываются. ", part) +
+                      L.T("Если образ подписан AVB, подпись перестанет совпадать: телефон с разблокированным загрузчиком его загрузит, с заблокированным — нет.");
+            }
             if (IsJffs2 && HasContainer)
                 return L.T("JFFS2 сохраняется отдельным файлом: в раздел образа диска или том UBI он не записывается.");
             if (IsFat && IsUbiContainer)

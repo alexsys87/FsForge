@@ -471,6 +471,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
         if (_doc.Ubi is { } ubi)
             info = L.F("образ UBI · том {0} из {1} · ", Fmt.VolumeName(ubi.Volume), ubi.Image.Volumes.Count) + info;
+        if (_doc.Android is { } android)
+            info = (android.Image.Kind == FsForge.Core.Android.AndroidImageKind.Super
+                ? L.F("super.img · {0} из {1} · ", android.Part.Name, android.Image.Parts.Count)
+                : L.F("{0} · ramdisk {1} · ", android.Image.Kind == FsForge.Core.Android.AndroidImageKind.VendorBoot ? "vendor_boot" : "boot", android.Part.Name)) + info;
         if (_doc.Container is { } disk)
             info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
         DocumentInfo = info;
@@ -575,7 +579,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ImageDocument? doc = null;
         bool ok = await RunBusyAsync(L.T("Открытие ") + Path.GetFileName(path), (p, ct) =>
             doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
-                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi)));
+                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
+                chooseAndroidPart: image => AskAndroidPart(path, image)));
         if (!ok || doc is null) return false;
 
         SetDocument(doc);
@@ -620,6 +625,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 var vm = new PartitionChoiceViewModel(Path.GetFileName(path), ubi);
                 done.SetResult(_dialogs.ShowDialog(vm) ? vm.VolumeResult : null);
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>Lets the user pick a logical partition or ramdisk of an Android image; works like <see cref="AskPartition"/>.</summary>
+    private FsForge.Core.Android.AndroidPart? AskAndroidPart(string path, FsForge.Core.Android.AndroidImage image)
+    {
+        var done = new TaskCompletionSource<FsForge.Core.Android.AndroidPart?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() =>
+        {
+            try
+            {
+                var vm = new PartitionChoiceViewModel(Path.GetFileName(path), image);
+                done.SetResult(_dialogs.ShowDialog(vm) ? vm.AndroidResult : null);
             }
             catch (Exception ex)
             {
@@ -694,11 +718,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool disk = _doc.WritesContainer(vm.Result);
         bool ubi = _doc.WritesUbi(vm.Result);
         bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.SavesFilesystemOnly && _doc.Container is null
-                          && _doc.Ubi is null && !ubi
+                          && _doc.Ubi is null && _doc.Android is null && !ubi
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
         string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string title = ubi ? L.T("Сохранить образ UBI") : disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ");
+        string title = ubi ? L.T("Сохранить образ UBI") : disk && _doc.Android is not null ? L.T("Сохранить образ Android")
+            : disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ");
         string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && !ubi);
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
@@ -1139,7 +1164,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ImageDocument? source = null;
         bool ok = await RunBusyAsync(L.T("Чтение ") + Path.GetFileName(path), (p, ct) =>
             source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
-                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi)));
+                choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
+                chooseAndroidPart: image => AskAndroidPart(path, image)));
         if (!ok || source is null) return false;
 
         var clashing = source.Tree.Root.Children.Where(c => target.Find(c.Name) is not null).Select(c => c.Name).ToList();

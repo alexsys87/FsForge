@@ -94,6 +94,7 @@ internal static partial class SelfTest
             ErofsTests(tree, reference);
             CpioTests(tree, reference);
             CramfsRomfsTests();
+            AndroidTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally

@@ -10,6 +10,9 @@ public enum ArchiveCompression
     Gzip,
     Xz,
     Zstd,
+
+    /// <summary>The legacy LZ4 stream ("lz4 -l"): what the kernel unpacks an initramfs from and Android packs ramdisks with.</summary>
+    Lz4,
 }
 
 /// <summary>How names, numbers and attributes that do not fit a classic header are stored.</summary>
@@ -51,6 +54,9 @@ public sealed class TarOptions
 
     /// <summary>0 = fast, 1 = normal, 2 = maximum.</summary>
     public int XzEffort { get; set; } = 1;
+
+    /// <summary>LZ4 level 1 .. 12 (as lz4hc).</summary>
+    public int Lz4Level { get; set; } = 9;
 
     /// <summary>Text put in front of every member name; "./" matches "tar -c -C rootfs .".</summary>
     public string PathPrefix { get; set; } = "./";
@@ -96,6 +102,7 @@ public static class ArchiveCodec
         if (head.Length >= 3 && head[0] == 0x1F && head[1] == 0x8B && head[2] == 8) return ArchiveCompression.Gzip;
         if (head.Length >= 6 && head[..6].SequenceEqual(XzFormat.HeaderMagic)) return ArchiveCompression.Xz;
         if (head.Length >= 4 && head[0] == 0x28 && head[1] == 0xB5 && head[2] == 0x2F && head[3] == 0xFD) return ArchiveCompression.Zstd;
+        if (Compression.Lz4Legacy.IsLz4Legacy(head)) return ArchiveCompression.Lz4;
         return null;
     }
 
@@ -103,7 +110,7 @@ public static class ArchiveCodec
     public static string? DetectUnsupported(ReadOnlySpan<byte> head)
     {
         if (head.Length >= 3 && head[0] == (byte)'B' && head[1] == (byte)'Z' && head[2] == (byte)'h') return "bzip2";
-        if (head.Length >= 4 && head[0] == 0x04 && head[1] == 0x22 && head[2] == 0x4D && head[3] == 0x18) return "LZ4";
+        if (head.Length >= 4 && head[0] == 0x04 && head[1] == 0x22 && head[2] == 0x4D && head[3] == 0x18) return "LZ4 (frame format; only the legacy format of \"lz4 -l\" is read)";
         if (head.Length >= 4 && head[0] == 0x5D && head[1] == 0 && head[2] == 0) return "LZMA";
         if (head.Length >= 2 && head[0] == 0x1F && head[1] == 0x9D) return "compress (.Z)";
         return null;
@@ -114,6 +121,7 @@ public static class ArchiveCodec
         ArchiveCompression.Gzip => new GZipStream(input, CompressionMode.Decompress),
         ArchiveCompression.Xz => new XzInputStream(input),
         ArchiveCompression.Zstd => new ZstdSharp.DecompressionStream(input),
+        ArchiveCompression.Lz4 => new Compression.Lz4LegacyInputStream(input),
         _ => input,
     };
 
@@ -122,6 +130,7 @@ public static class ArchiveCodec
         ArchiveCompression.Gzip => Compression.ZLibLevels.OpenGZip(output, Math.Clamp(o.GzipLevel, 1, 9), leaveOpen: true),
         ArchiveCompression.Xz => new XzOutputStream(output, o.XzEffort, 1 << 22, o.Threads, leaveOpen: true),
         ArchiveCompression.Zstd => new ZstdSharp.CompressionStream(output, Math.Clamp(o.ZstdLevel, 1, 22), leaveOpen: true),
+        ArchiveCompression.Lz4 => new Compression.Lz4LegacyOutputStream(output, o.Lz4Level, o.Threads, leaveOpen: true),
         _ => new PassThroughStream(output),
     };
 
@@ -147,6 +156,7 @@ public static class ArchiveCodec
         ArchiveCompression.Gzip => ".tar.gz",
         ArchiveCompression.Xz => ".tar.xz",
         ArchiveCompression.Zstd => ".tar.zst",
+        ArchiveCompression.Lz4 => ".tar.lz4",
         _ => ".tar",
     };
 
@@ -157,6 +167,7 @@ public static class ArchiveCodec
         if (name.EndsWith(".tar.gz") || name.EndsWith(".tgz")) return ArchiveCompression.Gzip;
         if (name.EndsWith(".tar.xz") || name.EndsWith(".txz")) return ArchiveCompression.Xz;
         if (name.EndsWith(".tar.zst") || name.EndsWith(".tzst")) return ArchiveCompression.Zstd;
+        if (name.EndsWith(".tar.lz4")) return ArchiveCompression.Lz4;
         if (name.EndsWith(".tar")) return ArchiveCompression.None;
         return null;
     }

@@ -9,7 +9,8 @@
 # cpio (GNU cpio for the cpio tests; with qemu-system-x86_64, CPIO_KERNEL=<vmlinuz> and CPIO_BUSYBOX=<static
 # busybox> the kernel also boots the archives FsForge writes as its initramfs), mkfs.cramfs and fsck.cramfs
 # (util-linux), genromfs (with CRR_MODULES=<folder with mtd.ko, cramfs.ko and romfs.ko> as well, the kernel
-# mounts CramFS and romfs images).
+# mounts CramFS and romfs images), lz4, mkbootimg (boot images), android-sdk-libsparse-utils (simg2img) and
+# lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -386,6 +387,12 @@ cpio_qemu
 . "$HERE/verify-cramfs-romfs.sh"
 crr_run
 crr_qemu
+
+# ---------------------------------------------------------- Android images
+# See tests/verify-android.sh: super.img from lpmake (ANDROID_LP=<folder with lpmake and lpunpack>) read, changed
+# and checked by lpunpack; boot and vendor_boot images from mkbootimg changed and compared with mkbootimg's own.
+. "$HERE/verify-android.sh"
+android_run
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

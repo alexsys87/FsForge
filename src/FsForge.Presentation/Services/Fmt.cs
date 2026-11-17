@@ -59,6 +59,27 @@ public static class Fmt
         _ => L.T("неизвестное содержимое"),
     };
 
+    /// <summary>"super.img (логические разделы)", "загрузочный образ (заголовок v4)".</summary>
+    public static string AndroidKind(Core.Android.AndroidImage image) => image switch
+    {
+        Core.Android.SuperImage s => L.F("super.img с логическими разделами (разделов: {0})", s.Partitions.Count),
+        Core.Android.BootImage { Kind: Core.Android.AndroidImageKind.VendorBoot } b => L.F("образ vendor_boot (заголовок v{0})", b.HeaderVersion),
+        Core.Android.BootImage b => L.F("загрузочный образ Android (заголовок v{0})", b.HeaderVersion),
+        _ => image.Description,
+    };
+
+    /// <summary>"раздел system_a", "ramdisk", "vendor ramdisk «dlkm»".</summary>
+    public static string AndroidPartName(Core.Android.AndroidImage image, Core.Android.AndroidPart part) =>
+        image.Kind == Core.Android.AndroidImageKind.Super ? L.F("раздел {0}", part.Name) : L.F("ramdisk «{0}»", part.Name);
+
+    public static string AndroidPartContent(Core.Android.AndroidPart part) => part.Content switch
+    {
+        Core.Images.PartitionContent.Empty => L.T("пусто"),
+        Core.Images.PartitionContent.OutsideFile => L.T("за пределами файла"),
+        _ when part.ContentName.Length > 0 => part.ContentName,
+        _ => L.T("неизвестное содержимое"),
+    };
+
     public static string PartitionScheme(PartitionTable t) => t.Scheme == Core.Images.PartitionScheme.Gpt ? "GPT" : "MBR";
 
     public const string DateFormat = "yyyy-MM-dd HH:mm:ss";

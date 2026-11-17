@@ -576,7 +576,8 @@ public sealed class PropertiesViewModel : DialogViewModel
 public sealed class PartitionChoiceViewModel : DialogViewModel
 {
     /// <summary>A partition of a disk image, or a volume of a UBI image (then <see cref="Partition"/> is null).</summary>
-    public sealed record Row(PartitionInfo? Partition, string Name, string Content, string Details, bool IsEditable, UbiVolumeInfo? Volume = null);
+    public sealed record Row(PartitionInfo? Partition, string Name, string Content, string Details, bool IsEditable, UbiVolumeInfo? Volume = null,
+        Core.Android.AndroidPart? AndroidPart = null);
 
     private Row? _selected;
 
@@ -612,7 +613,26 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Volume, preferred));
     }
 
-    private readonly bool _volumes;
+    public PartitionChoiceViewModel(string fileName, Core.Android.AndroidImage image)
+    {
+        _android = true;
+        bool super = image.Kind == Core.Android.AndroidImageKind.Super;
+        Title = super ? L.T("Выбор раздела") : L.T("Выбор ramdisk");
+        AcceptText = L.T("Открыть");
+        Summary = L.F("«{0}» — {1}. ", fileName, Fmt.AndroidKind(image)) +
+                  (super ? L.T("Файловые системы есть в нескольких логических разделах. Какой из них открыть?")
+                         : L.T("В образе несколько ramdisk. Какой из них открыть?"));
+        foreach (Core.Android.AndroidPart p in image.Parts)
+            Rows.Add(new Row(null, p.Name, Fmt.AndroidPartContent(p), Fmt.Size(p.Length) + (p.Detail.Length > 0 ? " · " + p.Detail : ""), p.IsReadable,
+                AndroidPart: p));
+        Core.Android.AndroidPart? preferred = image.PickDefault();
+        _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.AndroidPart, preferred));
+    }
+
+    private readonly bool _volumes, _android;
+
+    /// <summary>The part of an Android image to open; set by <see cref="Accept"/> when the dialog lists them.</summary>
+    public Core.Android.AndroidPart? AndroidResult { get; private set; }
 
     public string Summary { get; }
     public ObservableCollection<Row> Rows { get; } = new();
@@ -636,18 +656,21 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
     {
         if (_selected is null)
         {
-            Error = _volumes ? L.T("Выберите том.") : L.T("Выберите раздел.");
+            Error = _volumes ? L.T("Выберите том.") : _android ? L.T("Выберите, что открыть.") : L.T("Выберите раздел.");
             return false;
         }
         if (!_selected.IsEditable)
         {
-            Error = _volumes
+            Error = _android
+                ? L.T("Здесь нет файловой системы или архива cpio, которые можно открыть.")
+                : _volumes
                 ? L.T("В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.")
                 : L.T("В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.");
             return false;
         }
         Result = _selected.Partition;
         VolumeResult = _selected.Volume;
+        AndroidResult = _selected.AndroidPart;
         return true;
     }
 }
@@ -807,6 +830,30 @@ public sealed class ImageInfoViewModel : DialogViewModel
             }
             if (doc.EmbeddedOffset > 0) Add(L.T("Смещение образа UBI в файле"), $"0x{doc.EmbeddedOffset:X}");
             Add(L.T("Сохранение"), L.T("образ UBI целиком: заменяется только открытый том, остальные тома переносятся без изменений"));
+        }
+        else if (doc.Android is { } android)
+        {
+            Add(L.T("Образ Android"), Fmt.AndroidKind(android.Image));
+            if (android.Image is Core.Android.SuperImage sup)
+            {
+                Add(L.T("Устройство super"), L.F("«{0}», {1}, свободно {2}; метаданные по {3}, слотов: {4}{5}", sup.BlockDevices[0].Name, Fmt.Size(sup.DeviceSize), Fmt.Size(sup.FreeBytes),
+                    Fmt.Size(sup.MetadataMaxSize), sup.SlotCount, sup.Sparse ? L.T(", файл sparse") : ""));
+                foreach (Core.Android.SuperImage.LpGroup g in sup.Groups)
+                    if (g.MaximumSize > 0) Add(L.F("Группа {0}", g.Name), L.F("не больше {0}", Fmt.Size((long)g.MaximumSize)));
+            }
+            if (android.Image is Core.Android.BootImage boot)
+            {
+                if (boot.Cmdline.Length > 0) Add(L.T("Командная строка ядра"), boot.Cmdline);
+                Add(L.T("Подпись AVB"), boot.HasAvbFooter ? L.T("есть (после изменения перестанет совпадать)") : L.T("нет"));
+            }
+            foreach (Core.Android.AndroidPart p in android.Image.Parts)
+            {
+                string text = L.F("{0}, {1}", Fmt.AndroidPartContent(p), Fmt.Size(p.Length)) + (p.Detail.Length > 0 ? " · " + p.Detail : "");
+                Add(ReferenceEquals(p, android.Part) ? L.F("▸ {0} (открыт)", p.Name) : p.Name, text);
+            }
+            Add(L.T("Сохранение"), android.Image.Kind == Core.Android.AndroidImageKind.Super
+                ? L.T("super.img целиком: заменяется только открытый раздел, остальные остаются на своих местах")
+                : L.T("загрузочный образ целиком: заменяется только открытый ramdisk"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");

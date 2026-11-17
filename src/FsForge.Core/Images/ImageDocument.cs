@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using FsForge.Core.Android;
 using FsForge.Core.Cpio;
 using FsForge.Core.Cramfs;
 using FsForge.Core.Erofs;
@@ -117,6 +118,9 @@ public sealed class SaveOptions
 /// <summary>The UBI image and the volume a filesystem was opened from.</summary>
 public sealed record UbiContainer(UbiImage Image, UbiVolumeInfo Volume);
 
+/// <summary>An Android container (super.img, boot.img, vendor_boot.img) and the part of it that is open.</summary>
+public sealed record AndroidContainer(AndroidImage Image, AndroidPart Part);
+
 /// <summary>
 /// An opened image: the editable tree plus what is known about the file it came from.
 /// </summary>
@@ -156,6 +160,9 @@ public sealed class ImageDocument : IDisposable
     /// </summary>
     public UbiContainer? Ubi { get; private init; }
 
+    /// <summary>The Android container the filesystem or ramdisk was opened from.</summary>
+    public AndroidContainer? Android { get; private init; }
+
     /// <summary>
     /// Offset of the filesystem inside the (unpacked) file: the start of its partition, or the place
     /// where it was found in a firmware container. 0 for plain images.
@@ -182,7 +189,7 @@ public sealed class ImageDocument : IDisposable
     /// container with its own headers and checksums, an Android sparse image). Saving writes the
     /// filesystem alone (or the UBI image alone), so it must go to a new file.
     /// </summary>
-    public bool SavesFilesystemOnly => AndroidSparse || (EmbeddedOffset > 0 && Container is null);
+    public bool SavesFilesystemOnly => AndroidSparse && Android is null || (EmbeddedOffset > 0 && Container is null);
 
     public long FileSize { get; private init; }
 
@@ -237,6 +244,17 @@ public sealed class ImageDocument : IDisposable
         IBlockSource src = file;
         if (IsAndroidSparse(file)) src = new AndroidSparseSource(file);
         if (FilesystemAt(src) is { } direct) return direct;
+        if (AndroidImage.IsAndroidImage(src))
+        {
+            try
+            {
+                return AndroidImage.TryRead(src, false)?.PickDefault() is { } androidPart ? FormatOf(androidPart.Content) : null;
+            }
+            catch (FsException)
+            {
+                return null;
+            }
+        }
         if (UbiImage.IsUbi(src))
         {
             try
@@ -275,6 +293,18 @@ public sealed class ImageDocument : IDisposable
         : ExtReader.IsExt(src) ? ImageFormat.Ext
         : FatReader.IsFat(src) ? ImageFormat.Fat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
+
+    private static ImageFormat? FormatOf(PartitionContent content) => content switch
+    {
+        PartitionContent.SquashFs => ImageFormat.SquashFs,
+        PartitionContent.Erofs => ImageFormat.Erofs,
+        PartitionContent.Cramfs => ImageFormat.Cramfs,
+        PartitionContent.Romfs => ImageFormat.Romfs,
+        PartitionContent.Fat => ImageFormat.Fat,
+        PartitionContent.Ext => ImageFormat.Ext,
+        PartitionContent.Cpio => ImageFormat.Cpio,
+        _ => null,
+    };
 
     private static ImageFormat FormatOf(UbiVolumeInfo volume) => volume.Content switch
     {
@@ -370,7 +400,8 @@ public sealed class ImageDocument : IDisposable
     public static ImageDocument Open(string path, string? tempDirectory = null, bool searchEmbedded = true,
         IProgress<ProgressInfo>? progress = null, CancellationToken ct = default,
         int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null,
-        string? volume = null, Func<UbiImage, UbiVolumeInfo?>? chooseVolume = null)
+        string? volume = null, Func<UbiImage, UbiVolumeInfo?>? chooseVolume = null,
+        Func<AndroidImage, AndroidPart?>? chooseAndroidPart = null)
     {
         path = Path.GetFullPath(path);
         FileBlockSource file;
@@ -405,8 +436,14 @@ public sealed class ImageDocument : IDisposable
             DiskContainer? container = null;
             PartitionTable? table = null;
             UbiContainer? ubi = null;
+            AndroidContainer? android = null;
 
-            if (FilesystemAt(src) is null && UbiImage.IsUbi(src))
+            if (FilesystemAt(src) is null && AndroidImage.IsAndroidImage(src))
+            {
+                if (partition > 0) throw new FsException($"The file is an Android image and has no partition table, so there is no partition {partition} to open; use the partition name.");
+                (fs, android) = OpenAndroid(src, sparse, volume, chooseAndroidPart);
+            }
+            else if (FilesystemAt(src) is null && UbiImage.IsUbi(src))
             {
                 if (partition > 0) throw new FsException($"The file is a UBI image and has no partition table, so there is no partition {partition} to open.");
                 (fs, ubi) = OpenUbi(src, volume, chooseVolume, ct);
@@ -456,8 +493,8 @@ public sealed class ImageDocument : IDisposable
                     }
                 }
             }
-            if (volume is not null && ubi is null)
-                throw new FsException($"The file is not a UBI image, so there is no volume '{volume}' to open.");
+            if (volume is not null && ubi is null && android is null)
+                throw new FsException($"The file is neither a UBI image nor an Android image, so there is no volume or partition '{volume}' to open.");
 
             ImageDocument doc;
             if (UbifsReader.IsUbifs(fs))
@@ -468,7 +505,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ubifs, path)
                 {
                     Ubifs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.ReplayedNodes > 0)
@@ -483,7 +520,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
                 {
                     SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.Compression is SquashCompression.Lzo or SquashCompression.Lzma)
@@ -498,7 +535,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Erofs, path)
                 {
                     Erofs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -510,7 +547,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Cramfs, path)
                 {
                     Cramfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -522,9 +559,16 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Romfs, path)
                 {
                     Romfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
+            }
+            else if (android is not null && !ExtReader.IsExt(fs) && CpioReader.IsCpio(fs, out _))
+            {
+                // The ramdisk of a boot image: a (compressed) cpio archive.
+                CpioReader.Result res = CpioReader.Read(fs, tempDirectory, progress, ct);
+                doc = new ImageDocument(res.Tree, ImageFormat.Cpio, path) { Cpio = res.Info, FileSize = file.Length, Android = android, AndroidSparse = sparse };
+                doc._warnings.AddRange(res.Warnings);
             }
             else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
             {
@@ -534,7 +578,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Fat, path)
                 {
                     Fat = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -546,7 +590,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Jffs2, path)
                 {
                     Jffs2 = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -558,7 +602,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ext, path)
                 {
                     Ext = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -566,7 +610,8 @@ public sealed class ImageDocument : IDisposable
             if (!ReferenceEquals(fs, src)) doc.Tree.AttachResource(src);
 
             if (ubi is not null) doc._warnings.AddRange(ubi.Image.Warnings);
-            if (sparse)
+            if (android is not null) doc._warnings.AddRange(android.Image.Warnings);
+            if (sparse && android is null)
                 doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image of the filesystem.");
             else if (offset > 0 && container is null && ubi is not null)
                 doc._warnings.Add($"The UBI image was found inside the file at offset 0x{offset:X}. " +
@@ -607,6 +652,37 @@ public sealed class ImageDocument : IDisposable
         if (!answer.IsEditable || !table.Partitions.Contains(answer))
             throw new FsException("The selected partition does not hold SquashFS, EROFS, ext2/3/4 or FAT.");
         return answer;
+    }
+
+    /// <summary>Reads an Android container and selects the part to open.</summary>
+    private static (IBlockSource Fs, AndroidContainer Container) OpenAndroid(IBlockSource source, bool sparse, string? wanted,
+        Func<AndroidImage, AndroidPart?>? ask)
+    {
+        AndroidImage image = AndroidImage.TryRead(source, sparse) ?? throw new FsException("Not an Android image.");
+        string what = image.Kind == AndroidImageKind.Super ? "partition" : "ramdisk";
+        string list = string.Join("; ", image.Parts.Select(p => p.ToString()));
+        AndroidPart chosen;
+        if (wanted is not null)
+        {
+            chosen = image.Find(wanted) ?? throw new FsException($"The {image.Description} image has no {what} '{wanted}'. It holds: {list}.");
+            if (!chosen.IsReadable)
+                throw new FsException($"'{chosen.Name}' holds {(chosen.Length == 0 || chosen.Content == PartitionContent.Empty ? "nothing" : chosen.ContentName.Length > 0 ? chosen.ContentName : "an unknown format")} and cannot be opened.");
+        }
+        else
+        {
+            IReadOnlyList<AndroidPart> readable = image.Readable;
+            if (readable.Count == 0)
+                throw new FsException(image.Kind == AndroidImageKind.Super
+                    ? "None of the partitions of this super image holds ext4, EROFS or another filesystem this program reads. It holds: " + list + "."
+                    : "The boot image has no ramdisk this program can read (a cpio archive, uncompressed or compressed with gzip, lz4, xz or zstd). It holds: " + list + ".");
+            if (readable.Count == 1 || ask is null) chosen = image.PickDefault()!;
+            else
+            {
+                chosen = ask(image) ?? throw new OperationCanceledException();
+                if (!chosen.IsReadable || !image.Parts.Contains(chosen)) throw new FsException($"The selected {what} cannot be opened.");
+            }
+        }
+        return (image.Open(chosen), new AndroidContainer(image, chosen));
     }
 
     /// <summary>Reads the volumes of a UBI image and selects the one to open.</summary>
@@ -762,7 +838,7 @@ public sealed class ImageDocument : IDisposable
         {
             // The layout of the source; the compression levels stay as configured.
             CpioOptions c = CpioOptions.FromInfo(Cpio);
-            (c.GzipLevel, c.ZstdLevel, c.XzEffort, c.Threads) = (o.Cpio.GzipLevel, o.Cpio.ZstdLevel, o.Cpio.XzEffort, o.Cpio.Threads);
+            (c.GzipLevel, c.ZstdLevel, c.XzEffort, c.Lz4Level, c.Threads) = (o.Cpio.GzipLevel, o.Cpio.ZstdLevel, o.Cpio.XzEffort, o.Cpio.Lz4Level, o.Cpio.Threads);
             o.Cpio = c;
         }
         return o;
@@ -770,8 +846,13 @@ public sealed class ImageDocument : IDisposable
 
     /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
-        (Container is not null || Ubi is not null) && options.KeepContainer && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
-        && !(Ubi is not null && options.Format == ImageFormat.Fat);
+        options.KeepContainer && (
+            (Container is not null || Ubi is not null) && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
+            && !(Ubi is not null && options.Format == ImageFormat.Fat)
+            // A logical partition holds a filesystem image; a boot image holds a cpio ramdisk.
+            || Android is not null && (Android.Image.Kind == AndroidImageKind.Super
+                ? options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Ubifs)
+                : options.Format == ImageFormat.Cpio));
 
     /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
     public bool WritesUbi(SaveOptions options) =>
@@ -825,13 +906,15 @@ public sealed class ImageDocument : IDisposable
         }
 
         DiskContainer? container = WritesContainer(options) ? Container : null;
+        AndroidContainer? android = WritesContainer(options) ? Android : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
         if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs
             or ImageFormat.Cramfs or ImageFormat.Romfs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
-        string? volume = !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
+        string? volume = android is not null ? android.Part.Name
+            : !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
         // A tar archive carries its compression in its own options; an image gets it from the file name.
         ArchiveCompression outer = options.Format is ImageFormat.Tar or ImageFormat.Cpio ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
 
@@ -844,6 +927,7 @@ public sealed class ImageDocument : IDisposable
             using (var fs = new FileStream(raw, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
             {
                 if (container is not null) WriteDisk(fs, container, options, warnings, progress, ct);
+                else if (android is not null) WriteAndroid(fs, android, options, warnings, progress, ct);
                 else if (ubiOut) WriteUbi(fs, options, warnings, progress, ct);
                 else warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
                 fs.Flush(flushToDisk: true);
@@ -857,6 +941,7 @@ public sealed class ImageDocument : IDisposable
                     options.Verify == VerifyLevel.Content, progress, ct);
                 if (container is not null) problems.AddRange(CompareSurroundings(container, check.Container, ct));
                 if (ubiOut && Ubi is not null && WritesContainer(options)) problems.AddRange(CompareVolumes(Ubi, check.Ubi, ct));
+                if (android is not null) problems.AddRange(CompareAndroid(android, check.Android, ct));
                 if (problems.Count > 0)
                 {
                     string list = string.Join(Environment.NewLine, problems.Take(10));
@@ -914,6 +999,59 @@ public sealed class ImageDocument : IDisposable
 
         ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition, volume: volume);
         return new SaveResult(reopened, warnings, written);
+    }
+
+    // ------------------------------------------------------ Android image
+
+    /// <summary>Writes the Android container again with the new filesystem or ramdisk in the part that was open.</summary>
+    private void WriteAndroid(FileStream output, AndroidContainer c, SaveOptions options, List<string> warnings,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        string tmp = NewTempFile(options.TempDirectory);
+        try
+        {
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
+                warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
+            using var data = new FileBlockSource(tmp);
+            c.Image.Write(output, c.Part, data, warnings, progress, ct);
+        }
+        finally
+        {
+            TryDelete(tmp);
+        }
+    }
+
+    /// <summary>Checks that everything the container holds besides the rewritten part reads the same.</summary>
+    private static List<string> CompareAndroid(AndroidContainer source, AndroidContainer? written, CancellationToken ct)
+    {
+        var problems = new List<string>();
+        if (written is null)
+        {
+            problems.Add("The written file is not an Android image.");
+            return problems;
+        }
+        var after = written.Image.FixedSections().ToDictionary(s => s.Name, s => s.Data);
+        byte[] x = new byte[1 << 20], y = new byte[1 << 20];
+        foreach ((string name, IBlockSource a) in source.Image.FixedSections())
+        {
+            if (name == source.Part.Name || name == "ramdisk:" + source.Part.Name) continue;
+            if (!after.TryGetValue(name, out IBlockSource? b) || b.Length != a.Length)
+            {
+                problems.Add($"'{name}' of the Android image is missing or differs in the written image.");
+                continue;
+            }
+            for (long offset = 0; offset < a.Length; offset += x.Length)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(x.Length, a.Length - offset);
+                a.ReadExactly(offset, x.AsSpan(0, n));
+                b.ReadExactly(offset, y.AsSpan(0, n));
+                if (x.AsSpan(0, n).SequenceEqual(y.AsSpan(0, n))) continue;
+                problems.Add($"The content of '{name}' differs from the source Android image.");
+                break;
+            }
+        }
+        return problems;
     }
 
     // ---------------------------------------------------------- UBI image

@@ -36,6 +36,9 @@ public enum PartitionContent
     Erofs,
     Cramfs,
     Romfs,
+
+    /// <summary>A cpio archive (the ramdisk of an Android boot image).</summary>
+    Cpio,
 }
 
 /// <summary>One entry of a partition table.</summary>

@@ -39,6 +39,11 @@ internal static class Program
         the whole disk image again with only that partition replaced, unless the output name says otherwise
         (.squashfs, .erofs, .cramfs, .romfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
 
+        Android images are opened at what they hold: super.img (also sparse) at its largest logical partition,
+        boot.img / init_boot.img / vendor_boot.img at the ramdisk (a cpio archive); add vol=<name> to pick another
+        partition (system_a, vendor_a...) or vendor ramdisk. "convert" writes the whole Android image again with only
+        that part replaced, unless the output name or container=0 says otherwise.
+
         A UBI image (ubinize output, a flash dump without out-of-band data) is opened at the volume that holds
         the most data; add vol=<name or number> to any command to pick another one. "convert" writes the whole
         UBI image again with only that volume replaced, unless the output name or container=0 says otherwise.
@@ -57,7 +62,7 @@ internal static class Program
           romfs:    label=<text> align=16..65536
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
-          cpio:     comp=none|gzip|xz|zstd cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
+          cpio:     comp=none|gzip|xz|zstd|lz4 cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
           ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
           jffs2:    comp=zlib|lzo|rtime|none endian=little|big erase=<bytes> cleanmarkers=0|1 cmsize=<bytes>
                     pagesize=<bytes> pad=0|1 xattrs=0|1 allroot=1
@@ -230,6 +235,16 @@ internal static class Program
             foreach (UbiVolumeInfo v in ubi.Image.Volumes)
                 Console.WriteLine($"  {(ReferenceEquals(v, ubi.Volume) ? '*' : ' ')} {v}  [{v.StoredBlocks} blocks in the file]");
         }
+        if (doc.Android is { } an)
+        {
+            Console.WriteLine($"Android:     {an.Image.Description}");
+            if (an.Image is FsForge.Core.Android.SuperImage sup)
+                Console.WriteLine($"             block device '{sup.BlockDevices[0].Name}' of {sup.DeviceSize} bytes, {sup.FreeBytes} free, metadata {sup.MetadataMaxSize} bytes x {sup.SlotCount} slot(s){(sup.Sparse ? ", sparse file" : "")}");
+            if (an.Image is FsForge.Core.Android.BootImage boot)
+                Console.WriteLine($"             cmdline '{boot.Cmdline}'{(boot.HasAvbFooter ? ", AVB footer" : "")}");
+            foreach (FsForge.Core.Android.AndroidPart p in an.Image.Parts)
+                Console.WriteLine($"  {(ReferenceEquals(p, an.Part) ? '*' : ' ')} {p}");
+        }
         if (doc.EmbeddedOffset > 0) Console.WriteLine($"Offset:      0x{doc.EmbeddedOffset:X}");
         Console.WriteLine($"Content:     {st.Files} files, {st.Directories} directories, {st.Symlinks} symlinks, {st.Specials} special, {st.DataBytes} bytes");
         foreach (string w in doc.Warnings) Console.Error.WriteLine("warning: " + w);
@@ -259,6 +274,8 @@ internal static class Program
         Dump(doc.Tree, w);
         w.Flush();
         foreach (string s in doc.Warnings) Console.Error.WriteLine("warning: " + s);
+        if (doc.Android is { } an)
+            Console.Error.WriteLine($"android kind={an.Image.Kind} part={an.Part.Name} parts={string.Join(',', an.Image.Parts.Select(p => p.Name + ":" + p.ContentName))}");
         if (doc.Ext is { } e)
             Console.Error.WriteLine($"{e.Kind} bs={e.BlockSize} blocks={e.BlocksCount} inodes={e.InodesCount} isize={e.InodeSize} journal={e.JournalBytes} features={string.Join(',', e.FeatureNames)}");
         if (doc.Ubifs is { } u)
@@ -292,8 +309,8 @@ internal static class Program
         if (f is null)
         {
             string name = Path.GetFileName(output).ToLowerInvariant();
-            if (ArchiveCodec.CompressionFromFileName(name) is not null) f = "tar";
-            else if (CpioFormat.CompressionFromFileName(name) is not null) f = "cpio";
+            if (ArchiveCodec.CompressionFromFileName(name) is not null) (f, namedFilesystem) = ("tar", true);
+            else if (CpioFormat.CompressionFromFileName(name) is not null) (f, namedFilesystem) = ("cpio", true);
             else
             {
                 foreach (string z in new[] { ".gz", ".xz", ".zst", ".zstd" })
@@ -372,6 +389,7 @@ internal static class Program
                     s.SquashFs.GzipLevel = s.Tar.GzipLevel = s.Cpio.GzipLevel = s.Cramfs.Level = Math.Clamp(int.Parse(value), 1, 9);
                     s.SquashFs.ZstdLevel = s.Tar.ZstdLevel = s.Ubifs.ZstdLevel = s.Cpio.ZstdLevel = int.Parse(value);
                     s.Erofs.Lz4Level = Math.Clamp(int.Parse(value), 1, 12);
+                    s.Cpio.Lz4Level = s.Tar.Lz4Level = Math.Clamp(int.Parse(value), 1, 12);
                     s.Erofs.ZstdLevel = Math.Clamp(int.Parse(value), 1, 22);
                     s.Erofs.DeflateLevel = Math.Clamp(int.Parse(value), 1, 9);
                     break;

@@ -2,7 +2,7 @@
 # tree.ref, img/xz.sqfs (the same tree), ok/bad and cmpdump; everything else lives in cpio/.
 #
 #   cpio_run    archives made by GNU cpio (newc, crc and odc; with and without "./" in front of the names and
-#               an entry for the root; gzip, xz and zstd) and by bsdtar are read by FsForge; an initramfs of
+#               an entry for the root; gzip, xz, zstd and the legacy lz4 of "lz4 -l") and by bsdtar are read by FsForge; an initramfs of
 #               two archives (uncompressed microcode, then the compressed system) is read as one tree. Archives
 #               written by FsForge (newc and crc, every compression, "./" names, no root entry) are unpacked by
 #               GNU cpio, bsdtar and busybox and compared entry by entry with the source tree.
@@ -12,7 +12,7 @@
 #
 # cpio keeps no extended attributes: the listings are compared without them.
 
-cpio_dec() { case $1 in *.gz) gzip -dc "$1";; *.xz) xz -dc "$1";; *.zst) zstd -dc "$1";; *) cat "$1";; esac; }
+cpio_dec() { case $1 in *.gz) gzip -dc "$1";; *.xz) xz -dc "$1";; *.zst) zstd -dc "$1";; *.lz4) lz4 -dc "$1";; *) cat "$1";; esac; }
 
 cpio_cmp() { # name dir ref [from-line] [skip-regex] : an unpacked folder against a reference (no attributes)
   # GNU cpio and bsdtar give the folder they unpack into no time, and GNU cpio makes the hard links of a file
@@ -40,6 +40,7 @@ cpio_run() {
   gzip -9c cpio/img/newc.cpio > cpio/img/newc.cpio.gz;                              cpio_rd newc.cpio.gz tree.ref
   xz -c --check=crc32 cpio/img/newc.cpio > cpio/img/newc.cpio.xz;                   cpio_rd newc.cpio.xz tree.ref
   command -v zstd >/dev/null && { zstd -q -c cpio/img/newc.cpio > cpio/img/newc.cpio.zst; cpio_rd newc.cpio.zst tree.ref; }
+  command -v lz4 >/dev/null && { lz4 -l -12 -q -c cpio/img/newc.cpio > cpio/img/newc.cpio.lz4; cpio_rd newc.cpio.lz4 tree.ref; }
   # odc cannot hold every owner and device number of the tree: what GNU cpio itself unpacks is the reference.
   (cd tree && find . | cpio -o -H odc --quiet 2>/dev/null) > cpio/img/odc.cpio
   rm -rf cpio/x; mkdir cpio/x; (cd cpio/x && cpio -idmu --quiet --no-absolute-filenames < ../img/odc.cpio 2>/dev/null)
@@ -80,6 +81,7 @@ cpio_run() {
     rm -rf cpio/x
   }
   cw newc.cpio comp=none; cw newc.cpio.gz comp=gzip; cw newc.cpio.xz comp=xz; command -v zstd >/dev/null && cw newc.cpio.zst comp=zstd
+  command -v lz4 >/dev/null && cw newc.cpio.lz4 comp=lz4
   cw crc.cpio.gz comp=gzip cpioformat=crc; cw dot.cpio comp=none prefix=./ root=0
   xz -t cpio/img/w_newc.cpio.xz 2>/dev/null && [ "$(xz -l --robot cpio/img/w_newc.cpio.xz | awk '$1=="totals"{print $2}')" = 1 ] \
     && ok "the .cpio.xz is one xz stream with CRC32 (as the kernel needs)" || bad "the .cpio.xz is not a single xz stream"
@@ -151,6 +153,6 @@ PY
     if cmp -s cpio/out/k.expect cpio/out/k.$n.got; then ok "the kernel boots the $n initramfs and unpacks $(wc -l < cpio/out/k.$n.got) objects identically"
     else bad "boot cpio $n: $(grep -a -i "initramfs\|panic" cpio/out/boot.$n.log | head -2)"; diff cpio/out/k.expect cpio/out/k.$n.got | head -4 | cut -c1-200; fi
   }
-  kb newc.cpio comp=none; kb newc.cpio.gz comp=gzip; kb newc.cpio.xz comp=xz; kb newc.cpio.zst comp=zstd
+  kb newc.cpio comp=none; kb newc.cpio.gz comp=gzip; kb newc.cpio.xz comp=xz; kb newc.cpio.zst comp=zstd; kb newc.cpio.lz4 comp=lz4
   kb crc.cpio.gz comp=gzip cpioformat=crc prefix=./ root=0
 }
