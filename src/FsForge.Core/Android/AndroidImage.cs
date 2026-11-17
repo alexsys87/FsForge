@@ -230,7 +230,7 @@ internal sealed class ImageLayout
 
         // Runs of blocks of one kind: 0 raw, 1 zeros (FILL 0), 2 not covered (DONT_CARE).
         int runKind = -1;
-        long runStart = 0, runBlocks = 0;
+        long runBlocks = 0;
         var raw = new MemoryStream();
         void Flush()
         {

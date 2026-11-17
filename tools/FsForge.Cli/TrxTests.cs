@@ -126,7 +126,7 @@ internal static partial class SelfTest
             Check(doc.Format == ImageFormat.SquashFs && doc.Firmware?.Image is TrxImage { Version: 1, CrcScheme: "fwtool", ChkBoard: null, TrxOffset: 0 } && doc.Firmware.Part.Name == "rootfs",
                 "version 1: opened at the root filesystem");
             // Each part at its alignment behind the one before: the loader at 28, the kernel at 3072, the SquashFS at 128 KiB.
-            Check(doc.Firmware.Image.Parts is [{ Name: "loader", Offset: 28 }, { Name: "kernel", Offset: 3072, ContentName: "LZMA data" }, { Name: "rootfs", Offset: 131072 }],
+            Check(doc.Firmware!.Image.Parts is [{ Name: "loader", Offset: 28 }, { Name: "kernel", Offset: 3072, ContentName: "LZMA data" }, { Name: "rootfs", Offset: 131072 }],
                 "version 1: parts " + string.Join("; ", doc.Firmware.Image.Parts));
             Check(!doc.SavesFilesystemOnly, "a TRX image is rebuilt when saved");
             Same(expected, Program.DumpToString(doc.Tree), "version 1");
