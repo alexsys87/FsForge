@@ -23,7 +23,9 @@ internal static partial class SelfTest
     {
         Test("FIT: images in the tree, hashes, choice of image", FitEmbedded);
         Test("FIT: external data (data-offset, data-position), image.ub, root filesystem behind", FitLayouts);
-        Test("FIT: wrong hash, signature, plain DTB, never saved over", FitChecks);
+        Test("FIT: wrong hash, signed images only read, plain DTB, never saved over", FitChecks);
+        Test("FIT: rebuilt with data in the tree, behind it and at a position; hashes, other images kept", FitRebuild);
+        Test("FIT: image.ub ramdisk rebuilt in its uImage; root filesystem behind an OpenWrt FIT", FitRebuildWrapped);
         Test("FIT: corrupted images are rejected cleanly", FitFuzz);
     }
 
@@ -159,7 +161,7 @@ internal static partial class SelfTest
                 "opened at rootfs-1: " + string.Join("; ", doc.Firmware?.Image.Parts.Select(p => p.ToString()) ?? []));
             Check(doc.Firmware!.Image.Parts is [{ Name: "kernel-1", IsReadable: false, ContentName: "kernel (gzip)" }, { Name: "fdt-1", ContentName: "device tree" },
                 { Name: "ramdisk-1", Content: PartitionContent.Cpio }, { Name: "rootfs-1", Content: PartitionContent.SquashFs }], "parts");
-            Check(doc.SavesFilesystemOnly && doc.Warnings.Any(w => w.Contains("FIT image is not supported yet")), "FIT images are only read");
+            Check(!doc.SavesFilesystemOnly, "a FIT image is rebuilt when saved");
             Same(expected, Program.DumpToString(doc.Tree), "rootfs-1");
         }
         using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false, volume: "ramdisk-1"))
@@ -217,7 +219,8 @@ internal static partial class SelfTest
         byte[] fit = BuildFit("checks", new[] { ("rootfs-1", "filesystem", squash, (string?)"sha256") }, FitData.Embedded, signed: true);
         string path = WriteFile("checks.itb", fit);
         using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
-            Check(doc.Firmware?.Image is FitImage { Signed: true, HashesWrong: 0 }, "signature nodes are noticed");
+            Check(doc.Firmware?.Image is FitImage { Signed: true, HashesWrong: 0 } && doc.SavesFilesystemOnly && doc.Warnings.Any(w => w.Contains("is signed")),
+                "a signed FIT image is only read");
 
         // A changed byte of the data: opened, with a warning.
         int at = fit.AsSpan().IndexOf("hsqs"u8);
@@ -243,6 +246,147 @@ internal static partial class SelfTest
         d.Save(alone, o).Document?.Dispose();
         using ImageDocument back = ImageDocument.Open(alone, _dir, searchEmbedded: false);
         Check(back.Firmware is null && back.Tree.Resolve("/file0") is null && back.Tree.Resolve("/file2") is not null, "saved alone");
+    }
+
+    /// <summary>
+    /// The images of a FIT file as an independent reader finds them (header, structure, strings, external data):
+    /// name, data, and each hash with whether it matches the data.
+    /// </summary>
+    private static Dictionary<string, (byte[] Data, List<(string Algo, bool Ok)> Hashes)> ReadFitImages(byte[] fit)
+    {
+        uint U(int at) => BinaryPrimitives.ReadUInt32BigEndian(fit.AsSpan(at));
+        Check(U(0) == 0xD00DFEED, "not a device tree");
+        int total = (int)U(4), offStruct = (int)U(8), offStrings = (int)U(12);
+        int dataBase = (total + 3) & ~3;
+        string Str(int at) { int e = Array.IndexOf(fit, (byte)0, at); return Encoding.ASCII.GetString(fit, at, e - at); }
+        var result = new Dictionary<string, (byte[], List<(string, bool)>)>();
+        var path = new List<string>();
+        var props = new List<Dictionary<string, byte[]>>();
+        for (int pos = offStruct; ;)
+        {
+            uint token = U(pos);
+            pos += 4;
+            if (token == 1)
+            {
+                string name = Str(pos);
+                pos += (name.Length + 4) & ~3;
+                path.Add(name);
+                props.Add(new Dictionary<string, byte[]>());
+            }
+            else if (token == 3)
+            {
+                int len = (int)U(pos), name = (int)U(pos + 4);
+                props[^1][Str(offStrings + name)] = fit[(pos + 8)..(pos + 8 + len)];
+                pos += 8 + ((len + 3) & ~3);
+            }
+            else if (token == 2)
+            {
+                // Closing a hash node adds it to its image; closing an image under /images makes the entry.
+                Dictionary<string, byte[]> p = props[^1];
+                string name = path[^1];
+                if (path.Count == 4 && path[1] == "images" && name.StartsWith("hash"))
+                {
+                    var image = props[^2];
+                    image["#hash:" + Encoding.ASCII.GetString(p["algo"]).TrimEnd('\0')] = p["value"];
+                }
+                if (path.Count == 3 && path[1] == "images")
+                {
+                    byte[] data = p.TryGetValue("data", out byte[]? d) ? d
+                        : fit[(p.ContainsKey("data-offset") ? dataBase + (int)BinaryPrimitives.ReadUInt32BigEndian(p["data-offset"]) : (int)BinaryPrimitives.ReadUInt32BigEndian(p["data-position"]))..][..(int)BinaryPrimitives.ReadUInt32BigEndian(p["data-size"])];
+                    var hashes = p.Where(kv => kv.Key.StartsWith("#hash:")).Select(kv =>
+                    {
+                        string algo = kv.Key[6..];
+                        byte[] calc = algo == "crc32" ? Crc32Value(data) : SHA256.HashData(data);
+                        return (algo, calc.AsSpan().SequenceEqual(kv.Value));
+                    }).ToList();
+                    result[name] = (data, hashes);
+                }
+                path.RemoveAt(path.Count - 1);
+                props.RemoveAt(props.Count - 1);
+            }
+            else if (token == 9) break;
+            else if (token != 4) throw new TestFailure($"bad token {token}");
+        }
+        return result;
+    }
+
+    private static void FitRebuild()
+    {
+        var rnd = new Random(45);
+        FsTree tree = SmallTree(45, 8);
+        byte[] kernel = Gzipped(Bytes(rnd, 70001)), dtb = BuildFdt(new DtNode("").Prop("model", "board")), cpio = Ramdisk(tree, ArchiveCompression.Gzip), squash = Squash(tree);
+        foreach (FitData layout in new[] { FitData.Embedded, FitData.Offset, FitData.Position })
+            foreach (string changed in new[] { "ramdisk-1", "rootfs-1" })
+            {
+                byte[] fit = BuildFit("rebuild", new[] { ("kernel-1", "kernel", kernel, "crc32"), ("fdt-1", "flat_dt", dtb, "sha256"), ("ramdisk-1", "ramdisk", cpio, "sha256"),
+                    ("rootfs-1", "filesystem", squash, (string?)"crc32") }, layout);
+                string path = WriteFile($"rebuild-{layout}-{changed}.itb", fit);
+                string what = $"{layout} {changed}";
+                ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false, volume: changed);
+                try
+                {
+                    doc.Tree.CreateFile(doc.Tree.Root, "added", new MemoryFileData(Bytes(rnd, 40000)));
+                    SaveOptions o = doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir });
+                    Check(doc.WritesFirmware(o), what + ": the FIT image is written");
+                    doc = doc.Save(path, o).Document!;
+                    Check(doc.Firmware is { Part.Name: var n, Image: FitImage { HashesWrong: 0 } } && n == changed && doc.Tree.Resolve("/added") is not null, what + ": reopened");
+                }
+                finally
+                {
+                    doc.Dispose();
+                }
+                var images = ReadFitImages(File.ReadAllBytes(path));
+                Check(images.Count == 4 && images.Values.All(i => i.Hashes.Count == 1 && i.Hashes[0].Ok), what + ": hashes " +
+                      string.Join(", ", images.Select(i => i.Key + ":" + string.Join("/", i.Value.Hashes.Select(h => h.Algo + (h.Ok ? "" : "!"))))));
+                Check(images["kernel-1"].Data.AsSpan().SequenceEqual(kernel) && images["fdt-1"].Data.AsSpan().SequenceEqual(dtb), what + ": kernel and device tree kept");
+                string other = changed == "ramdisk-1" ? "rootfs-1" : "ramdisk-1";
+                Check(images[other].Data.AsSpan().SequenceEqual(changed == "ramdisk-1" ? squash : cpio), what + ": the other image kept");
+                Check(!images[changed].Data.AsSpan().SequenceEqual(changed == "ramdisk-1" ? cpio : squash), what + ": the changed image is the same");
+            }
+    }
+
+    private static void FitRebuildWrapped()
+    {
+        var rnd = new Random(46);
+        FsTree tree = SmallTree(46, 6);
+        byte[] kernel = Gzipped(Bytes(rnd, 30001));
+        byte[] wrapped = BuildUImage(UbArm, UbRamdisk, UbGzip, "petalinux-image-minimal", Ramdisk(tree, ArchiveCompression.Gzip));
+        string path = WriteFile("rebuild.ub", BuildFit("PetaLinux", new[] { ("kernel@1", "kernel", kernel, "sha256"), ("ramdisk@1", "ramdisk", wrapped, (string?)"sha256") }, FitData.Embedded));
+        using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
+        {
+            doc.Tree.CreateFile(doc.Tree.Root, "init", new MemoryFileData(Bytes(rnd, 3000, compressible: true)), 0x1ED);
+            doc.Save(path, doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir })).Document?.Dispose();
+        }
+        var images = ReadFitImages(File.ReadAllBytes(path));
+        Check(images.Values.All(i => i.Hashes.All(h => h.Ok)) && images["kernel@1"].Data.AsSpan().SequenceEqual(kernel), "image.ub: hashes and kernel");
+        byte[] ramdisk = images["ramdisk@1"].Data;
+        uint size = CheckUImage(ramdisk, "image.ub ramdisk");
+        Check(size == ramdisk.Length - 64 && ramdisk.AsSpan(32, 32).SequenceEqual(wrapped.AsSpan(32, 32)) && ramdisk[64] == 0x1F && ramdisk[65] == 0x8B,
+            "image.ub: the ramdisk is a gzipped archive in its uImage again");
+        using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
+            Check(doc.Format == ImageFormat.Cpio && doc.Tree.Resolve("/init") is not null, "image.ub: reopened");
+
+        // OpenWrt: the root filesystem behind the FIT image; the image itself stays byte for byte, the marker on its boundary.
+        byte[] fit = BuildFit("ARM64 OpenWrt FIT", new[] { ("kernel-1", "kernel", kernel, (string?)"crc32") }, FitData.Embedded);
+        byte[] padded = PadTo(fit, 65536, 0xFF);
+        var file = new List<byte>(padded);
+        file.AddRange(Squash(tree));
+        while (file.Count % 65536 != 0) file.Add(0xFF);
+        file.AddRange(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE });
+        path = WriteFile("rebuild-openwrt.itb", file.ToArray());
+        using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
+        {
+            Check(doc.Firmware?.Part is { Name: "rootfs", BehindImage: true }, "OpenWrt FIT: the root filesystem behind it");
+            doc.Tree.CreateFile(doc.Tree.Root, "big", new MemoryFileData(Bytes(rnd, 200000)));
+            doc.Save(path, doc.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir })).Document?.Dispose();
+        }
+        byte[] after = File.ReadAllBytes(path);
+        Check(after.AsSpan(0, padded.Length).SequenceEqual(padded), "OpenWrt FIT: the FIT image changed");
+        long fsEnd = padded.Length + (long)BinaryPrimitives.ReadUInt64LittleEndian(after.AsSpan(padded.Length + 40));
+        long marker = (fsEnd + 65535) / 65536 * 65536;
+        // The old marker stood on a boundary of 64, 128 and 256 KiB alike: each of these gets one behind the new filesystem.
+        List<int> marks = Markers(after);
+        Check(marks.Contains((int)marker) && marks[^1] + 4 == after.Length && marks.All(m => m >= fsEnd), "OpenWrt FIT: the markers behind the new filesystem");
     }
 
     private static void FitFuzz()

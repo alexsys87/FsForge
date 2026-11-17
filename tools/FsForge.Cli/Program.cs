@@ -52,8 +52,9 @@ internal static class Program
         that part replaced, unless the output name or container=0 says otherwise.
 
         U-Boot FIT images (.itb, image.ub) are opened the same way, at the image that holds a filesystem or
-        ramdisk (vol=<image node name>, e.g. vol=ramdisk-1); hashes are checked. They are not rebuilt yet: the
-        filesystem is saved alone, under another name.
+        ramdisk (vol=<image node name>, e.g. vol=ramdisk-1); hashes are checked. Saving writes the FIT image
+        again with that image replaced: its hashes, size and the offsets of external data are recalculated.
+        Signed FIT images are only read: their filesystem is saved alone, under another name.
 
         U-Boot uImage files (uImage, uInitrd, OpenWrt sysupgrade images with the root filesystem behind the
         kernel) are opened at the filesystem or ramdisk they hold; add vol=<name or number> to pick another part

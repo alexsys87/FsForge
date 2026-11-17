@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using FsForge.Core.Compression;
 using FsForge.Core.Images;
 using FsForge.Core.Tar;
 
@@ -101,6 +103,273 @@ public abstract class FirmwareImage
     /// <summary>Reads the firmware header and finds the parts; null when the file has none.</summary>
     public static FirmwareImage? TryRead(IBlockSource source, CancellationToken ct = default) =>
         UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct) : null;
+
+    // ------------------------------------------- shared by the rebuilding images
+
+    /// <summary>Erase blocks larger than this are not assumed when padding is kept aligned.</summary>
+    protected const long MaxAlignment = 256 << 10;
+
+    /// <summary>OpenWrt's metadata and signature blocks at the end of the file, when their checksums are right.</summary>
+    private Fwtool? _fwtool;
+
+    /// <summary>
+    /// The file ends with OpenWrt's fwtool blocks (metadata, signature): true when their checksums are right (they
+    /// are made again when the firmware is rebuilt), false when they are not, null when there are none.
+    /// </summary>
+    public bool? FwtoolChecksumsValid { get; private set; }
+
+    /// <summary>The fwtool blocks hold a signature, which a rebuilt firmware no longer matches.</summary>
+    public bool FwtoolSigned => _fwtool?.HasSignature == true;
+
+    /// <summary>Where the firmware ends without OpenWrt's fwtool blocks.</summary>
+    protected long ContentEnd => _fwtool?.ContentEnd ?? Source.Length;
+
+    /// <summary>The checksums the firmware carries for its own content (header CRC, image hashes) are right.</summary>
+    public abstract bool ChecksumsValid { get; }
+
+    /// <summary>Looks for OpenWrt's fwtool blocks at the end of the file, behind <paramref name="notBefore"/>.</summary>
+    protected void ReadFwtool(long notBefore, CancellationToken ct)
+    {
+        if (Fwtool.Read(Source, notBefore, ct) is { } fw)
+        {
+            FwtoolChecksumsValid = fw.CrcValid;
+            if (fw.CrcValid) _fwtool = fw;
+        }
+    }
+
+    protected IBlockSource Slice(long from, long to) => new SubBlockSource(Source, from, to - from, ownsInner: false);
+
+    /// <summary>
+    /// The firmware up to the end of its content with <paramref name="data"/> in place of the root filesystem behind
+    /// the image: everything in front stays, and what followed the filesystem (OpenWrt's 0xdeadc0de markers, other
+    /// data) is put behind the new one on the same erase block boundaries.
+    /// </summary>
+    protected List<IBlockSource> TrailingPieces(FirmwarePart part, IBlockSource data)
+    {
+        var pieces = new List<IBlockSource>();
+        pieces.Add(Slice(0, part.Offset));
+        pieces.Add(data);
+        long newEnd = part.Offset + data.Length;
+        Tail tail = TailOf(part);
+        if (tail.Markers.Count > 0)
+        {
+            // A marker on the first boundary of each of these sizes behind the new filesystem (one boundary can serve
+            // several sizes), padding in between.
+            long pos = newEnd;
+            foreach (long at in tail.Markers.Select(size => RoundUp(newEnd, size)).Distinct().Order())
+            {
+                pieces.Add(Fill(at - pos, tail.Fill));
+                pieces.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
+                pos = at + 4;
+            }
+            pieces.Add(Slice(tail.Rest, ContentEnd));
+        }
+        else if (tail.Start < ContentEnd)
+        {
+            long at = Shifted(tail.Start, newEnd, tail.Align);
+            pieces.Add(Fill(at - newEnd, tail.Fill));
+            pieces.Add(Slice(tail.Start, ContentEnd));
+        }
+        else if (tail.Align > 1)
+            pieces.Add(Fill(RoundUp(newEnd, tail.Align) - newEnd, tail.Fill));
+        return pieces;
+    }
+
+    /// <summary>
+    /// Writes the new firmware: the pieces, then OpenWrt's fwtool blocks with their checksums made over them; warns
+    /// when it grew and about signatures that no longer match.
+    /// </summary>
+    protected void WritePieces(Stream output, List<IBlockSource> pieces, List<string> warnings, IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        long total = pieces.Sum(p => p.Length) + (Source.Length - ContentEnd);
+        if (total > Source.Length)
+            warnings.Add($"The firmware grew from {DiskText.Size(Source.Length)} to {DiskText.Size(total)}: make sure it still fits into the flash partition it is written to.");
+        if (_fwtool is null && HasFwtoolTrailer())
+            warnings.Add("The firmware ends with an OpenWrt metadata or signature block (fwtool) whose checksum does not match the file it came with. It was carried over unchanged: " +
+                         "sysupgrade may refuse the file or need -F.");
+        else if (_fwtool?.HasSignature == true)
+            warnings.Add("The firmware is signed (an OpenWrt fwtool signature block). The checksums of its metadata and signature blocks were made again, " +
+                         "but the signature belongs to the old image: a device that checks image signatures will refuse it.");
+
+        byte[] buf = new byte[1 << 20];
+        long done = 0;
+        uint crc = ~0u;
+        foreach (IBlockSource piece in pieces)
+        {
+            for (long o = 0; o < piece.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, piece.Length - o);
+                piece.ReadExactly(o, buf.AsSpan(0, n));
+                output.Write(buf, 0, n);
+                if (_fwtool is not null) crc = Fwtool.RawUpdate(crc, buf.AsSpan(0, n));
+                o += n;
+                done += n;
+                progress?.Report(new ProgressInfo("write", done, total));
+            }
+        }
+        // OpenWrt's metadata (and signature) behind the new image, their checksums made over it.
+        _fwtool?.Write(output, Source, crc, ct);
+    }
+
+    /// <summary>
+    /// What a rewrite keeps behind the image: what followed the root filesystem behind it when that is the part
+    /// rewritten, and the fwtool blocks without their checksums.
+    /// </summary>
+    protected IEnumerable<(string Name, IBlockSource Data)> BehindSections(FirmwarePart? trailing, FirmwarePart open)
+    {
+        if (trailing is not null && open.Name == trailing.Name)
+        {
+            Tail tail = TailOf(trailing);
+            // Behind a new filesystem one marker can serve more block sizes than before (an 8 KiB boundary may also be
+            // the first 16 KiB one), so only what follows the markers is compared.
+            if (tail.Markers.Count > 0)
+                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, ContentEnd - tail.Rest, ownsInner: false));
+            else yield return ("data after " + trailing.Name, new SubBlockSource(Source, tail.Start, ContentEnd - tail.Start, ownsInner: false));
+        }
+        if (_fwtool is not null)
+            foreach ((string name, IBlockSource data) in _fwtool.Sections(Source)) yield return (name, data);
+    }
+
+    /// <summary>What follows a root filesystem behind the image.</summary>
+    /// <param name="Start">Where it starts, the padding behind the filesystem skipped (the end of the file when nothing follows).</param>
+    /// <param name="Align">The boundary it has to stay on when it is moved as a whole.</param>
+    /// <param name="Fill">The byte the padding is made of.</param>
+    /// <param name="Markers">
+    /// When it starts with OpenWrt's 0xdeadc0de markers: the erase block sizes (4 KiB to 256 KiB) whose first boundary
+    /// behind the filesystem holds one, smallest first. Empty when it does not start so.
+    /// </param>
+    /// <param name="Rest">Where the data behind the markers starts.</param>
+    protected sealed record Tail(long Start, long Align, byte Fill, List<long> Markers, long Rest);
+
+    /// <summary>
+    /// What follows a root filesystem behind the image. Only the end of a SquashFS, EROFS, CramFS, romfs or ext
+    /// filesystem is known; any other one runs to the end of the file.
+    /// </summary>
+    protected Tail TailOf(FirmwarePart part)
+    {
+        long eof = ContentEnd;
+        long fsEnd = part.Packed is null ? part.Offset + FilesystemLength(part.Offset, part.Content) : eof;
+        long start = fsEnd;
+        byte[] buf = new byte[1 << 16];
+        while (start < eof)
+        {
+            int n = Source.Read(start, buf.AsSpan(0, (int)Math.Min(buf.Length, eof - start)));
+            if (n <= 0) break;
+            int i = buf.AsSpan(0, n).IndexOfAnyExcept((byte)0, (byte)0xFF);
+            if (i >= 0) { start += i; break; }
+            start += n;
+        }
+        byte fill = start > fsEnd ? Source.ReadBytes(start - 1, 1)[0] : (byte)0xFF;
+        if (start >= eof) return new Tail(eof, eof > fsEnd ? Alignment(eof) : 1, fill, new List<long>(), eof);
+
+        // OpenWrt's padjffs2 puts 0xdeadc0de at the first 4, 8 ... 256 KiB boundaries behind the filesystem, so that the
+        // kernel finds one at the start of the next erase block, whatever size the flash has. What matters is which
+        // of these boundaries hold a marker.
+        var found = new HashSet<long>();
+        long rest = start;
+        byte[] word = new byte[4];
+        for (long at = start; (at & 3) == 0 && at + 4 <= eof && at < fsEnd + 2 * MaxAlignment; at += 4)
+        {
+            Source.ReadExactly(at, word);
+            if (BinaryPrimitives.ReadUInt32BigEndian(word) == 0xDEADC0DE) { found.Add(at); rest = at + 4; }
+            else if (word.AsSpan().IndexOfAnyExcept((byte)0, (byte)0xFF) >= 0) break;
+        }
+        var markers = new List<long>();
+        for (long size = 4096; size <= MaxAlignment; size <<= 1)
+            if (found.Contains(RoundUp(fsEnd, size))) markers.Add(size);
+        if (markers.Count == 0) return new Tail(start, Alignment(start), fill, markers, start);
+        return new Tail(start, Math.Max(Alignment(start), markers.Max()), fill, markers, rest);
+    }
+
+    /// <summary>
+    /// How long the filesystem at <paramref name="at"/> is, as its superblock gives it (SquashFS, EROFS, CramFS, romfs,
+    /// ext2/3/4); anything else, or a size that makes no sense, runs to the end of the file.
+    /// </summary>
+    protected long FilesystemLength(long at, PartitionContent content)
+    {
+        long rest = ContentEnd - at;
+        long length = 0;
+        try
+        {
+            switch (content)
+            {
+                case PartitionContent.SquashFs:
+                    length = (long)Math.Min(BinaryPrimitives.ReadUInt64LittleEndian(Source.ReadBytes(at + 40, 8)), (ulong)long.MaxValue);
+                    break;
+                case PartitionContent.Erofs:
+                {
+                    byte[] sb = Source.ReadBytes(at + 1024, 40);
+                    length = sb[12] is >= 9 and <= 16 ? (long)BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(36)) << sb[12] : 0;
+                    break;
+                }
+                case PartitionContent.Cramfs:
+                {
+                    byte[] sb = Source.ReadBytes(at, 12);
+                    bool big = BinaryPrimitives.ReadUInt32BigEndian(sb) == 0x28CD3D45;
+                    uint flags = big ? BinaryPrimitives.ReadUInt32BigEndian(sb.AsSpan(8)) : BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(8));
+                    // Only the version 2 superblock (flag 1) records the size.
+                    if ((flags & 1) != 0) length = big ? BinaryPrimitives.ReadUInt32BigEndian(sb.AsSpan(4)) : BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(4));
+                    break;
+                }
+                case PartitionContent.Romfs:
+                    length = BinaryPrimitives.ReadUInt32BigEndian(Source.ReadBytes(at + 8, 4));
+                    break;
+                case PartitionContent.Ext:
+                {
+                    byte[] sb = Source.ReadBytes(at + 1024, 28);
+                    uint log = BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(24));
+                    if (log <= 6) length = (long)BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(4)) << (int)(10 + log);
+                    break;
+                }
+            }
+        }
+        catch (FsException)
+        {
+            length = 0;
+        }
+        return length > 0 && length <= rest ? length : rest;
+    }
+
+    /// <summary>The largest power of two (up to <see cref="MaxAlignment"/>) the offset is a multiple of.</summary>
+    protected static long Alignment(long offset) => offset == 0 ? MaxAlignment : Math.Min(offset & -offset, MaxAlignment);
+
+    protected static long RoundUp(long n, long align) => (n + align - 1) / align * align;
+
+    /// <summary>The first position at or after <paramref name="min"/> that lies on the same boundary as <paramref name="old"/>.</summary>
+    protected static long Shifted(long old, long min, long align)
+    {
+        long delta = min - old;
+        long steps = delta <= 0 ? -(-delta / align) : (delta + align - 1) / align;
+        return old + steps * align;
+    }
+
+    protected static IBlockSource Fill(long length, byte value)
+    {
+        byte[] b = new byte[length];
+        if (value != 0) b.AsSpan().Fill(value);
+        return new MemoryBlockSource(b);
+    }
+
+    protected static uint CrcOf(IEnumerable<IBlockSource> pieces, CancellationToken ct)
+    {
+        byte[] buf = new byte[1 << 20];
+        uint crc = 0;
+        foreach (IBlockSource p in pieces)
+            for (long o = 0; o < p.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, p.Length - o);
+                p.ReadExactly(o, buf.AsSpan(0, n));
+                crc = Crc32.Update(crc, buf.AsSpan(0, n));
+                o += n;
+            }
+        return crc;
+    }
+
+    /// <summary>The file ends with a block of OpenWrt's fwtool (metadata or signature): the trailer magic "FWx0".</summary>
+    private bool HasFwtoolTrailer() =>
+        Source.Length >= 16 && Source.ReadBytes(Source.Length - 16, 4).AsSpan().SequenceEqual("FWx0"u8);
 
     // ---------------------------------------------- filesystem behind the image
 

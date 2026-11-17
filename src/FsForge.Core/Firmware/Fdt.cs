@@ -8,6 +8,9 @@ internal sealed class FdtProperty
 {
     public string Name { get; init; } = "";
 
+    /// <summary>Where the name is in the strings block.</summary>
+    public uint NameOffset { get; init; }
+
     /// <summary>Position of the value in the source.</summary>
     public long Offset { get; init; }
 
@@ -40,6 +43,10 @@ internal sealed class FdtNode
 {
     public string Name { get; init; } = "";
     public Dictionary<string, FdtProperty> Properties { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The properties in the order of the tree.</summary>
+    public List<FdtProperty> PropertyList { get; } = new();
+
     public List<FdtNode> Children { get; } = new();
 
     public FdtNode? Child(string name) => Children.FirstOrDefault(c => c.Name == name);
@@ -62,12 +69,19 @@ internal sealed class Fdt
     /// <summary>Values up to this size are read with the tree.</summary>
     private const int SmallValue = 64 << 10;
 
-    private Fdt(FdtNode root, uint totalSize, uint version)
+    private Fdt(IBlockSource source, FdtNode root, uint totalSize, uint version)
     {
+        Source = source;
         Root = root;
         TotalSize = totalSize;
         Version = version;
     }
+
+    private IBlockSource Source { get; }
+
+    private byte[] _strings = Array.Empty<byte>();
+    private byte[] _reserveMap = new byte[16];
+    private uint _bootCpu, _lastCompatible = 16;
 
     public FdtNode Root { get; }
 
@@ -138,11 +152,13 @@ internal sealed class Fdt
                     if (pos + length > end || nameOff >= strings.Length) throw new FsException("Corrupt device tree: a property lies outside the structure block.");
                     int nameEnd = Array.IndexOf(strings, (byte)0, (int)nameOff);
                     string name = Encoding.UTF8.GetString(strings, (int)nameOff, (nameEnd < 0 ? strings.Length : nameEnd) - (int)nameOff);
-                    stack.Peek().Properties[name] = new FdtProperty
+                    var property = new FdtProperty
                     {
-                        Name = name, Offset = pos, Length = (int)length,
+                        Name = name, NameOffset = nameOff, Offset = pos, Length = (int)length,
                         Value = length <= SmallValue ? source.ReadBytes(pos, (int)length) : null,
                     };
+                    stack.Peek().Properties[name] = property;
+                    stack.Peek().PropertyList.Add(property);
                     pos += (length + 3) & ~3L;
                     break;
                 }
@@ -150,11 +166,84 @@ internal sealed class Fdt
                     break;
                 case TokenEnd:
                     if (root is null || stack.Count != 0) throw new FsException("Corrupt device tree: the structure block ends inside a node.");
-                    return new Fdt(root, total, version);
+                    return new Fdt(source, root, total, version)
+                    {
+                        _strings = strings, _reserveMap = ReadReserveMap(source, at, U32(h, 16), total), _bootCpu = U32(h, 28), _lastCompatible = U32(h, 24),
+                    };
                 default:
                     throw new FsException($"Corrupt device tree: unknown token 0x{token:X}.");
             }
         }
+    }
+
+    /// <summary>The memory reservation block up to and with its terminating empty entry.</summary>
+    private static byte[] ReadReserveMap(IBlockSource source, long at, uint offset, uint total)
+    {
+        var map = new List<byte>();
+        for (long pos = at + offset; pos + 16 <= at + total && map.Count < 16 * 1024; pos += 16)
+        {
+            byte[] entry = source.ReadBytes(pos, 16);
+            map.AddRange(entry);
+            if (entry.AsSpan().IndexOfAnyExcept((byte)0) < 0) return map.ToArray();
+        }
+        throw new FsException("Corrupt device tree: the memory reservation block has no end.");
+    }
+
+    /// <summary>
+    /// The tree written again as dtc lays it out (header, memory reservation block, structure, strings), with the
+    /// values <paramref name="replace"/> gives in place of the old ones; everything else as it was. Large values are
+    /// taken from the source as they are written.
+    /// </summary>
+    public List<IBlockSource> Write(Func<FdtProperty, IBlockSource?> replace)
+    {
+        var structure = new List<IBlockSource>();
+        var small = new MemoryStream();
+        void Flush()
+        {
+            if (small.Length == 0) return;
+            structure.Add(new MemoryBlockSource(small.ToArray()));
+            small.SetLength(0);
+        }
+        void Word(uint v) { Span<byte> b = stackalloc byte[4]; BinaryPrimitives.WriteUInt32BigEndian(b, v); small.Write(b); }
+        void Pad(long length) { for (long i = length; i % 4 != 0; i++) small.WriteByte(0); }
+        void Node(FdtNode n)
+        {
+            Word(TokenBeginNode);
+            byte[] name = Encoding.UTF8.GetBytes(n.Name + "\0");
+            small.Write(name);
+            Pad(name.Length);
+            foreach (FdtProperty p in n.PropertyList)
+            {
+                IBlockSource value = replace(p) ?? (p.Value is not null ? new MemoryBlockSource(p.Value) : new SubBlockSource(Source, p.Offset, p.Length, ownsInner: false));
+                if (value.Length > uint.MaxValue) throw new FsException($"The value of '{p.Name}' is too large for a device tree.");
+                Word(TokenProp);
+                Word((uint)value.Length);
+                Word(p.NameOffset);
+                if (value.Length <= SmallValue) small.Write(value.ReadBytes(0, (int)value.Length));
+                else
+                {
+                    Flush();
+                    structure.Add(value);
+                }
+                Pad(value.Length);
+            }
+            foreach (FdtNode c in n.Children) Node(c);
+            Word(TokenEndNode);
+        }
+        Node(Root);
+        Word(TokenEnd);
+        Flush();
+
+        long structSize = structure.Sum(p => p.Length);
+        long offStruct = HeaderSize + _reserveMap.Length, offStrings = offStruct + structSize, total = offStrings + _strings.Length;
+        if (total > uint.MaxValue) throw new FsException("The device tree would be larger than 4 GiB.");
+        byte[] h = new byte[HeaderSize];
+        uint[] fields = { Magic, (uint)total, (uint)offStruct, (uint)offStrings, HeaderSize, 17, Math.Min(_lastCompatible, 17u), _bootCpu, (uint)_strings.Length, (uint)structSize };
+        for (int i = 0; i < fields.Length; i++) BinaryPrimitives.WriteUInt32BigEndian(h.AsSpan(4 * i), fields[i]);
+        var pieces = new List<IBlockSource> { new MemoryBlockSource(h), new MemoryBlockSource(_reserveMap) };
+        pieces.AddRange(structure);
+        pieces.Add(new MemoryBlockSource(_strings));
+        return pieces;
     }
 
     private static string ReadName(IBlockSource source, long pos, long end, out int consumed)

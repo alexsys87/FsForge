@@ -1584,7 +1584,7 @@ internal static class Program
             vm.Dispose();
         });
 
-        await Test("FIT image: choice of image, information, filesystem saved alone", async () =>
+        await Test("FIT image: choice of image, information, rebuilt on save, filesystem saved alone", async () =>
         {
             var (vm, d, _, _) = NewVm();
             byte[] squash = File.ReadAllBytes(MakeImage("fit.sqfs")), cpio;
@@ -1607,7 +1607,7 @@ internal static class Program
                 return c.Accept();
             };
             Check(await vm.OpenPathAsync(fit), "open failed: " + string.Join("; ", d.Messages));
-            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs-1", SavesFilesystemOnly: true }
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs-1", SavesFilesystemOnly: false }
                   && vm.DocumentInfo.StartsWith("FIT · rootfs-1 из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
             bool infoShown = false;
             d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Прошивка" && r.Value.Contains("FIT image «board FIT»"))
@@ -1617,13 +1617,26 @@ internal static class Program
             vm.ImageInfoCommand.Execute(null);
             Check(infoShown, "image information of a FIT image");
 
-            // Ctrl+S asks where to put the filesystem: a FIT image is not rebuilt yet.
+            // Ctrl+S writes the FIT image again: the other image stays, the hashes are right.
             vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
-            d.OnDialog = o => o is SaveOptionsViewModel s && !s.HasContainer && !s.WritesDisk && s.Accept();
-            d.SavePicks.Enqueue(Path.Combine(_dir, "board-rootfs.squashfs"));
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
             Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
-            Check(File.ReadAllBytes(fit).AsSpan().SequenceEqual(original) && vm.Document is { Firmware: null } && vm.Document.Tree.Resolve("/etc/Banner") is null,
-                "the filesystem saved alone, the FIT image unchanged");
+            byte[] rebuilt = File.ReadAllBytes(fit);
+            Check(!rebuilt.AsSpan().SequenceEqual(original) && rebuilt.AsSpan().IndexOf(cpio) > 0, "the FIT image was not rebuilt, or the ramdisk changed");
+            Check(vm.Document is { Firmware: { Part.Name: "rootfs-1", Image: FsForge.Core.Firmware.FitImage { HashesWrong: 0, HashesChecked: 2 } } } && vm.Document.Tree.Resolve("/etc/Banner") is null,
+                "the rebuilt FIT image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the FIT image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("дереве FIT пересчитываются"), "save dialog of a FIT image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "board-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(fit).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the FIT image unchanged");
             vm.Dispose();
         });
 

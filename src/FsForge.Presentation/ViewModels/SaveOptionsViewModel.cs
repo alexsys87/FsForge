@@ -331,7 +331,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         _ => !IsTar && !IsCpio && !IsUbifs,
     };
 
-    /// <summary>The container is a firmware file (U-Boot uImage) that is rebuilt around the new content.</summary>
+    /// <summary>The container is a firmware file (U-Boot uImage or FIT image) that is rebuilt around the new content.</summary>
     public bool IsFirmwareContainer => _doc.Firmware is not null && !_doc.SavesFilesystemOnly;
 
     /// <summary>The container is an Android image: super.img (logical partitions) or a boot image (ramdisk).</summary>
@@ -386,15 +386,17 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             {
                 if (!_o.KeepContainer)
                     return fw.Part.Content == Core.Images.PartitionContent.Cpio
-                        ? L.T("Будет записан только архив ramdisk, без заголовка uImage.")
-                        : L.T("Будет записана только файловая система, без заголовка uImage и ядра — например, для сборки прошивки заново.");
+                        ? L.T("Будет записан только архив ramdisk, без остальной прошивки.")
+                        : L.T("Будет записана только файловая система, без ядра и остальной прошивки — например, для сборки прошивки заново.");
                 if (!FirmwareTakesFormat)
                     return fw.Part.Content == Core.Images.PartitionContent.Cpio
                         ? L.T("В этой части прошивки — архив cpio; другой формат сохраняется отдельным файлом, прошивка при этом не меняется.")
                         : L.T("Этот формат сохраняется отдельным файлом: в прошивку он не записывается.");
                 return L.F("Прошивка записывается заново: заменяется только часть {0}. ", fw.Part.Name) +
                        (fw.Part.BehindImage
-                           ? L.T("Заголовок uImage и ядро не меняются; маркеры 0xdeadc0de за файловой системой ставятся на первые границы блоков стирания, как у OpenWrt. ")
+                           ? L.F("Образ {0} с ядром не меняется; маркеры 0xdeadc0de за файловой системой ставятся на первые границы блоков стирания, как у OpenWrt. ", fw.Image.ShortKind)
+                           : fw.Image is Core.Firmware.FitImage
+                           ? L.T("Данные образа, его хеши и размер в дереве FIT пересчитываются, внешние данные других образов переносятся на новые смещения без изменений. ")
                            : L.T("Размер и контрольные суммы CRC-32 в заголовке uImage пересчитываются, остальные части переносятся без изменений. ")) +
                        L.T("Если прошивка станет больше, проверьте, что она помещается в раздел флеш-памяти.");
             }

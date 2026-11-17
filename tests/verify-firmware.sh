@@ -14,7 +14,10 @@
 #               position (-p), with crc32, sha1 and sha256 hashes, a PetaLinux image.ub whose ramdisk is a uImage, and
 #               an OpenWrt .itb with the SquashFS behind it. Each image is opened with vol=<node name> and must read
 #               as the image file it was made from; the hashes mkimage computed must be found right, and a changed
-#               byte must be reported. FIT images are not rebuilt yet: saving over one is refused.
+#               byte must be reported. Each FIT image is then changed in place, at its ramdisk and at its root
+#               filesystem: dtc must take the new tree, pylibfdt (python3-libfdt, U-Boot's own library; skipped
+#               without it) must find every hash right, dumpimage must take out the same kernel and the changed image,
+#               and GNU cpio / unsquashfs must see the change, also in the ramdisk of image.ub inside its uImage.
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -193,6 +196,59 @@ PY
      && mkimage -f owrt.its owrt.itb > /dev/null)
   python3 -c "import sys; k=open('fw/owrt.itb','rb').read(); k+=b'\xff'*(-len(k)%65536); open('fw/owrt-sysupgrade.itb','wb').write(k+open('fw/root.sqfs','rb').read())"
   cmpdump "FIT: OpenWrt .itb, SquashFS behind it" fw/owrt-sysupgrade.itb tree.ref
-  if $F edit fw/fit.itb fw/fit.itb rm:/etc 2> fw/fit-same.err; then bad "a FIT image was saved over"
-  else grep -q "Save under another name" fw/fit-same.err && ok "FIT: saving over the image is refused" || bad "$(cat fw/fit-same.err)"; fi
+  fw_fit_rebuild
+
 }
+
+fw_fit_rebuild() {
+  echo "FIT rebuilt by FsForge"
+  local py=""; for p in python3 python3.12 python3.11; do command -v $p >/dev/null && $p -c 'import libfdt' 2>/dev/null && { py=$p; break; }; done
+  cat > fw/fitcheck.py <<'PY'
+# Every image of a FIT file with pylibfdt: its data (in the tree, at data-offset or data-position) and each hash.
+import sys, libfdt, hashlib, zlib, struct
+d = open(sys.argv[1], 'rb').read()
+f = libfdt.Fdt(d[:struct.unpack('>I', d[4:8])[0]])
+base = (f.totalsize() + 3) & ~3
+node = f.first_subnode(f.path_offset('/images'), libfdt.QUIET_NOTFOUND)
+bad = 0
+while node >= 0:
+    props, p = {}, f.first_property_offset(node, libfdt.QUIET_NOTFOUND)
+    while p >= 0:
+        prop = f.get_property_by_offset(p); props[prop.name] = bytes(prop); p = f.next_property_offset(p, libfdt.QUIET_NOTFOUND)
+    if 'data' in props: data = props['data']
+    else:
+        at = base + struct.unpack('>I', props['data-offset'])[0] if 'data-offset' in props else struct.unpack('>I', props['data-position'])[0]
+        data = d[at:at + struct.unpack('>I', props['data-size'])[0]]
+    h = f.first_subnode(node, libfdt.QUIET_NOTFOUND)
+    while h >= 0:
+        if f.get_name(h).startswith('hash'):
+            algo = bytes(f.getprop(h, 'algo')).rstrip(b'\0').decode()
+            calc = struct.pack('>I', zlib.crc32(data)) if algo == 'crc32' else hashlib.new(algo, data).digest()
+            if calc != bytes(f.getprop(h, 'value')): bad += 1; print(f.get_name(node), algo, 'wrong')
+        h = f.next_subnode(h, libfdt.QUIET_NOTFOUND)
+    node = f.next_subnode(node, libfdt.QUIET_NOTFOUND)
+sys.exit(1 if bad else 0)
+PY
+  [ -n "$py" ] || echo "  --    pylibfdt checks skipped: install python3-libfdt"
+  echo added > fw/added.txt
+  local f v
+  for f in fit.itb fit-ext.itb fit-pos.itb image.ub; do
+    for v in ramdisk-1 rootfs-1; do
+      cp fw/$f fw/w_$f
+      if ! $F edit fw/w_$f fw/w_$f vol=$v "add:/:fw/added.txt" > /dev/null 2> fw/w_fit.err; then bad "edit $f $v: $(grep -v '^warning' fw/w_fit.err | head -2)"; continue; fi
+      local good=1
+      dtc -I dtb -O dts -o /dev/null fw/w_$f 2>/dev/null || good=0
+      [ -z "$py" ] || $py fw/fitcheck.py fw/w_$f > fw/fitcheck.out 2>&1 || good=0
+      rm -f fw/x.k fw/x.img; dumpimage -T flat_dt -p 0 -o fw/x.k fw/w_$f > /dev/null 2>&1; cmp -s fw/x.k fw/kernel.gz || good=0
+      if [ $v = rootfs-1 ]; then
+        dumpimage -T flat_dt -p 3 -o fw/x.img fw/w_$f > /dev/null 2>&1; rm -rf fw/xu; unsquashfs -n -d fw/xu fw/x.img > /dev/null 2>&1 && [ -e fw/xu/added.txt ] || good=0
+      else
+        dumpimage -T flat_dt -p 2 -o fw/x.img fw/w_$f > /dev/null 2>&1
+        if [ $f = image.ub ]; then dumpimage -T ramdisk -p 0 -o fw/x.gz fw/x.img > /dev/null 2>&1; else cp fw/x.img fw/x.gz; fi
+        gzip -dc fw/x.gz 2>/dev/null | cpio -t 2>/dev/null | grep -qx added.txt || good=0
+      fi
+      [ $good = 1 ] && ok "FIT $f rebuilt at $v: tree, hashes, kernel kept, change seen by the reference tools" || bad "FIT $f $v after the rebuild: $(cat fw/fitcheck.out 2>/dev/null)"
+    done
+  done
+}
+
