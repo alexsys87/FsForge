@@ -27,7 +27,9 @@
 #               also made by trx (version 1, -F, version 2 with a bin-header), and after the change each must be byte
 #               for byte what trx makes from the same parts and the new filesystem.
 #               With MKCHKIMG=<mkchkimg> the TRX is also wrapped by mkchkimg (its default board, and another board
-#               and region); after the change the CHK header must be byte for byte what mkchkimg makes.
+#               and region); after the change the CHK header must be byte for byte what mkchkimg makes. mkchkimg also
+#               makes CHK images without a TRX (a uImage kernel and the SquashFS as -k and -f; an OpenWrt sysupgrade
+#               image as -k): they must read as the SquashFS and, after the change, be what mkchkimg makes.
 #               TP-Link images (the classic header of mktplinkfw: cut with -s, padded to the flash layout, with the
 #               JFFS2 markers, combined; safeloader factory images with their partition table) made by a Python script
 #               after OpenWrt's mktplinkfw.c and tplink-safeloader.c, and with MKTPLINKFW=<mktplinkfw> (also -a),
@@ -371,6 +373,40 @@ PY
         "$MKCHKIMG" -o fw/c_ref.chk -k fw/c_new.trx "${args[@]}" 2>/dev/null
         cmp -s fw/c_$name.chk fw/c_ref.chk && ok "mkchkimg ($name): read; the rebuilt CHK header is byte for byte what mkchkimg makes" || bad "mkchkimg ($name): the rebuilt CHK header differs"
       else bad "mkchkimg ($name): $(grep -v '^warning' fw/c.err 2>/dev/null | head -2)"; fi
+    done
+    # Without a TRX: -k kernel -f rootfs, and an OpenWrt sysupgrade image (uImage, SquashFS, padjffs2 markers) as -k.
+    python3 - fw <<'PY2'
+import sys, struct, zlib, os
+d = sys.argv[1]; data = b'\x5d\x00\x00\x80\x00' + os.urandom(200000)
+h = bytearray(struct.pack('>7I4B32s', 0x27051956, 0, 0, len(data), 0x80000000, 0x80000000, zlib.crc32(data), 5, 5, 2, 3, b'MIPS OpenWrt Linux'))
+struct.pack_into('>I', h, 4, zlib.crc32(h)); open(d + '/c_uimage.bin', 'wb').write(bytes(h) + data)
+PY2
+    cat > fw/c_sysup.py <<'PY2'
+import sys
+k = open(sys.argv[1], 'rb').read(); r = open(sys.argv[2], 'rb').read()
+b = bytearray(k + r)
+# OpenWrt's padjffs2 with its default sizes (4 8 16 64 128 256 KiB): a marker at the next boundary of the smallest size
+# left, then every size that boundary is aligned to is done.
+sizes = {x << 10 for x in (4, 8, 16, 64, 128, 256)}
+while sizes:
+    m = min(sizes); n = (len(b) + m - 1) // m * m
+    b += b'\xff' * (n - len(b)) + b'\xde\xad\xc0\xde'
+    sizes = {x for x in sizes if n % x}
+open(sys.argv[3], 'wb').write(b)
+PY2
+    for name in kf sysup; do
+      for root in img/xz.sqfs fw/c_new.sqfs; do
+        local out=fw/c_$name.chk; [ $root = fw/c_new.sqfs ] && out=fw/c_ref.chk
+        case $name in
+          kf) "$MKCHKIMG" -o $out -k fw/c_uimage.bin -f $root -b R7800 -r 2;;
+          sysup) python3 fw/c_sysup.py fw/c_uimage.bin $root fw/c_su.bin; "$MKCHKIMG" -o $out -k fw/c_su.bin -b R6220;;
+        esac > /dev/null 2>&1
+        [ $root = fw/c_new.sqfs ] && break
+        if $F dump fw/c_$name.chk 2>/dev/null | cmp -s - tree.ref && $F info fw/c_$name.chk 2>/dev/null | grep -q "Netgear CHK image for .*checksums ok\|checksums ok"; then ok "mkchkimg ($name): read as a CHK image, checksums right"; else bad "mkchkimg ($name): $($F info fw/c_$name.chk 2>&1 | grep -iE 'firmware|warning' | head -2)"; fi
+        $F edit fw/c_$name.chk fw/c_$name.chk "add:/:fw/big.bin" > /dev/null 2> fw/c.err
+        python3 -c "import struct; d=open('fw/c_$name.chk','rb').read(); a=d.index(b'hsqs', 64); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/c_new.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
+      done
+      cmp -s fw/c_$name.chk fw/c_ref.chk && ok "mkchkimg ($name): the rebuilt image is byte for byte what mkchkimg makes" || bad "mkchkimg ($name): the rebuilt image differs: $(grep -v '^warning' fw/c.err | head -2)"
     done
   else echo "  --    mkchkimg checks skipped: set MKCHKIMG to the mkchkimg of OpenWrt's firmware-utils"; fi
 }

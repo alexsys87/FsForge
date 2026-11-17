@@ -242,7 +242,7 @@ public sealed class TrxImage : FirmwareImage
     private const int ChkKernelSum = 16, ChkRootfsSum = 20, ChkKernelLength = 24, ChkRootfsLength = 28, ChkImageSum = 32, ChkHeaderSum = 36;
 
     /// <summary>Netgear's checksum (mkchkimg): two running byte sums, each folded to 16 bits.</summary>
-    private struct NetgearSum
+    internal struct NetgearSum
     {
         private uint _c0, _c1;
 

@@ -102,6 +102,7 @@ internal static partial class SelfTest
             FitTests();
             TrxTests();
             TpLinkTests();
+            ChkTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally

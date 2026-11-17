@@ -98,12 +98,14 @@ public abstract class FirmwareImage
     public abstract IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open);
 
     /// <summary>True when the file starts with a firmware header this program understands.</summary>
-    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source) || TrxImage.IsTrx(source) || TpLinkImage.IsTpLink(source);
+    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source) || TrxImage.IsTrx(source) || TpLinkImage.IsTpLink(source)
+                                                           || NetgearChkImage.IsChk(source);
 
     /// <summary>Reads the firmware header and finds the parts; null when the file has none.</summary>
     public static FirmwareImage? TryRead(IBlockSource source, CancellationToken ct = default) =>
         UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct)
-        : TrxImage.IsTrx(source) ? TrxImage.Read(source, ct) : TpLinkImage.IsTpLink(source) ? TpLinkImage.Read(source, ct) : null;
+        : TrxImage.IsTrx(source) ? TrxImage.Read(source, ct) : TpLinkImage.IsTpLink(source) ? TpLinkImage.Read(source, ct)
+        : NetgearChkImage.IsChk(source) ? NetgearChkImage.Read(source, ct) : null;
 
     // ------------------------------------------- shared by the rebuilding images
 
@@ -289,15 +291,25 @@ public abstract class FirmwareImage
         var found = new HashSet<long>();
         long rest = start;
         byte[] word = new byte[4];
-        for (long at = start; (at & 3) == 0 && at + 4 <= eof && at < fsEnd + 2 * MaxAlignment; at += 4)
+        for (long at = start; ((at - origin) & 3) == 0 && at + 4 <= eof && at < fsEnd + 2 * MaxAlignment; at += 4)
         {
             Source.ReadExactly(at, word);
             if (BinaryPrimitives.ReadUInt32BigEndian(word) == 0xDEADC0DE) { found.Add(at); rest = at + 4; }
             else if (word.AsSpan().IndexOfAnyExcept((byte)0, (byte)0xFF) >= 0) break;
         }
+        // padjffs2 counts from the end of the filesystem image as it was given, with the zeros mksquashfs pads it with to
+        // 4 KiB from its own start: where the filesystem does not start on such a boundary (behind a uImage that is not
+        // padded, as in OpenWrt's sysupgrade images), that end can lie in the next 4 KiB block of the firmware.
+        long padded = fsEnd, padEnd = Math.Min(eof, part.Offset + RoundUp(fsEnd - part.Offset, 4096));
+        if (padEnd > fsEnd)
+        {
+            byte[] pad = Source.ReadBytes(fsEnd, (int)(padEnd - fsEnd));
+            int nonZero = pad.AsSpan().IndexOfAnyExcept((byte)0);
+            padded = nonZero < 0 ? padEnd : fsEnd + nonZero;
+        }
         var markers = new List<long>();
         for (long size = 4096; size <= MaxAlignment; size <<= 1)
-            if (found.Contains(origin + RoundUp(fsEnd - origin, size))) markers.Add(size);
+            if (found.Contains(origin + RoundUp(padded - origin, size))) markers.Add(size);
         if (markers.Count == 0) return new Tail(start, Alignment(start - origin), fill, markers, start);
         return new Tail(start, Math.Max(Alignment(start - origin), markers.Max()), fill, markers, rest);
     }
