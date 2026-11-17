@@ -38,8 +38,8 @@
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, F2FS, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
-| …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
+| `The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, F2FS, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` (для сжатого файла или архива к тексту добавляется `It was unpacked from a <вид> file, but the content is not a known image.`) | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
+| …`It looks like LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает (gzip, xz, zstd, bzip2, zip и 7z распаковываются сами). | Распакуйте его сторонней программой (7-Zip, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
 | `The image is damaged or uses a layout that is not supported (<подробности>).` | Внутренняя структура не прошла проверки так, что это не удалось отнести к конкретной ошибке. | Проверьте образ эталонными утилитами (`e2fsck -fn`, `unsquashfs -s`). Если они считают его исправным — это ошибка программы: сообщите о ней, приложив по возможности образ. |
@@ -292,7 +292,7 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file is not a tar archive.` | Не tar. | Проверьте файл. |
-| `The archive is compressed with <метод>, which is not supported. Use gzip, xz or zstd.` | bzip2, lz4, lzma, compress. | Перепакуйте: `bunzip2 -c a.tar.bz2 \| gzip > a.tar.gz` или через 7-Zip. |
+| `The archive is compressed with <метод>, which is not supported. Use gzip, xz, zstd or bzip2.` | lz4 (кадровый формат), lzma, compress. | Перепакуйте: `unlzma -c a.tar.lzma \| gzip > a.tar.gz` или через 7-Zip. |
 | `The archive is corrupt: <подробности>` | Ошибка в сжатых данных. | Скачайте заново; `gzip -t` / `xz -t` / `zstd -t`. |
 | `XZ files with BCJ filters are not supported for streaming.` | Архив `.tar.xz` сжат с BCJ-фильтром. | Перепакуйте без фильтра: `xz -dc a.tar.xz \| xz -c > b.tar.xz`. |
 | `The XZ dictionary is too large.` | Словарь xz больше 1 ГБ. | Перепакуйте с обычными параметрами `xz -6`. |
@@ -309,13 +309,13 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 |---|---|---|
 | `Not a cpio archive (no newc, crc or odc header).` | Файл назван как cpio, но внутри не он. | Проверьте файл; `file` покажет, что внутри. |
 | `The archive uses the old binary cpio format, which is not supported. Only newc, crc and odc archives are read.` | Старый двоичный формат (`-H bin`). | Перепакуйте GNU cpio в newc (см. раздел 1). |
-| `The cpio archive is compressed with <метод>, which is not supported. Use gzip, xz or zstd.` | Initramfs сжат bzip2, lz4 или lzma. | Перепакуйте: `lz4 -dc initrd.img \| gzip -9 > initrd.gz`. |
+| `The cpio archive is compressed with <метод>, which is not supported. Use gzip, xz, zstd or bzip2.` | Initramfs сжат lz4 (кадровый формат) или lzma. | Перепакуйте: `lz4 -dc initrd.img \| gzip -9 > initrd.gz`. |
 | `The cpio archive is corrupt: <подробности>` | Ошибка в сжатых данных. | Скачайте заново; `gzip -t` / `xz -t` / `zstd -t`. |
 | `The cpio archive is truncated.`, `Corrupt cpio header: invalid <поле> field.`, `Corrupt cpio header: invalid name size.`, `Corrupt cpio archive: no header where entry <N> should start.`, `Corrupt cpio archive: file data where a header should be.`, `Corrupt cpio archive: the symbolic link '<имя>' has an invalid length.` | Архив обрезан или повреждён. | Скачайте заново; `cpio -tv < a.cpio` покажет, до какой записи архив цел. |
 | Предупреждение: `The file holds <N> cpio archives one after another (for example CPU microcode in front of the initramfs). They are shown together; saving writes a single archive, which the kernel then no longer reads as early microcode.` | Initramfs дистрибутива: несжатый архив с микрокодом процессора, за ним сжатая система. Архивы показаны одним деревом, как их видит ядро. | Если важна ранняя загрузка микрокода, удалите `kernel/` из образа, сохраните и допишите исходный архив микрокода спереди: `cat early.cpio new.cpio.gz > initrd.img` (так делают `dracut` и `mkinitramfs`). |
 | Предупреждение: `The cpio archive ends without its trailer: it may be truncated.` | Нет записи `TRAILER!!!`. | Прочитанное показано; если файлов не хватает — архив обрезан. |
 | Предупреждение: `<N> file(s) do not match the checksum stored in the archive: their content is damaged.` | Архив crc (070702): сумма байтов файла не совпала с заголовком. | Файлы повреждены; ядро такой initramfs тоже отвергнет. Получите архив заново. |
-| Предупреждение: `The file goes on after the cpio archive with <что> (from offset 0x<…>); it was ignored.`, `The compressed data goes on after the cpio archive with something else; it was ignored.` | После архива лежат не нули и не следующий архив (например, подпись или сжатие, которое не поддерживается). | Обычно безопасно; часть initramfs, сжатая bzip2/lz4/lzma, при этом не прочитана. |
+| Предупреждение: `The file goes on after the cpio archive with <что> (from offset 0x<…>); it was ignored.`, `The compressed data goes on after the cpio archive with something else; it was ignored.` | После архива лежат не нули и не следующий архив (например, подпись или сжатие, которое не поддерживается). | Обычно безопасно; часть initramfs, сжатая lz4 (кадровый формат) или lzma, при этом не прочитана. |
 | Предупреждение: `'<имя>' has an unknown file type (mode <…>) and was skipped.`, `'<имя>': the symbolic link has an empty target and was skipped.` | Запись, которую нельзя представить. | Запись потеряна; при необходимости создайте её вручную. |
 | Предупреждение: `'<имя>': the path contains '..' and was skipped.`, `'<путь>' is replaced by a directory required by '<имя>'.`, `'<имя>' was skipped: <причина>` | Как у tar (раздел 8). Поздняя запись с тем же путём заменяет раннюю — как при распаковке ядром. | См. раздел 8. |
 
@@ -331,6 +331,23 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 
 Причина — повреждённые данные или редкие параметры сжатия. Если ошибка возникает при извлечении
 одного файла — повреждён именно он: извлеките остальное. Если при открытии — см. общие способы.
+
+### Сжатые образы и архивы (gz, xz, zst, bz2, zip, 7z)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `There is not enough free space in the folder for temporary files ('<папка>') to unpack the image: it needs <N>, <M> are free. …` | Образ из zip или 7z распаковывается во временную папку, а на её диске не хватает места. | «Настройки → Папка для временных файлов»: выберите папку на диске, где места больше (например, `D:\Temp`). |
+| `The disk with the folder for temporary files ('<папка>') ran out of space while the image was unpacked …` | Место кончилось во время распаковки gz, xz, zst или bz2 (их распакованный размер заранее не известен, обычно он в несколько раз больше файла). | То же: другая временная папка или освободите место. |
+| `The <вид> archive has no file '<имя>'. It holds: <список>.` | В `fsforge-cli` указан `entry=` с именем, которого в архиве нет. | Возьмите имя из списка (регистр не важен, папку можно не указывать). |
+| `The <вид> archive holds no files.`, `'<имя>' in the <вид> archive is empty.` | В архиве нет файлов или выбранный файл пуст. | Проверьте архив; образа в нём нет. |
+| `The file is not a zip or 7z archive, so there is no file '<имя>' in it to open.` | `entry=` указан для файла, который не является архивом. | Уберите `entry=`. |
+| `The 7z archive is encrypted (AES), which is not supported.` | Архив защищён паролем. | Распакуйте его 7-Zip с паролем и откройте образ (или перепакуйте без пароля). |
+| `The 7z archive uses the compression method <метод>, which is not supported.`, `… uses the coder BCJ2, which is not supported.` | PPMd, BCJ2, Deflate64 и другие редкие методы. | Перепакуйте 7-Zip методом LZMA2 (по умолчанию): `7z a -m0=lzma2 new.7z образ.img`. |
+| `The 7z archive applies the <фильтр> filter to <N> MiB of data; at most 512 MiB are supported.` | Фильтр для исполняемых файлов (BCJ, ARM…) обрабатывается в памяти. | Для образов эти фильтры не нужны: перепакуйте с `-mf=off`. |
+| `'<имя>' in the zip archive cannot be unpacked: … Only the Deflate and Stored methods without encryption are supported.` | Файл в zip сжат LZMA, bzip2, zstd, Deflate64 или зашифрован. | Перепакуйте zip обычным сжатием (Deflate) или используйте 7z. |
+| `Corrupt 7z archive: …`, `Corrupt zip archive: …`, `The CRC of '<имя>' in the archive does not match: the archive is damaged.`, `The archive is truncated or damaged: '<имя>' ends after <N> of <M> bytes.`, `The 7z archive is truncated: its data lies beyond the end of the file.` | Архив повреждён или скачан не полностью. | Скачайте архив заново и сверьте контрольную сумму (`sha256sum -c`). |
+| `Corrupt bzip2 data: …` (a block CRC does not match, unexpected end of file, bad Huffman code…), `Corrupt LZMA2 data: …`, `Corrupt LZMA data: …` | Сжатые данные повреждены. | То же. |
+| `The <вид> data is damaged: …`, `The <вид> archive is damaged: …` | Ошибка распаковки gzip, xz, zstd, bz2, zip или 7z при открытии. | То же. |
 
 ## 10. Сохранение
 
@@ -541,6 +558,19 @@ EROFS хранит всё, что есть в дереве: владельцев
 | Предупреждение: `The boot signature of the image (GKI) no longer matches the changed ramdisk.` | Подпись boot v4 (GKI) не совпадает. | Обычно не мешает на разблокированном загрузчике. |
 | Предупреждение: `The boot image grew from <N> to <M>: the partition must have room for it.` | Образ стал больше исходного файла. | Сравните с размером раздела boot на устройстве перед прошивкой. |
 | `The ramdisk is too large for a boot image.`, `The image is too large for the Android sparse format.` | Ограничения форматов (4 ГБ, 2³² блоков). | Уменьшите содержимое. |
+
+### Запись в сжатый файл или архив
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `There is not enough free space. The new image is first written uncompressed to the folder for temporary files ('<папка>'), then compressed into '<папка>'. …` | Новый образ сначала пишется во временную папку несжатым, а затем упаковывается рядом с целевым файлом. | Освободите место или выберите временную папку на другом диске в настройках. |
+| `The compressed image cannot be unpacked again (…) and was discarded; the original file is untouched.`, `The compressed image does not unpack to the data that was written and was discarded; …` | Проверка готового архива не прошла (сбой диска или памяти). | Исходный файл не изменён; повторите сохранение, проверьте диск. |
+| `'<имя>' changed its size while it was being packed …` | Временный файл изменился во время упаковки (антивирус, другая программа). | Повторите сохранение; исключите временную папку из проверки «на лету». |
+| `A tar archive can be compressed with gzip, xz, zstd, bzip2 or lz4, not put into a zip or 7z archive.`, то же для cpio | Архив tar или cpio сохраняется со своим собственным сжатием. | Выберите сжатие tar/cpio в окне сохранения; при необходимости упакуйте готовый `.tar` в zip отдельно. |
+| Предупреждение: `The block map '<файл>' could not be updated (…); it no longer matches the image and should be deleted.`, `The checksum file '<файл>' could not be updated (…); it no longer matches '<образ>'.` | Файл рядом с образом защищён от записи или занят. | Удалите или исправьте этот файл вручную: старая карта блоков или сумма не подходят к новому образу, FlashTool откажется с ними записывать. |
+
+Файлы, обновлённые рядом с образом (`.sha256`, `SHA256SUMS`, `.bmap`), перечисляются в сообщении о
+сохранении («обновлены файлы рядом с ним: …»), в `fsforge-cli` — строками `updated: <файл>`. Это не ошибка.
 
 ### Исходные файлы изменились
 

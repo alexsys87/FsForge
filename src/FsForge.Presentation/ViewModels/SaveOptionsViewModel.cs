@@ -178,6 +178,7 @@ public static class OptionLists
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.tar.gz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Xz, "xz (.tar.xz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Zstd, "zstd (.tar.zst)"),
+        new Choice<ArchiveCompression>(ArchiveCompression.Bzip2, "bzip2 (.tar.bz2)"),
         new Choice<ArchiveCompression>(ArchiveCompression.None, L.T("без сжатия (.tar)")),
     };
 
@@ -193,6 +194,7 @@ public static class OptionLists
         new Choice<ArchiveCompression>(ArchiveCompression.Zstd, L.T("zstd (.cpio.zst) — Linux 5.9 и новее")),
         new Choice<ArchiveCompression>(ArchiveCompression.Xz, "xz (.cpio.xz)"),
         new Choice<ArchiveCompression>(ArchiveCompression.Lz4, L.T("lz4 (.cpio.lz4) — как у ramdisk Android")),
+        new Choice<ArchiveCompression>(ArchiveCompression.Bzip2, "bzip2 (.cpio.bz2)"),
         new Choice<ArchiveCompression>(ArchiveCompression.None, L.T("без сжатия (.cpio)")),
     };
 
@@ -403,7 +405,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 ? L.F("Если файловая система перестанет помещаться в раздел {0}, раздел будет увеличен (он последний).", p.Number)
                 : L.F("Файловая система должна поместиться в раздел {0} ({1}).", p.Number, Fmt.Size(p.Length));
             return L.F("Таблица разделов, загрузчик и остальные разделы копируются без изменений, заменяется только раздел {0}. {1} ", p.Number, grow) +
-                   L.T("Имя файла с окончанием .gz, .xz или .zst означает сжатый образ.");
+                   L.T("Имя файла с окончанием .gz, .xz, .zst или .bz2 означает сжатый образ, .zip или .7z — архив с образом.");
         }
     }
 
@@ -858,10 +860,16 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         string name = Path.GetFileName(path ?? "");
         string outer = Path.GetExtension(name).ToLowerInvariant();
-        if (outer is ".gz" or ".xz" or ".zst" or ".zstd")
+        if (outer is ".gz" or ".xz" or ".zst" or ".zstd" or ".bz2")
         {
             string inner = Path.GetExtension(name[..^outer.Length]).ToLowerInvariant();
             return (inner.Length is > 1 and <= 6 ? inner : ".img") + outer;
+        }
+        if (outer is ".zip" or ".7z")
+        {
+            // "raspios.img.zip" keeps ".img.zip"; "backup.7z" holds "backup.img" and stays ".7z".
+            string inner = Path.GetExtension(name[..^outer.Length]).ToLowerInvariant();
+            return (inner.Length is > 1 and <= 6 ? inner : "") + outer;
         }
         return outer.Length is > 1 and <= 6 ? outer : ".img";
     }

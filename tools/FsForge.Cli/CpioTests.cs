@@ -16,7 +16,7 @@ internal static partial class SelfTest
     private static void CpioTests(FsTree tree, string reference)
     {
         foreach (CpioHeader header in new[] { CpioHeader.Newc, CpioHeader.Crc })
-            foreach (ArchiveCompression c in Enum.GetValues<ArchiveCompression>())
+            foreach (ArchiveCompression c in Enum.GetValues<ArchiveCompression>().Where(c => c is not (ArchiveCompression.Zip or ArchiveCompression.SevenZip)))
                 Test($"cpio {header} {c}", () => RoundTrip(tree, reference, "w" + CpioFormat.DefaultExtension(c), CpioSave(new CpioOptions
                 {
                     Header = header, Compression = c, GzipLevel = 6, ZstdLevel = 3, XzEffort = 0,
@@ -205,10 +205,10 @@ internal static partial class SelfTest
         // Something else after the archive is reported and left alone.
         var junk = new MemoryStream();
         junk.Write(main.ToArray());
-        junk.Write(Encoding.ASCII.GetBytes("BZh91AY&SY"));
+        junk.Write(new byte[] { 0x04, 0x22, 0x4D, 0x18, 0x64, 0x40, 0xA7, 0, 0, 0, 0 });      // an LZ4 frame, which is not read
         string withJunk = WriteFile("junk.cpio", junk.ToArray());
         using (ImageDocument doc = ImageDocument.Open(withJunk, _dir, searchEmbedded: false))
-            Check(doc.Warnings.Any(w => w.Contains("bzip2")) && doc.Tree.Resolve("/extra.conf") is not null, "data after the archive: " + string.Join("; ", doc.Warnings));
+            Check(doc.Warnings.Any(w => w.Contains("LZ4")) && doc.Tree.Resolve("/extra.conf") is not null, "data after the archive: " + string.Join("; ", doc.Warnings));
     }
 
     // ---------------------------------------------------------------- limits

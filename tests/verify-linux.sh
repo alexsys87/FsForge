@@ -12,7 +12,9 @@
 # mounts CramFS and romfs images), lz4, mkbootimg (boot images), android-sdk-libsparse-utils (simg2img) and
 # lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img), f2fs-tools (mkfs.f2fs, sload.f2fs,
 # fsck.f2fs; with F2FS_MODULES=<folder with f2fs.ko, lz4_compress.ko and lz4hc_compress.ko> or a kernel with
-# F2FS built in, CPIO_KERNEL also mounts, changes and compresses F2FS images in QEMU).
+# F2FS built in, CPIO_KERNEL also mounts, changes and compresses F2FS images in QEMU), 7zip, zip/unzip, pigz,
+# pbzip2, lbzip2, zstd/pzstd and bmap-tools for compressed images and archives (FLASHTOOL_SRC=<checkout of FlashTool>
+# adds the checks with FlashTool's own container code; needs the .NET SDK).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -396,6 +398,14 @@ crr_qemu
 . "$HERE/verify-f2fs.sh"
 f2_run
 f2_qemu
+
+# ------------------------------------------------- compressed images, zip and 7z
+# See tests/verify-archives.sh: images packed by gzip, pigz, xz, zstd, pzstd, bzip2, pbzip2, lbzip2, zip and 7-Zip read
+# by FsForge; FsForge's archives checked by those tools; editing in place keeps the other files of an archive and
+# updates the checksum file and the block map; optionally FlashTool's own code reads what FsForge wrote.
+. "$HERE/verify-archives.sh"
+arc_run
+arc_flashtool
 
 # ---------------------------------------------------------- Android images
 # See tests/verify-android.sh: super.img from lpmake (ANDROID_LP=<folder with lpmake and lpunpack>) read, changed

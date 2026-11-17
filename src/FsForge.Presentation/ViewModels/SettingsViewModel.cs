@@ -34,6 +34,7 @@ public sealed class SettingsViewModel : DialogViewModel
             if (dir is null) return;
             _settings.TempDirectory = dir;
             OnPropertyChanged(nameof(Settings));
+            OnPropertyChanged(nameof(TempSpaceText));
         });
         ClearRecentCommand = new RelayCommand(() =>
         {
@@ -53,6 +54,18 @@ public sealed class SettingsViewModel : DialogViewModel
     public AppSettings? Result { get; private set; }
 
     public string RecentCountText => L.F("В списке недавних: {0}", _settings.RecentFiles.Count);
+
+    /// <summary>Free space where temporary files go, for the hint under the folder setting.</summary>
+    public string TempSpaceText
+    {
+        get
+        {
+            string dir = string.IsNullOrWhiteSpace(_settings.TempDirectory) ? Path.GetTempPath() : _settings.TempDirectory;
+            return ImageDocument.FreeSpace(dir) is { } free
+                ? L.F("Сейчас: {0} — свободно {1}.", dir, Fmt.Size(free))
+                : L.F("Сейчас: {0}.", dir);
+        }
+    }
 
     public string ThreadsHint => L.F("0 — по числу ядер процессора ({0})", Environment.ProcessorCount);
 

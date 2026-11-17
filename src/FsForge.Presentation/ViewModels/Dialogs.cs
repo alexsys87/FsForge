@@ -577,7 +577,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
 {
     /// <summary>A partition of a disk image, or a volume of a UBI image (then <see cref="Partition"/> is null).</summary>
     public sealed record Row(PartitionInfo? Partition, string Name, string Content, string Details, bool IsEditable, UbiVolumeInfo? Volume = null,
-        Core.Android.AndroidPart? AndroidPart = null);
+        Core.Android.AndroidPart? AndroidPart = null, Core.Archives.ArchiveEntry? Entry = null);
 
     private Row? _selected;
 
@@ -629,7 +629,27 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.AndroidPart, preferred));
     }
 
-    private readonly bool _volumes, _android;
+    /// <summary>Lists the files of a zip or 7z archive.</summary>
+    public PartitionChoiceViewModel(string fileName, Core.Archives.ImageArchive archive)
+    {
+        _entries = true;
+        Title = L.T("Выбор файла в архиве");
+        AcceptText = L.T("Открыть");
+        Summary = L.F("«{0}» — архив {1} с несколькими файлами. ", fileName, Core.Tar.ArchiveCodec.DisplayName(archive.Kind)) +
+                  L.T("Какой из них открыть? Остальные файлы при сохранении в тот же архив переносятся без изменений.");
+        foreach (Core.Archives.ArchiveEntry e in archive.Entries.Where(e => !e.IsDirectory))
+        {
+            string details = Fmt.Size(e.Size) + (e.CompressedSize is { } c && e.Size > 0 ? L.F(" · сжат до {0}", Fmt.Size(c)) : "");
+            Rows.Add(new Row(null, e.Name, Core.Archives.ImageArchive.LooksLikeImage(e.Name) ? L.T("образ") : L.T("файл"), details, e.Size > 0, Entry: e));
+        }
+        Core.Archives.ArchiveEntry? preferred = archive.DefaultImage();
+        _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Entry, preferred));
+    }
+
+    private readonly bool _volumes, _android, _entries;
+
+    /// <summary>The file of an archive to open; set by <see cref="Accept"/> when the dialog lists them.</summary>
+    public Core.Archives.ArchiveEntry? EntryResult { get; private set; }
 
     /// <summary>The part of an Android image to open; set by <see cref="Accept"/> when the dialog lists them.</summary>
     public Core.Android.AndroidPart? AndroidResult { get; private set; }
@@ -656,12 +676,14 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
     {
         if (_selected is null)
         {
-            Error = _volumes ? L.T("Выберите том.") : _android ? L.T("Выберите, что открыть.") : L.T("Выберите раздел.");
+            Error = _volumes ? L.T("Выберите том.") : _android || _entries ? L.T("Выберите, что открыть.") : L.T("Выберите раздел.");
             return false;
         }
         if (!_selected.IsEditable)
         {
-            Error = _android
+            Error = _entries
+                ? L.T("Этот файл пуст — открыть его нельзя.")
+                : _android
                 ? L.T("Здесь нет файловой системы или архива cpio, которые можно открыть.")
                 : _volumes
                 ? L.T("В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.")
@@ -671,6 +693,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         Result = _selected.Partition;
         VolumeResult = _selected.Volume;
         AndroidResult = _selected.AndroidPart;
+        EntryResult = _selected.Entry;
         return true;
     }
 }
@@ -869,8 +892,16 @@ public sealed class ImageInfoViewModel : DialogViewModel
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");
-        if (doc.OuterCompression is { } outer)
-            Add(L.T("Файл сжат"), outer.ToString().ToLowerInvariant() + L.T(" (распакован во временный файл; при сохранении под тем же именем сжимается снова)"));
+        if (doc.Archive is { } arc)
+        {
+            Add(L.T("Архив"), L.F("{0} ({1}); образ «{2}» распакован во временный файл, при сохранении под тем же именем упаковывается снова",
+                Core.Tar.ArchiveCodec.DisplayName(arc.Kind), arc.Methods, arc.EntryName));
+            if (arc.OtherFiles.Count > 0)
+                Add(L.T("Другие файлы архива"), string.Join(", ", arc.OtherFiles.Take(20)) + (arc.OtherFiles.Count > 20 ? L.F(" и ещё {0}", arc.OtherFiles.Count - 20) : "") +
+                                                 L.T(" — переносятся при сохранении"));
+        }
+        else if (doc.OuterCompression is { } outer)
+            Add(L.T("Файл сжат"), Core.Tar.ArchiveCodec.DisplayName(outer) + L.T(" (распакован во временный файл; при сохранении под тем же именем сжимается снова)"));
 
         TreeStats st = doc.Tree.GetStats();
         Add(L.T("Содержимое"), $"{Fmt.Plural(st.Files, "файл", "файла", "файлов")}, {Fmt.Plural(st.Directories, "папка", "папки", "папок")}, " +

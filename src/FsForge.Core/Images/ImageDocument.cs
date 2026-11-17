@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using FsForge.Core.Android;
+using FsForge.Core.Archives;
 using FsForge.Core.Cpio;
 using FsForge.Core.Cramfs;
 using FsForge.Core.Erofs;
@@ -188,6 +189,9 @@ public sealed class ImageDocument : IDisposable
     /// </summary>
     public ArchiveCompression? OuterCompression { get; private init; }
 
+    /// <summary>The zip or 7z archive the image was taken from; null for other files.</summary>
+    public ArchiveSource? Archive { get; private init; }
+
     /// <summary>The file is an Android sparse image (simg).</summary>
     public bool AndroidSparse { get; private init; }
 
@@ -279,12 +283,12 @@ public sealed class ImageDocument : IDisposable
         if (PartitionTable.Read(src)?.PickDefault() is { } part) return FormatOf(part);
         if (!ReferenceEquals(src, file)) return null;
 
-        byte[] magic = new byte[8];
+        byte[] magic = new byte[16];
         int n = file.Read(0, magic);
         if (ArchiveCodec.DetectCompression(magic.AsSpan(0, n)) is not { } packed) return null;
         try
         {
-            return SniffCompressed(file, packed);
+            return SniffCompressed(file, path, packed);
         }
         catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException or FsException or IOException)
         {
@@ -339,9 +343,23 @@ public sealed class ImageDocument : IDisposable
     };
 
     /// <summary>Unpacks only as much of a compressed image as it takes to see what it is.</summary>
-    private static ImageFormat? SniffCompressed(FileBlockSource file, ArchiveCompression compression)
+    private static ImageFormat? SniffCompressed(FileBlockSource file, string path, ArchiveCompression compression)
     {
-        using Stream input = ArchiveCodec.OpenDecompressor(new BlockSourceStream(file, 0, file.Length), compression);
+        ImageArchive? archive = null;
+        Stream input;
+        if (compression is ArchiveCompression.Zip or ArchiveCompression.SevenZip)
+        {
+            archive = ImageArchive.Open(path, compression);
+            if (archive.DefaultImage() is not { } entry)
+            {
+                archive.Dispose();
+                return null;
+            }
+            input = archive.OpenEntry(entry);
+        }
+        else input = ArchiveCodec.OpenDecompressor(new BlockSourceStream(file, 0, file.Length), compression);
+        using var owner = archive;
+        using var inputOwner = input;
         var head = new MemoryStream();
         byte[] buffer = new byte[1 << 16];
 
@@ -413,7 +431,8 @@ public sealed class ImageDocument : IDisposable
         IProgress<ProgressInfo>? progress = null, CancellationToken ct = default,
         int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null,
         string? volume = null, Func<UbiImage, UbiVolumeInfo?>? chooseVolume = null,
-        Func<AndroidImage, AndroidPart?>? chooseAndroidPart = null)
+        Func<AndroidImage, AndroidPart?>? chooseAndroidPart = null,
+        string? archiveEntry = null, Func<ImageArchive, ArchiveEntry?>? chooseArchiveEntry = null)
     {
         path = Path.GetFullPath(path);
         FileBlockSource file;
@@ -433,12 +452,20 @@ public sealed class ImageDocument : IDisposable
             // A compressed file that is not a tar archive is taken for a compressed image
             // (sdcard.img.gz, rootfs.ext4.gz): unpack it to a temporary file and go on with that.
             ArchiveCompression? outer = null;
-            byte[] magic = new byte[8];
+            ArchiveSource? archive = null;
+            byte[] magic = new byte[16];
             int magicLength = file.Read(0, magic);
             if (ArchiveCodec.DetectCompression(magic.AsSpan(0, magicLength)) is { } packed && !TarReader.IsTar(file, out _) && !CpioReader.IsCpio(file, out _))
             {
-                src = Unpack(file, packed, tempDirectory, progress, ct);
+                if (packed is ArchiveCompression.Zip or ArchiveCompression.SevenZip)
+                    (src, archive) = UnpackEntry(file, path, packed, tempDirectory, archiveEntry, chooseArchiveEntry, progress, ct);
+                else
+                    src = Unpack(file, packed, tempDirectory, progress, ct);
                 outer = packed;
+            }
+            else if (archiveEntry is not null)
+            {
+                throw new FsException($"The file is not a zip or 7z archive, so there is no file '{archiveEntry}' in it to open.");
             }
 
             bool sparse = IsAndroidSparse(src);
@@ -517,7 +544,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ubifs, path)
                 {
                     Ubifs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.ReplayedNodes > 0)
@@ -532,7 +559,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
                 {
                     SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.Compression is SquashCompression.Lzo or SquashCompression.Lzma)
@@ -547,7 +574,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Erofs, path)
                 {
                     Erofs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -559,7 +586,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Cramfs, path)
                 {
                     Cramfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -571,7 +598,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.F2fs, path)
                 {
                     F2fs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -583,7 +610,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Romfs, path)
                 {
                     Romfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -602,7 +629,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Fat, path)
                 {
                     Fat = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -614,7 +641,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Jffs2, path)
                 {
                     Jffs2 = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -626,7 +653,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ext, path)
                 {
                     Ext = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -755,7 +782,7 @@ public sealed class ImageDocument : IDisposable
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (CpioFormat.IsBinary(head.AsSpan(0, n))) hint = " It looks like a cpio archive in the old binary format, which is not supported (only newc, crc and odc).";
-        if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
+        if (outer is not null) hint = $" It was unpacked from a {ArchiveCodec.DisplayName(outer.Value)} file, but the content is not a known image.";
         return "The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, F2FS, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
     }
 
@@ -787,10 +814,115 @@ public sealed class ImageDocument : IDisposable
         {
             TryDelete(tmp);
             if (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
-                throw new FsException($"The {compression.ToString().ToLowerInvariant()} data is damaged: {ex.Message}", ex);
+                throw new FsException($"The {ArchiveCodec.DisplayName(compression)} data is damaged: {ex.Message}", ex);
+            if (ex is IOException io && IsDiskFull(io)) throw NoTempSpace(tmp, -1, ex);
             throw;
         }
     }
+
+    /// <summary>
+    /// Unpacks the image file of a zip or 7z archive into a temporary file: the one given by name, the one the
+    /// caller picks when there are several, or else the most likely one.
+    /// </summary>
+    private static (IBlockSource Source, ArchiveSource Info) UnpackEntry(FileBlockSource file, string path, ArchiveCompression kind,
+        string? tempDirectory, string? wanted, Func<ImageArchive, ArchiveEntry?>? ask, IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        using ImageArchive archive = ImageArchive.Open(path, kind);
+        string what = ArchiveCodec.DisplayName(kind);
+        var files = archive.Candidates.ToList();
+        string list = string.Join("; ", files.Select(e => $"{e.Name} ({DiskText.Size(e.Size)})"));
+        ArchiveEntry entry;
+        if (wanted is not null)
+        {
+            entry = archive.Find(wanted) ?? throw new FsException($"The {what} archive has no file '{wanted}'. It holds: {(list.Length > 0 ? list : "no files")}.");
+            if (entry.Size == 0) throw new FsException($"'{entry.Name}' in the {what} archive is empty.");
+        }
+        else if (files.Count == 0)
+        {
+            throw new FsException($"The {what} archive holds no files.");
+        }
+        else if (files.Count > 1 && files.Count(e => ImageArchive.LooksLikeImage(e.Name)) != 1 && ask is not null)
+        {
+            // Several images, or several files none of which is named like one: the user decides.
+            entry = ask(archive) ?? throw new OperationCanceledException();
+        }
+        else
+        {
+            entry = archive.DefaultImage()!;
+        }
+
+        string dir = tempDirectory ?? Path.GetTempPath();
+        EnsureTempSpace(dir, entry.Size);
+        string tmp = NewTempFile(tempDirectory);
+        try
+        {
+            using (Stream input = archive.OpenEntry(entry))
+            using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
+            {
+                byte[] buffer = new byte[1 << 17];
+                long done = 0;
+                int n;
+                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    output.Write(buffer, 0, n);
+                    done += n;
+                    progress?.Report(new ProgressInfo("unpack", done, entry.Size));
+                }
+            }
+            var info = new ArchiveSource(kind, entry.Name, archive.Methods,
+                archive.Entries.Where(e => e.Index != entry.Index).Select(e => e.IsDirectory ? e.Name + "/" : e.Name).ToList());
+            var unpacked = new TempFileSource(tmp);
+            file.Dispose();
+            return (unpacked, info);
+        }
+        catch (Exception ex)
+        {
+            TryDelete(tmp);
+            if (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
+                throw new FsException($"The {what} archive is damaged: {ex.Message}", ex);
+            if (ex is IOException io && IsDiskFull(io)) throw NoTempSpace(tmp, entry.Size, ex);
+            throw;
+        }
+    }
+
+    /// <summary>Free bytes on the disk that holds <paramref name="path"/>, or null when it cannot be told.</summary>
+    public static long? FreeSpace(string path)
+    {
+        try
+        {
+            string full = Path.GetFullPath(path);
+            DriveInfo? best = null;
+            foreach (DriveInfo d in DriveInfo.GetDrives())
+            {
+                string root = d.RootDirectory.FullName;
+                if (!full.StartsWith(root, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
+                if (best is null || root.Length > best.RootDirectory.FullName.Length) best = d;
+            }
+            return best is { IsReady: true } ? best.AvailableFreeSpace : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    private static void EnsureTempSpace(string dir, long needed)
+    {
+        if (FreeSpace(dir) is { } free && free < needed + (64L << 20))
+            throw new FsException(
+                $"There is not enough free space in the folder for temporary files ('{dir}') to unpack the image: it needs {DiskText.Size(needed)}, " +
+                $"{DiskText.Size(free)} are free. Choose a folder on another disk in Settings (folder for temporary files).");
+    }
+
+    private static bool IsDiskFull(IOException ex) =>
+        ex.HResult is unchecked((int)0x80070070) or unchecked((int)0x80070027) or 28
+        || ex.Message.Contains("No space left", StringComparison.OrdinalIgnoreCase);
+
+    private static FsException NoTempSpace(string tmp, long needed, Exception inner) => new FsException(
+        $"The disk with the folder for temporary files ('{Path.GetDirectoryName(tmp)}') ran out of space while the image was unpacked" +
+        (needed > 0 ? $" (it needs {DiskText.Size(needed)})" : " (the unpacked image is several times larger than the compressed file)") +
+        ". Choose a folder on another disk in Settings (folder for temporary files).", inner);
 
     private static string NewTempFile(string? tempDirectory)
     {
@@ -908,7 +1040,8 @@ public sealed class ImageDocument : IDisposable
     };
 
     /// <summary>Outcome of <see cref="Save"/>.</summary>
-    public sealed record SaveResult(ImageDocument Document, IReadOnlyList<string> Warnings, long BytesWritten);
+    /// <param name="UpdatedFiles">Files next to the image that were brought up to date: checksum files, block maps.</param>
+    public sealed record SaveResult(ImageDocument Document, IReadOnlyList<string> Warnings, long BytesWritten, IReadOnlyList<string>? UpdatedFiles = null);
 
     /// <summary>
     /// Writes the image to <paramref name="path"/> and reopens it. The data goes to a temporary file
@@ -953,6 +1086,7 @@ public sealed class ImageDocument : IDisposable
         // "tmp" becomes the target file. A compressed image is first written raw to "raw" and verified there.
         string tmp = path + ".fsforge-tmp";
         string raw = tmp;
+        byte[]? bmap = null;
         try
         {
             if (outer != ArchiveCompression.None) raw = NewTempFile(options.TempDirectory);
@@ -983,12 +1117,18 @@ public sealed class ImageDocument : IDisposable
                 }
             }
 
+            bmap = Sidecars.FindBmap(path) is not null ? Sidecars.BuildBmap(raw, progress, ct) : null;
             if (outer != ArchiveCompression.None)
-                Compress(raw, tmp, outer, options, progress, ct);
+                Compress(raw, tmp, outer, options, progress, ct, Archive?.EntryName ?? ArchiveCodec.InnerImageName(path), Archive, FilePath);
         }
         catch (Exception ex)
         {
             TryDelete(tmp);
+            if (ex is IOException io && IsDiskFull(io))
+                throw new FsException(raw != tmp
+                    ? $"There is not enough free space. The new image is first written uncompressed to the folder for temporary files ('{Path.GetDirectoryName(raw)}'), " +
+                      $"then compressed into '{Path.GetDirectoryName(path)}'. Free some space or choose a folder for temporary files on another disk in Settings."
+                    : $"There is not enough free space in '{Path.GetDirectoryName(path)}' for the new image.", ex);
             if (ex is IOException or UnauthorizedAccessException)
                 throw new FsException($"The image could not be written: {ex.Message}", ex);
             throw;
@@ -1029,8 +1169,13 @@ public sealed class ImageDocument : IDisposable
             Dispose();
         }
 
-        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition, volume: volume);
-        return new SaveResult(reopened, warnings, written);
+        // Files next to the image that describe its old contents: checksums are recomputed, a block map rebuilt.
+        var updated = new List<string>();
+        warnings.AddRange(Sidecars.Update(path, bmap, updated));
+
+        ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition, volume: volume,
+            archiveEntry: outer is ArchiveCompression.Zip or ArchiveCompression.SevenZip ? Archive?.EntryName ?? ArchiveCodec.InnerImageName(path) : null);
+        return new SaveResult(reopened, warnings, written, updated);
     }
 
     // ------------------------------------------------------ Android image
@@ -1451,48 +1596,86 @@ public sealed class ImageDocument : IDisposable
         return problems;
     }
 
-    /// <summary>Compresses a verified raw image into the file that replaces the target, then reads it back.</summary>
+    /// <summary>
+    /// Compresses a verified raw image into the file that replaces the target, then reads it back. A zip or 7z
+    /// archive gets the image under <paramref name="imageName"/>, plus the other files of the archive the image
+    /// came from (<paramref name="source"/>, read from <paramref name="sourcePath"/>).
+    /// </summary>
     private static void Compress(string raw, string target, ArchiveCompression compression, SaveOptions options,
-        IProgress<ProgressInfo>? progress, CancellationToken ct)
+        IProgress<ProgressInfo>? progress, CancellationToken ct, string imageName, ArchiveSource? source, string? sourcePath)
     {
         TarOptions codec = options.Tar.Clone();
         codec.Compression = compression;
         byte[] buffer = new byte[1 << 20];
         byte[] expected;
-        long length;
+        long length = new FileInfo(raw).Length;
+        bool archive = compression is ArchiveCompression.Zip or ArchiveCompression.SevenZip;
 
-        using (var input = new FileStream(raw, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
-        using (var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20))
-        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        byte[] CopyRaw(Stream destination)
         {
-            length = input.Length;
-            using (Stream packer = ArchiveCodec.OpenCompressor(output, codec))
+            using var input = new FileStream(raw, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+            using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            int n;
+            long done = 0;
+            while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
             {
-                int n;
-                long done = 0;
-                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    sha.AppendData(buffer, 0, n);
-                    packer.Write(buffer, 0, n);
-                    done += n;
-                    progress?.Report(new ProgressInfo("compress", done, length));
-                }
+                ct.ThrowIfCancellationRequested();
+                sha.AppendData(buffer, 0, n);
+                destination.Write(buffer, 0, n);
+                done += n;
+                if (!archive) progress?.Report(new ProgressInfo("compress", done, length));
             }
+            return sha.GetHashAndReset();
+        }
+
+        if (archive)
+        {
+            byte[]? hash = null;
+            ImageArchive? old = source is not null && source.Kind is ArchiveCompression.Zip or ArchiveCompression.SevenZip
+                                && sourcePath is not null && File.Exists(sourcePath)
+                ? ImageArchive.Open(sourcePath, source.Kind) : null;
+            try
+            {
+                ArchiveEntry? replaced = old?.Find(source!.EntryName);
+                ImageArchive.Write(target, compression, imageName, length, s => hash = CopyRaw(s), old, replaced, codec,
+                    options.TempDirectory, progress, ct);
+            }
+            finally
+            {
+                old?.Dispose();
+            }
+            expected = hash!;
+        }
+        else
+        {
+            using var output = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20);
+            using (Stream packer = ArchiveCodec.OpenCompressor(output, codec)) expected = CopyRaw(packer);
             output.Flush(flushToDisk: true);
-            expected = sha.GetHashAndReset();
         }
         if (options.Verify == VerifyLevel.None) return;
 
         // The compressors are our own code paths too: make sure the file unpacks to exactly what went in.
-        using (var packed = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
-        using (Stream unpacker = ArchiveCodec.OpenDecompressor(packed, compression))
-        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        ImageArchive? written = null;
+        FileStream? packedFile = null;      // closed here: some decompressors (zstd) leave their input open
+        try
         {
-            long done = 0;
-            int n;
-            try
+            Stream unpacker;
+            if (archive)
             {
+                written = ImageArchive.Open(target, compression);
+                ArchiveEntry entry = written.Find(imageName) ?? throw new FsException($"The written archive does not hold '{imageName}'.");
+                unpacker = written.OpenEntry(entry);
+            }
+            else
+            {
+                packedFile = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                unpacker = ArchiveCodec.OpenDecompressor(packedFile, compression);
+            }
+            using (unpacker)
+            using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            {
+                long done = 0;
+                int n;
                 while ((n = unpacker.Read(buffer, 0, buffer.Length)) > 0)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -1500,13 +1683,22 @@ public sealed class ImageDocument : IDisposable
                     done += n;
                     progress?.Report(new ProgressInfo("verify", done, length));
                 }
+                if (done != length || !sha.GetHashAndReset().AsSpan().SequenceEqual(expected))
+                    throw new FsException("The compressed image does not unpack to the data that was written and was discarded; the original file is untouched.");
             }
-            catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
-            {
-                throw new FsException($"The compressed image cannot be unpacked again ({ex.Message}) and was discarded; the original file is untouched.");
-            }
-            if (done != length || !sha.GetHashAndReset().AsSpan().SequenceEqual(expected))
-                throw new FsException("The compressed image does not unpack to the data that was written and was discarded; the original file is untouched.");
+            // The carried-over files are checked against their CRCs.
+            if (written is not null && written.Entries.Count > 1)
+                written.ReadAll((e, data) => { }, ct);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException
+                                   || (ex is FsException && !ex.Message.StartsWith("The compressed image", StringComparison.Ordinal)))
+        {
+            throw new FsException($"The compressed image cannot be unpacked again ({ex.Message}) and was discarded; the original file is untouched.");
+        }
+        finally
+        {
+            written?.Dispose();
+            packedFile?.Dispose();
         }
     }
 

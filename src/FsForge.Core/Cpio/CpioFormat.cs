@@ -85,6 +85,8 @@ public sealed class CpioOptions
     public void Validate()
     {
         if (Header == CpioHeader.Odc) throw new FsException("Writing odc cpio archives is not supported; choose newc.");
+        if (Compression is ArchiveCompression.Zip or ArchiveCompression.SevenZip)
+            throw new FsException("A cpio archive can be compressed with gzip, xz, zstd, bzip2 or lz4, not put into a zip or 7z archive.");
         if (PathPrefix is not ("" or "./")) throw new FsException("The cpio path prefix must be empty or \"./\".");
         if (GzipLevel is < 1 or > 9 || ZstdLevel is < 1 or > 22 || XzEffort is < 0 or > 2 || Lz4Level is < 1 or > 12)
             throw new FsException("Invalid compression level for the cpio archive.");
@@ -168,6 +170,7 @@ public static class CpioFormat
         ArchiveCompression.Xz => ".cpio.xz",
         ArchiveCompression.Zstd => ".cpio.zst",
         ArchiveCompression.Lz4 => ".cpio.lz4",
+        ArchiveCompression.Bzip2 => ".cpio.bz2",
         _ => ".cpio",
     };
 
@@ -179,6 +182,7 @@ public static class CpioFormat
         if (name.EndsWith(".cpio.xz")) return ArchiveCompression.Xz;
         if (name.EndsWith(".cpio.zst") || name.EndsWith(".cpio.zstd")) return ArchiveCompression.Zstd;
         if (name.EndsWith(".cpio.lz4")) return ArchiveCompression.Lz4;
+        if (name.EndsWith(".cpio.bz2")) return ArchiveCompression.Bzip2;
         if (name.EndsWith(".cpio")) return ArchiveCompression.None;
         return null;
     }

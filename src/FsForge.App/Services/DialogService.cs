@@ -18,14 +18,15 @@ public sealed class DialogService : IDialogService
     private static string AllFiles => L.T("Все файлы") + "|*.*";
 
     private static string ImageFilter =>
-        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.f2fs;*.cramfs;*.romfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpio.lz4;*.cpgz;*.gz;*.xz;*.zst;*.lz4|" +
-        L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst|" +
+        L.T("Образы и архивы") + "|*.squashfs;*.sqfs;*.sfs;*.erofs;*.f2fs;*.cramfs;*.romfs;*.img;*.ext2;*.ext3;*.ext4;*.ubi;*.ubifs;*.jffs2;*.vfat;*.fat;*.bin;*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpio.lz4;*.cpgz;*.gz;*.xz;*.zst;*.lz4;*.bz2;*.tbz2;*.zip;*.7z|" +
+        L.T("Образы дисков (SD-карты)") + "|*.img;*.img.gz;*.img.xz;*.img.zst;*.img.bz2;*.wic;*.wic.gz;*.wic.xz;*.wic.zst;*.wic.bz2;*.zip;*.7z|" +
+        L.T("Архивы с образом (FlashTool, zip, 7z)") + "|*.zip;*.7z;*.gz;*.xz;*.zst;*.bz2|" +
         "SquashFS|*.squashfs;*.sqfs;*.sfs|EROFS|*.erofs;*.erofs.img;*.img|ext2/3/4|*.img;*.ext2;*.ext3;*.ext4|" +
         "F2FS|*.f2fs;*.img;*.bin|CramFS|*.cramfs;*.img;*.bin|romfs|*.romfs;*.img;*.bin|" +
         L.T("UBI и UBIFS") + "|*.ubi;*.ubifs;*.ubi.gz;*.ubi.xz;*.ubi.zst;*.bin;*.img|" +
         "JFFS2|*.jffs2;*.jffs2.gz;*.bin;*.img|" +
         "FAT|*.vfat;*.fat;*.img;*.bin|" +
-        L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst|" +
+        L.T("Архивы tar") + "|*.tar;*.tar.gz;*.tgz;*.tar.xz;*.txz;*.tar.zst;*.tar.bz2;*.tbz2|" +
         L.T("Архивы cpio (initramfs)") + "|*.cpio;*.cpio.gz;*.cpio.xz;*.cpio.zst;*.cpio.lz4;*.cpgz;*.img;*.gz;*.xz;*.zst;*.lz4|" +
         L.T("Образы Android (super, boot, vendor_boot)") + "|super*.img;*boot*.img;recovery*.img;*.img|" + AllFiles;
 
@@ -63,7 +64,7 @@ public sealed class DialogService : IDialogService
 
     public string? PickSaveFile(string title, string suggestedName, ImageFormat format, string extension, string? initialDirectory, bool diskImage = false)
     {
-        string filter = (diskImage ? L.T("Образ диска") + "|*.img;*.img.gz;*.img.xz;*.img.zst;*.bin" : format switch
+        string filter = (diskImage ? L.T("Образ диска") + "|*.img;*.img.gz;*.img.xz;*.img.zst;*.img.bz2;*.zip;*.7z;*.bin" : format switch
         {
             ImageFormat.SquashFs => "SquashFS|*.squashfs;*.sqfs;*.sfs;*.img;*.bin",
             ImageFormat.Ext => L.T("Образ ext2/3/4") + "|*.ext4;*.ext3;*.ext2;*.img;*.bin",

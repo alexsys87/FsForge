@@ -1231,6 +1231,62 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("Archives: a FlashTool 7z with two images and a README, checksum file, temporary folder", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] image = File.ReadAllBytes(MakeImage("arc.sqfs"));
+            byte[] readme = Encoding.ASCII.GetBytes("Flash me\n");
+            string archive = Path.Combine(_dir, "firmware.7z");
+            using (var fs = new FileStream(archive, FileMode.Create, FileAccess.ReadWrite))
+                FsForge.Core.Archives.SevenZipWriter.Write(fs, new[]
+                {
+                    new FsForge.Core.Archives.ArchiveWriteEntry { Name = "README.txt", Length = readme.Length, WriteData = s => s.Write(readme) },
+                    new FsForge.Core.Archives.ArchiveWriteEntry { Name = "rootfs.img", Length = image.Length, WriteData = s => s.Write(image) },
+                    new FsForge.Core.Archives.ArchiveWriteEntry { Name = "recovery.img", Length = image.Length, WriteData = s => s.Write(image) },
+                }, 0, 0);
+            string sidecar = archive + ".sha256";
+            File.WriteAllText(sidecar, "0000000000000000000000000000000000000000000000000000000000000000  firmware.7z\n");
+
+            // Two images: the user picks one; the README is listed but is not an image.
+            int asked = 0;
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                asked++;
+                Check(c.Rows.Count == 3 && c.Rows[0] is { Name: "README.txt", Content: "файл" } && c.Rows[2] is { Name: "recovery.img", Content: "образ", IsEditable: true }
+                      && c.Summary.Contains("7z") && c.Title == "Выбор файла в архиве", "archive list: " + string.Join("; ", c.Rows.Select(r => r.Name + " " + r.Content)));
+                c.Selected = c.Rows[2];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(archive), "open failed: " + string.Join("; ", d.Messages));
+            Check(asked == 1 && vm.Document is { Archive: { EntryName: "recovery.img", Kind: ArchiveCompression.SevenZip } }
+                  && vm.DocumentInfo.StartsWith("recovery.img в архиве 7z · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Архив" && r.Value.StartsWith("7z (LZMA2)"))
+                                                                    && i.Rows.Any(r => r.Label == "Другие файлы архива" && r.Value.StartsWith("README.txt, rootfs.img"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of an image in an archive");
+
+            // Ctrl+S: the same archive, the other files kept, the checksum file updated.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog on save: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Archive.EntryName: "recovery.img", FilePath: var path } && path == archive && vm.Document.Tree.Resolve("/etc/passwd") is null,
+                "saved in place: " + vm.DocumentInfo);
+            using (var a = FsForge.Core.Archives.ImageArchive.Open(archive, ArchiveCompression.SevenZip))
+                Check(string.Join(",", a.Entries.Select(e => e.Name)) == "README.txt,rootfs.img,recovery.img", "entries after saving");
+            string hash;
+            using (var f = File.OpenRead(archive)) hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(f)).ToLowerInvariant();
+            Check(File.ReadAllText(sidecar) == hash + "  firmware.7z\n", "the checksum file was not updated");
+            Check(d.Notifications.Any(n => n.Contains("обновлены файлы рядом с ним: firmware.7z.sha256")) && !vm.IsInfoOpen,
+                "the user was not told about the checksum file: " + string.Join("; ", d.Notifications));
+
+            // The settings show where temporary files go and how much room there is.
+            var settings = new SettingsViewModel(vm.Settings.Clone(), d, Path.Combine(_dir, "s.json"));
+            Check(settings.TempSpaceText.StartsWith("Сейчас: ") && settings.TempSpaceText.Contains("свободно"), "temporary folder hint: " + settings.TempSpaceText);
+            vm.Dispose();
+        });
+
         await Test("F2FS: open a labelled image, keep its size and name, save in place, convert", async () =>
         {
             var (vm, d, _, _) = NewVm();
