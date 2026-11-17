@@ -33,6 +33,13 @@ public sealed partial class TpLinkImage : FirmwareImage
 
     private TpLinkImage(IBlockSource source) : base(source) { }
 
+    /// <summary>The classic header: its field places and its bytes as they are in the file.</summary>
+    private Classic? _classic;
+    private byte[] _header = Array.Empty<byte>();
+
+    /// <summary>The safeloader partition table as read (in the order of its lines).</summary>
+    private Table? _table;
+
     /// <summary>True for the safeloader image, false for the classic header.</summary>
     public bool Safeloader { get; private init; }
 
@@ -123,6 +130,8 @@ public sealed partial class TpLinkImage : FirmwareImage
         long limit = source.Length;
         var image = new TpLinkImage(source)
         {
+            _classic = layout,
+            _header = h,
             HeaderVersion = layout.Version,
             Vendor = layout.Vendor,
             FirmwareVersion = layout.FwVersion,
@@ -237,7 +246,7 @@ public sealed partial class TpLinkImage : FirmwareImage
 
     private static TpLinkImage ReadSafeloader(IBlockSource source, Table table, CancellationToken ct)
     {
-        var image = new TpLinkImage(source) { Safeloader = true };
+        var image = new TpLinkImage(source) { Safeloader = true, _table = table };
         if (!table.QNew)
         {
             // The preamble: the image size (big-endian, with the preamble), then the MD5 of the key and everything from 0x14 on.
@@ -318,15 +327,214 @@ public sealed partial class TpLinkImage : FirmwareImage
 
     // ---------------------------------------------------------- writing
 
+    private uint Field(int i) => BinaryPrimitives.ReadUInt32BigEndian(_header.AsSpan(_classic!.Lengths + 4 * i));
+
     public override bool CanRebuild(FirmwarePart part, out string reason)
     {
-        reason = "Rebuilding a TP-Link firmware image is not supported yet.";
-        return false;
+        reason = !Parts.Contains(part) ? "The part does not belong to this image."
+            : part.Content == PartitionContent.Unknown ? $"'{part.Name}' holds nothing this program writes."
+            : Md5Matches != true ? "The MD5 sum of the TP-Link image could not be checked the way this program computes it, so it cannot be made again."
+            : Safeloader ? SafeloaderObstacle(part) : ClassicObstacle(part);
+        return reason.Length == 0;
     }
 
     public override void Write(Stream output, FirmwarePart part, IBlockSource data, List<string> warnings,
-        IProgress<ProgressInfo>? progress, CancellationToken ct) =>
-        throw new FsException("Rebuilding a TP-Link firmware image is not supported yet.");
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        if (!CanRebuild(part, out string reason)) throw new FsException(reason);
+        List<IBlockSource> pieces = Safeloader ? SafeloaderPieces(part, data, ct) : ClassicPieces(part, data, ct);
+        WritePieces(output, pieces, warnings, progress, ct);
+    }
 
-    public override IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open) => Array.Empty<(string, IBlockSource)>();
+    public override IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open)
+    {
+        if (_classic is not null)
+        {
+            // The header without what depends on the content: kernel_len, rootfs_len and the sum.
+            byte[] h = (byte[])_header.Clone();
+            h.AsSpan(_classic.Md5, 16).Clear();
+            h.AsSpan(_classic.Lengths + 16, 4).Clear();
+            h.AsSpan(_classic.Lengths + 24, 4).Clear();
+            yield return ("TP-Link header", new MemoryBlockSource(h));
+        }
+        if (_table is not null)
+        {
+            yield return ("safeloader header", Slice(SafeloaderPreamble, _table.Payload));
+            yield return ("partition names", new MemoryBlockSource(Encoding.ASCII.GetBytes(string.Join(",", _table.Entries.Select(e => e.Name)))));
+        }
+        foreach (FirmwarePart p in Parts)
+            if (p.Name != open.Name && !(open.Name == "rootfs" && p.Name == "kernel" && Field(5) == 0)) yield return (p.Name, Open(p));
+        foreach ((string name, IBlockSource data) in FwtoolSections()) yield return (name, data);
+    }
+
+    // ---------------------------------------------------------------- classic
+
+    /// <summary>The end of the content the header describes, and whether mktplinkfw's JFFS2 marker and its padding follow it.</summary>
+    private (long End, bool Marker, bool Padded) ClassicTail()
+    {
+        long fwLength = Field(2), end = Field(5) == 0 ? ClassicHeaderSize + Field(4) : Field(5) + Field(6);
+        long marker = (end + 0xFFFF) & ~0xFFFFL;
+        bool hasMarker = marker + 4 <= ContentEnd && BinaryPrimitives.ReadUInt32BigEndian(Source.ReadBytes(marker, 4)) == 0xDEADC0DE;
+        return (end, hasMarker, ContentEnd == fwLength);
+    }
+
+    private string ClassicObstacle(FirmwarePart part)
+    {
+        if (part.Name != "rootfs") return $"Only the root filesystem of a TP-Link image is rebuilt, not '{part.Name}'.";
+        if (Field(8) > 0) return "The TP-Link image carries a bootloader, which is not rebuilt.";
+        // Behind the content only what mktplinkfw puts there: 0xFF padding and its JFFS2 marker.
+        (long end, bool marker, _) = ClassicTail();
+        long from = marker ? ((end + 0xFFFF) & ~0xFFFFL) + 4 : end;
+        byte[] buf = new byte[1 << 16];
+        for (long o = end; o < ContentEnd;)
+        {
+            int n = Source.Read(o, buf.AsSpan(0, (int)Math.Min(buf.Length, ContentEnd - o)));
+            if (n <= 0) break;
+            for (int i = 0; i < n; i++)
+            {
+                long at = o + i;
+                if (marker && at >= from - 4 && at < from) continue;
+                if (buf[i] != 0xFF) return "There is data behind the root filesystem of the TP-Link image that is not mktplinkfw's padding.";
+            }
+            o += n;
+        }
+        return "";
+    }
+
+    /// <summary>
+    /// The image as mktplinkfw builds it with the new root filesystem: the header (new rootfs_len, or kernel_len for a
+    /// combined image, and the MD5 with the key), the kernel, the root filesystem at its offset, the JFFS2 marker at the
+    /// next 64 KiB (-j) and the 0xFF padding to the flash layout when the old image had it.
+    /// </summary>
+    private List<IBlockSource> ClassicPieces(FirmwarePart part, IBlockSource data, CancellationToken ct)
+    {
+        long fwLength = Field(2);
+        bool combined = Field(5) == 0;
+        (long _, bool marker, bool padded) = ClassicTail();
+        var body = new List<IBlockSource> { Slice(ClassicHeaderSize, part.Offset), data };
+        long end = part.Offset + data.Length;
+        if (marker)
+        {
+            long at = (end + 0xFFFF) & ~0xFFFFL;
+            body.Add(Fill(at - end, 0xFF));
+            body.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
+            end = at + 4;
+        }
+        if (end > fwLength)
+            throw new FsException($"The new root filesystem does not fit into the flash layout of the TP-Link image: the firmware would be {end} bytes, the layout holds {fwLength}.");
+        if (padded) body.Add(Fill(fwLength - end, 0xFF));
+
+        byte[] header = (byte[])_header.Clone();
+        if (combined) BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(_classic!.Lengths + 16), (uint)(part.Offset + data.Length - ClassicHeaderSize));
+        else BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(_classic!.Lengths + 24), (uint)data.Length);
+        SaltNormal.CopyTo(header, _classic.Md5);
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        md5.AppendData(header);
+        byte[] buf = new byte[1 << 20];
+        foreach (IBlockSource b in body)
+            for (long o = 0; o < b.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, b.Length - o);
+                b.ReadExactly(o, buf.AsSpan(0, n));
+                md5.AppendData(buf, 0, n);
+                o += n;
+            }
+        md5.GetHashAndReset().CopyTo(header, _classic.Md5);
+        var pieces = new List<IBlockSource> { new MemoryBlockSource(header) };
+        pieces.AddRange(body);
+        return pieces;
+    }
+
+    // ------------------------------------------------------------- safeloader
+
+    /// <summary>The flash partition of a name in the partition-table partition ("partition NAME base 0x... size 0x..."), or null.</summary>
+    private (long Base, long Size)? FlashPartition(string name)
+    {
+        FirmwarePart? table = Parts.FirstOrDefault(p => p.Name == "partition-table");
+        if (table is null) return null;
+        string text = Encoding.ASCII.GetString(Source.ReadBytes(table.Offset, (int)Math.Min(table.Length, 0x10000)));
+        Match m = Regex.Match(text, $@"partition\s+{Regex.Escape(name)}\s+base\s+0x([0-9A-Fa-f]+)\s+size\s+0x([0-9A-Fa-f]+)");
+        return m.Success ? (long.Parse(m.Groups[1].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture), long.Parse(m.Groups[2].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture)) : null;
+    }
+
+    private string SafeloaderObstacle(FirmwarePart part)
+    {
+        if (_table is not { QNew: false } table) return "The \"?NEW\" kind of safeloader image is not rebuilt.";
+        // tplink-safeloader puts the partitions one after another from base 0x800 on.
+        long next = SafeloaderTableSize;
+        foreach (Entry e in table.Entries)
+        {
+            if (e.Base != next) return "The partitions of the safeloader image do not follow one another as tplink-safeloader puts them.";
+            next += e.Size;
+        }
+        if (table.Payload + next != ContentEnd) return "There is data behind the partitions of the safeloader image.";
+        return "";
+    }
+
+    /// <summary>
+    /// The image as tplink-safeloader builds it with the new partition: the preamble (size, MD5 of the key and the image
+    /// from 0x14), the header as it was, the partition table written anew (bases one after another from 0x800, a zero
+    /// byte, 0xFF), the partitions. A file-system that ended with the JFFS2 marker (-j) gets it again at the next 64 KiB
+    /// of its flash address.
+    /// </summary>
+    private List<IBlockSource> SafeloaderPieces(FirmwarePart part, IBlockSource data, CancellationToken ct)
+    {
+        Table table = _table!;
+        var content = new List<IBlockSource> { data };
+        long size = data.Length;
+        bool marker = part.Length >= 4 && BinaryPrimitives.ReadUInt32BigEndian(Source.ReadBytes(part.Offset + part.Length - 4, 4)) == 0xDEADC0DE;
+        (long Base, long Size)? flash = FlashPartition(part.Name);
+        if (marker && flash is { } f && (f.Base + part.Length - 4) % 0x10000 == 0)
+        {
+            long padded = ((data.Length + f.Base + 0xFFFF) & ~0xFFFFL) - f.Base;
+            content.Add(Fill(padded - data.Length, 0xFF));
+            content.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
+            size = padded + 4;
+        }
+        if (flash is { } limit && size > limit.Size)
+            throw new FsException($"The new {part.Name} ({size} bytes) is too big for its flash partition ({limit.Size} bytes).");
+
+        var lines = new StringBuilder();
+        var partitions = new List<IBlockSource>();
+        long position = SafeloaderTableSize;
+        foreach (Entry e in table.Entries)
+        {
+            bool changed = table.Payload + e.Base == part.Offset;
+            long length = changed ? size : e.Size;
+            lines.Append(CultureInfo.InvariantCulture, $"fwup-ptn {e.Name} base 0x{position:x5} size 0x{length:x5}\t\r\n");
+            if (changed) partitions.AddRange(content);
+            else partitions.Add(Slice(table.Payload + e.Base, table.Payload + e.Base + e.Size));
+            position += length;
+        }
+        byte[] tableBytes = new byte[SafeloaderTableSize];
+        tableBytes.AsSpan().Fill(0xFF);
+        byte[] text = Encoding.ASCII.GetBytes(lines.ToString());
+        if (text.Length + 1 > SafeloaderTableSize) throw new FsException("The partition table of the safeloader image would overflow.");
+        text.CopyTo(tableBytes, 0);
+        tableBytes[text.Length] = 0;
+
+        long total = table.Payload + position;
+        if (total > uint.MaxValue) throw new FsException("The new image is too large for a safeloader image.");
+        var body = new List<IBlockSource> { Slice(SafeloaderPreamble, table.Payload), new MemoryBlockSource(tableBytes) };
+        body.AddRange(partitions);
+        byte[] preamble = new byte[SafeloaderPreamble];
+        BinaryPrimitives.WriteUInt32BigEndian(preamble, (uint)total);
+        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        md5.AppendData(SaltSafeloader);
+        byte[] buf = new byte[1 << 20];
+        foreach (IBlockSource b in body)
+            for (long o = 0; o < b.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, b.Length - o);
+                b.ReadExactly(o, buf.AsSpan(0, n));
+                md5.AppendData(buf, 0, n);
+                o += n;
+            }
+        md5.GetHashAndReset().CopyTo(preamble, 4);
+        var pieces = new List<IBlockSource> { new MemoryBlockSource(preamble) };
+        pieces.AddRange(body);
+        return pieces;
+    }
 }

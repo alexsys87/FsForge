@@ -397,6 +397,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                            ? L.F("Образ {0} с ядром не меняется; маркеры 0xdeadc0de за файловой системой ставятся на первые границы блоков стирания, как у OpenWrt. ", fw.Image.ShortKind)
                            : fw.Image is Core.Firmware.FitImage
                            ? L.T("Данные образа, его хеши и размер в дереве FIT пересчитываются, внешние данные других образов переносятся на новые смещения без изменений. ")
+                           : fw.Image is Core.Firmware.TpLinkImage { Safeloader: true }
+                           ? L.T("Таблица разделов, размер и MD5 образа пересчитываются так, как их пишет tplink-safeloader, остальные разделы переносятся без изменений. ")
+                           : fw.Image is Core.Firmware.TpLinkImage
+                           ? L.T("Длина корневой ФС и MD5 в заголовке пересчитываются так, как их пишет mktplinkfw, ядро переносится без изменений. ")
                            : fw.Image is Core.Firmware.TrxImage { ChkBoard: not null }
                            ? L.T("Длина, смещения и CRC-32 в заголовке TRX и контрольные суммы заголовка Netgear CHK пересчитываются, остальные части переносятся без изменений. ")
                            : fw.Image is Core.Firmware.TrxImage

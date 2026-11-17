@@ -20,7 +20,8 @@ internal static partial class SelfTest
     {
         Test("TP-Link: classic header versions 1 and 2, bootloader, MD5", TpLinkClassic);
         Test("TP-Link: safeloader partition table, soft-version, support-list, MD5", TpLinkSafeloader);
-        Test("TP-Link: look-alikes refused, never saved over", TpLinkChecks);
+        Test("TP-Link: look-alikes refused, the filesystem alone never over the image", TpLinkChecks);
+        Test("TP-Link: rebuilt as mktplinkfw and tplink-safeloader make it", TpLinkRebuild);
         Test("TP-Link: corrupted images are rejected cleanly", TpLinkFuzz);
     }
 
@@ -35,7 +36,7 @@ internal static partial class SelfTest
     /// in place of the sum. Version 2 uses the field places of mktplinkfw2.
     /// </summary>
     private static byte[] BuildTpLinkClassic(int version, byte[] kernel, byte[]? rootfs, byte[]? boot = null, int rootfsOffset = 0x40000,
-        int layoutSize = 0x100000, bool strip = true)
+        int layoutSize = 0x100000, bool strip = true, bool jffs2 = false)
     {
         byte[] buf = new byte[layoutSize];
         buf.AsSpan().Fill(0xFF);
@@ -46,6 +47,13 @@ internal static partial class SelfTest
         {
             rootfs.CopyTo(buf, rootfsOffset);
             length = rootfsOffset + rootfs.Length;
+            if (jffs2)
+            {
+                // pad_jffs2 with its 64 KiB mask: one marker at the next 64 KiB of the file.
+                length = (length + 0xFFFF) & ~0xFFFF;
+                new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }.CopyTo(buf, length);
+                length += 4;
+            }
         }
         if (boot is not null)
         {
@@ -83,7 +91,7 @@ internal static partial class SelfTest
     /// "fwup-ptn" lines ended by a zero byte in 0x800 bytes, and the partitions one after another from base 0x800 on
     /// (partition-table first; soft-version, support-list and extra-para behind a length and a zero word).
     /// </summary>
-    private static byte[] BuildTpLinkSafeloader(byte[] kernel, byte[] rootfs, string product = "Archer C7")
+    private static byte[] BuildTpLinkSafeloader(byte[] kernel, byte[] rootfs, string product = "Archer C7", bool jffs2 = false)
     {
         byte[] Ascii(string s) => Encoding.ASCII.GetBytes(s);
         byte[] Meta(byte[] data)
@@ -95,7 +103,18 @@ internal static partial class SelfTest
         }
         byte[] flash = new byte[0x800];
         flash.AsSpan().Fill(0xFF);
-        byte[] flashText = Ascii("partition fs-uboot base 0x00000 size 0x20000\npartition firmware base 0x20000 size 0x7a0000\n\0");
+        byte[] flashText = Ascii("partition fs-uboot base 0x00000 size 0x20000\npartition os-image base 0x20000 size 0x180000\n" +
+                                 "partition file-system base 0x1a0000 size 0x620000\n\0");
+        if (jffs2)
+        {
+            // read_file with -j: up to the next 64 KiB of the flash address of file-system (0x1a0000), then the marker.
+            int padded = ((rootfs.Length + 0x1a0000 + 0xFFFF) & ~0xFFFF) - 0x1a0000;
+            byte[] withMarker = new byte[padded + 4];
+            withMarker.AsSpan().Fill(0xFF);
+            rootfs.CopyTo(withMarker, 0);
+            new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }.CopyTo(withMarker, padded);
+            rootfs = withMarker;
+        }
         new byte[] { 0, 4, 0, 0 }.Concat(flashText).ToArray().CopyTo(flash, 0);
         var parts = new (string Name, byte[] Data)[]
         {
@@ -145,7 +164,7 @@ internal static partial class SelfTest
                 "version 1: header");
             Check(doc.Firmware!.Image.Parts is [{ Name: "kernel", Offset: 0x200, ContentName: "uImage" }, { Name: "rootfs", Offset: 0x40000, Content: PartitionContent.SquashFs }]
                   && doc.Firmware.Part.Name == "rootfs", "version 1: parts " + string.Join("; ", doc.Firmware.Image.Parts));
-            Check(doc.SavesFilesystemOnly && doc.Warnings.Any(w => w.Contains("TP-Link firmware image is not supported yet")), "TP-Link images are only read");
+            Check(!doc.SavesFilesystemOnly, "a TP-Link image is rebuilt when saved");
             Same(expected, Program.DumpToString(doc.Tree), "version 1");
         }
 
@@ -230,18 +249,70 @@ internal static partial class SelfTest
         string random = WriteFile("notp-random.bin", new byte[] { 1, 0, 0, 0 }.Concat(Bytes(rnd, 300000)).ToArray());
         ExpectFs(() => ImageDocument.Open(random, _dir, searchEmbedded: false).Dispose());
 
-        // Saving: the filesystem alone, never over the TP-Link image.
+        // The filesystem alone (or a tar archive) is never written over the TP-Link image.
         string path = WriteFile("tp-save.bin", img);
         using ImageDocument d = ImageDocument.Open(path, _dir, searchEmbedded: false);
         d.Tree.Remove(d.Tree.Resolve("/file0")!);
-        SaveOptions o = d.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir });
+        SaveOptions o = d.CreateSaveOptions(null, new SaveOptions { Verify = VerifyLevel.Content, TempDirectory = _dir, KeepContainer = false });
         Check(!d.WritesContainer(o) && !d.WritesFirmware(o), "no TP-Link image is written");
         ExpectFs(() => d.Save(path, o));
+        ExpectFs(() => d.Save(path, d.CreateSaveOptions(ImageFormat.Tar, new SaveOptions { TempDirectory = _dir })));
         Check(File.ReadAllBytes(path).AsSpan().SequenceEqual(img), "the TP-Link image was changed");
         string alone = Path.Combine(_dir, "tp-alone.sqfs");
         d.Save(alone, o).Document?.Dispose();
         using ImageDocument back = ImageDocument.Open(alone, _dir, searchEmbedded: false);
         Check(back.Firmware is null && back.Tree.Resolve("/file0") is null && back.Tree.Resolve("/file2") is not null, "saved alone");
+    }
+
+    private static void TpLinkRebuild()
+    {
+        var rnd = new Random(65);
+        FsTree tree = SmallTree(65, 5);
+        byte[] kernel = BuildUImage(UbMips, UbKernel, UbLzma, "Linux", Bytes(rnd, 50001)), squash = Squash(tree);
+        // Each layout as the tool makes it; after the change, the file must be what the tool makes from the new filesystem.
+        var layouts = new (string Name, Func<byte[], byte[]> Make)[]
+        {
+            ("classic -s", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000)),
+            ("classic padded", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000, strip: false)),
+            ("classic -j", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000, jffs2: true)),
+            ("classic -c", root => BuildTpLinkClassic(1, kernel.Concat(root).ToArray(), null, layoutSize: 0x200000)),
+            ("version 2", root => BuildTpLinkClassic(2, kernel, root, layoutSize: 0x200000)),
+            ("safeloader", root => BuildTpLinkSafeloader(kernel, root)),
+            ("safeloader -j", root => BuildTpLinkSafeloader(kernel, root, jffs2: true)),
+        };
+        foreach ((string name, Func<byte[], byte[]> make) in layouts)
+        {
+            string path = WriteFile("tp-rebuild.bin", make(squash));
+            foreach (int size in new[] { 300000, 0 })
+            {
+                EditRootfs(path, size, rnd);
+                byte[] after = File.ReadAllBytes(path);
+                byte[] expected = make(SquashAt(after, 0x200));
+                Check(after.AsSpan().SequenceEqual(expected), $"{name}, {(size > 0 ? "grown" : "shrunk")}: the file differs from what the tool makes ({after.Length} / {expected.Length} bytes)");
+                using ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false);
+                Check(doc.Firmware?.Image is TpLinkImage { Md5Matches: true } && (doc.Tree.Resolve("/big") is not null) == (size > 0), $"{name}: reads back with the MD5 right");
+            }
+        }
+
+        // The filesystem no longer fits the flash layout: refused, the file unchanged.
+        string full = WriteFile("tp-toobig.bin", BuildTpLinkClassic(1, kernel, squash, layoutSize: 0x50000));
+        byte[] before = File.ReadAllBytes(full);
+        using (ImageDocument doc = ImageDocument.Open(full, _dir, searchEmbedded: false))
+        {
+            doc.Tree.CreateFile(doc.Tree.Root, "big", new MemoryFileData(Bytes(rnd, 300000)));
+            ExpectFs(() => doc.Save(full, doc.CreateSaveOptions(null, new SaveOptions { TempDirectory = _dir })));
+        }
+        Check(File.ReadAllBytes(full).AsSpan().SequenceEqual(before), "a firmware too big for the layout was written");
+
+        // A bootloader in the image, or an MD5 made with another key: only read.
+        string boot = WriteFile("tp-boot.bin", BuildTpLinkClassic(1, kernel, squash, Bytes(rnd, 4000)));
+        using (ImageDocument doc = ImageDocument.Open(boot, _dir, searchEmbedded: false))
+            Check(doc.SavesFilesystemOnly && doc.Warnings.Any(w => w.Contains("bootloader")), "an image with a bootloader is only read");
+        byte[] other = BuildTpLinkClassic(1, kernel, squash);
+        other[^20] ^= 1;
+        string otherPath = WriteFile("tp-otherkey.bin", other);
+        using (ImageDocument doc = ImageDocument.Open(otherPath, _dir, searchEmbedded: false))
+            Check(doc.SavesFilesystemOnly, "an image whose MD5 does not match is only read");
     }
 
     private static void TpLinkFuzz()

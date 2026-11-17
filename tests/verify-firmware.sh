@@ -30,7 +30,9 @@
 #               JFFS2 markers, combined; safeloader factory images with their partition table) made by a Python script
 #               after OpenWrt's mktplinkfw.c and tplink-safeloader.c, and with MKTPLINKFW=<mktplinkfw> and
 #               TPLINK_SAFELOADER=<tplink-safeloader> by those tools themselves, must read as the SquashFS of
-#               mksquashfs, with their MD5 found right; a changed byte must be reported.
+#               mksquashfs, with their MD5 found right; a changed byte must be reported. Each is then changed in place:
+#               Python checks the new MD5 with the key, unsquashfs unpacks the new root filesystem, and with the tools
+#               set, the result must be byte for byte what the tool makes from the same kernel and the new filesystem.
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -419,7 +421,49 @@ PY
       if $F dump fw/$f.bin 2>/dev/null | cmp -s - tree.ref && $F info fw/$f.bin 2>/dev/null | grep -q "safeloader, MD5 ok"; then ok "tplink-safeloader ($f): read, MD5 right"; else bad "tplink-safeloader ($f)"; fi
     done
   else echo "  --    tplink-safeloader checks skipped: set TPLINK_SAFELOADER to the tplink-safeloader of OpenWrt's firmware-utils"; fi
-  if $F edit fw/tp-strip.bin fw/tp-strip.bin rm:/etc 2> fw/tp-same.err; then bad "a TP-Link image was saved over"
-  else grep -q "Save under another name" fw/tp-same.err && ok "TP-Link: saving over the image is refused" || bad "$(cat fw/tp-same.err)"; fi
+  [ -e fw/big.bin ] || head -c 300000 /dev/urandom > fw/big.bin
+  cat > fw/tpcheck.py <<'PY'
+# The MD5 of a TP-Link image as mktplinkfw and tplink-safeloader compute it.
+import sys, struct, hashlib
+d = bytearray(open(sys.argv[1], 'rb').read())
+if d[:4] == b'\x01\x00\x00\x00':
+    s = bytes(d[76:92]); d[76:92] = bytes.fromhex('dcd73aa5c39598fbddf9e7f40eae4738'); ok = hashlib.md5(d).digest() == s
+else:
+    n = struct.unpack('>I', d[:4])[0]; ok = n == len(d) and hashlib.md5(bytes.fromhex('7a2b15ed9b98596de504ab44ac2a9f4e') + bytes(d[0x14:n])).digest() == bytes(d[4:20])
+sys.exit(0 if ok else 1)
+PY
+  for f in tp-strip tp-full tp-jffs2 tp-combined tp-factory; do
+    cp fw/$f.bin fw/w_$f.bin
+    if $F edit fw/w_$f.bin fw/w_$f.bin "add:/:fw/big.bin" > /dev/null 2> fw/w_tp.err && python3 fw/tpcheck.py fw/w_$f.bin \
+       && python3 -c "import sys,struct; d=open('fw/w_$f.bin','rb').read(); a=d.index(b'hsqs', 0x200); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/w_tp.sqfs','wb').write(d[a:a+((u+4095)&~4095)])" \
+       && rm -rf fw/wtu && unsquashfs -n -d fw/wtu fw/w_tp.sqfs > /dev/null 2>&1 && cmp -s fw/wtu/big.bin fw/big.bin; then
+      ok "TP-Link $f.bin rebuilt: MD5 right, unsquashfs sees the change"
+    else bad "TP-Link $f.bin rebuilt: $(grep -v '^warning' fw/w_tp.err | head -2)"; fi
+  done
+  local args
+  if [ -n "${MKTPLINKFW:-}" ] && [ -x "$MKTPLINKFW" ]; then
+    for f in m-strip m-full m-jffs2 m-combined; do
+      cp fw/$f.bin fw/w_$f.bin
+      $F edit fw/w_$f.bin fw/w_$f.bin "add:/:fw/big.bin" > /dev/null 2>&1
+      python3 -c "import sys,struct; d=open('fw/w_$f.bin','rb').read(); a=d.index(b'hsqs', 0x200); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/w_tp.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
+      case $f in
+        m-strip) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -N "TP-LINK Technologies" -V "ver. 1.0" -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin -s > /dev/null 2>&1;;
+        m-full) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 4Mlzma -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin > /dev/null 2>&1;;
+        m-jffs2) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin -s -j > /dev/null 2>&1;;
+        m-combined) cat fw/tp-kernel.bin fw/w_tp.sqfs > fw/m-k+r2.bin; "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -c -k fw/m-k+r2.bin -o fw/ref.bin -s > /dev/null 2>&1;;
+      esac
+      cmp -s fw/w_$f.bin fw/ref.bin && ok "mktplinkfw ($f): the rebuilt image is byte for byte what mktplinkfw makes" || bad "mktplinkfw ($f): the rebuilt image differs"
+    done
+  fi
+  if [ -n "${TPLINK_SAFELOADER:-}" ] && [ -x "$TPLINK_SAFELOADER" ]; then
+    for f in s-factory s-factory-j; do
+      cp fw/$f.bin fw/w_$f.bin
+      $F edit fw/w_$f.bin fw/w_$f.bin "add:/:fw/big.bin" > /dev/null 2>&1
+      python3 -c "import sys,struct; d=open('fw/w_$f.bin','rb').read(); a=d.index(b'hsqs', 0x200); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/w_tp.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
+      args=(); [ $f = s-factory-j ] && args=(-j)
+      "$TPLINK_SAFELOADER" -B ARCHER-C7-V5 -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin "${args[@]}" > /dev/null 2>&1
+      cmp -s fw/w_$f.bin fw/ref.bin && ok "tplink-safeloader ($f): the rebuilt image is byte for byte what tplink-safeloader makes" || bad "tplink-safeloader ($f): the rebuilt image differs"
+    done
+  fi
 }
 

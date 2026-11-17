@@ -52,8 +52,8 @@ internal static class Program
         that part replaced, unless the output name or container=0 says otherwise.
 
         TP-Link firmware images (the classic header of mktplinkfw, versions 1 to 3, and safeloader factory images)
-        are opened at their root filesystem (vol=rootfs or file-system); the MD5 is checked. They are not rebuilt
-        yet: the filesystem is saved alone, under another name.
+        are opened at their root filesystem (vol=rootfs or file-system); the MD5 is checked. Saving writes the image
+        again as mktplinkfw or tplink-safeloader makes it, when its MD5 could be verified.
 
         Broadcom TRX images (.trx) and Netgear .chk images holding one are opened at their root filesystem
         (vol=rootfs, kernel, loader); the CRC-32 is checked. Saving writes the image again as OpenWrt's trx lays it
