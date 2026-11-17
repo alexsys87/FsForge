@@ -1692,6 +1692,64 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("TP-Link image: information, rebuilt on save, filesystem saved alone", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] squash = File.ReadAllBytes(MakeImage("tplink.sqfs"));
+            // A classic TP-Link image as mktplinkfw -s makes it: the header, the kernel at 0x200, the SquashFS at 64 KiB.
+            byte[] img = new byte[0x10000 + squash.Length];
+            img.AsSpan(0x200).Fill(0xFF);
+            new Random(6).NextBytes(img.AsSpan(0x200, 20000));
+            squash.CopyTo(img, 0x10000);
+            BigEndian(0x01000000).CopyTo(img, 0);
+            Encoding.ASCII.GetBytes("TP-LINK Technologies").CopyTo(img, 4);
+            Encoding.ASCII.GetBytes("ver. 1.0").CopyTo(img, 28);
+            BigEndian(0x07500001).CopyTo(img, 64);
+            BigEndian(1).CopyTo(img, 68);
+            uint[] fields = { 0x80060000, 0x80060000, 0x7c0000, 0x200, 20000, 0x10000, (uint)squash.Length, 0, 0 };
+            for (int i = 0; i < fields.Length; i++) BigEndian(fields[i]).CopyTo(img, 116 + 4 * i);
+            Convert.FromHexString("dcd73aa5c39598fbddf9e7f40eae4738").CopyTo(img, 76);
+            System.Security.Cryptography.MD5.HashData(img).CopyTo(img, 76);
+            string file = Path.Combine(_dir, "tplink.bin");
+            File.WriteAllBytes(file, img);
+
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(file), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: false }
+                  && vm.DocumentInfo.StartsWith("TP-Link · rootfs из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Заголовок TP-Link" && r.Value.StartsWith("версия 1, оборудование 0x07500001"))
+                                                                    && i.Rows.Any(r => r.Label == "Производитель" && r.Value == "TP-LINK Technologies")
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма MD5" && r.Value == "совпадает");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a TP-Link image");
+
+            // Ctrl+S writes the image again as mktplinkfw would: the new rootfs_len and the MD5 with the key.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] rebuilt = File.ReadAllBytes(file);
+            byte[] sum = rebuilt[76..92], check = (byte[])rebuilt.Clone();
+            Convert.FromHexString("dcd73aa5c39598fbddf9e7f40eae4738").CopyTo(check, 76);
+            uint rootfsLen = (uint)(rebuilt[140] << 24 | rebuilt[141] << 16 | rebuilt[142] << 8 | rebuilt[143]);
+            Check(System.Security.Cryptography.MD5.HashData(check).AsSpan().SequenceEqual(sum) && rootfsLen == rebuilt.Length - 0x10000
+                  && rebuilt.AsSpan(0x200, 20000).SequenceEqual(img.AsSpan(0x200, 20000)), "the TP-Link image was not rebuilt as mktplinkfw makes it");
+            Check(vm.Document is { Firmware.Image: FsForge.Core.Firmware.TpLinkImage { Md5Matches: true } } && vm.Document.Tree.Resolve("/etc/Banner") is null, "the rebuilt image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the TP-Link image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("как их пишет mktplinkfw"), "save dialog of a TP-Link image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "tplink-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the TP-Link image unchanged");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();

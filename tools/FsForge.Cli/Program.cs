@@ -51,6 +51,10 @@ internal static class Program
         partition (system_a, vendor_a...) or vendor ramdisk. "convert" writes the whole Android image again with only
         that part replaced, unless the output name or container=0 says otherwise.
 
+        TP-Link firmware images (the classic header of mktplinkfw, versions 1 to 3, and safeloader factory images)
+        are opened at their root filesystem (vol=rootfs or file-system); the MD5 is checked. Saving writes the image
+        again as mktplinkfw or tplink-safeloader makes it, when its MD5 could be verified.
+
         Broadcom TRX images (.trx) and Netgear .chk images holding one are opened at their root filesystem
         (vol=rootfs, kernel, loader); the CRC-32 is checked. Saving writes the image again as OpenWrt's trx lays it
         out (new length, offsets and CRC-32) and remakes the CHK checksums when the old ones could be verified.
@@ -300,6 +304,12 @@ internal static class Program
             if (fw.Image is FsForge.Core.Firmware.TrxImage trx)
                 Console.WriteLine($"             TRX version {trx.Version}, flags 0x{trx.Flags:X4}, {trx.Length} bytes at 0x{trx.TrxOffset:X}, CRC " +
                                   $"{(trx.CrcMatches ? $"ok ({trx.CrcScheme})" : "wrong")}{(trx.ChkBoard is { } board ? $", Netgear CHK board '{board}'" : "")}");
+            if (fw.Image is FsForge.Core.Firmware.TpLinkImage tp)
+                Console.WriteLine(tp.Safeloader
+                    ? $"             safeloader, MD5 {(tp.Md5Matches is { } m ? m ? "ok" : "not matching" : "not checked")}, soft-version '{tp.FirmwareVersion}'" +
+                      $"{(tp.SupportList.Length > 0 ? ", support-list: " + string.Join("; ", tp.SupportList.Split('\n').Where(l => l.Length > 0).Take(4)) : "")}"
+                    : $"             header version {tp.HeaderVersion}, vendor '{tp.Vendor}', firmware '{tp.FirmwareVersion}', hardware 0x{tp.HardwareId:X8} rev {tp.HardwareRevision}, " +
+                      $"MD5 {(tp.Md5Matches is { } m2 ? m2 ? "ok" : "not matching" : "not checked")}");
             if (fw.Image is FsForge.Core.Firmware.FitImage fit)
                 Console.WriteLine($"             default configuration '{fit.DefaultConfiguration}', {fit.HashesChecked} hash(es) checked, {fit.HashesWrong} wrong" +
                                   $"{(fit.ExternalData ? ", external data" : "")}{(fit.Signed ? ", signed" : "")}");

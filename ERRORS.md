@@ -331,6 +331,18 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | `The new image is too large for a TRX image (4 GiB at most).`, `The new image is too large for a Netgear CHK image.` | Длины в заголовках 32-битные. | Уменьшите содержимое. |
 | `The checksums of the written Broadcom TRX image do not match its data.`, `The content of '<часть>' differs from the source firmware.` | Проверка после записи нашла расхождение; новый файл отброшен, исходный не изменён. | Сообщите об ошибке, приложив образ. |
 
+## 7g. Образы TP-Link
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The TP-Link firmware image … holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | В образе только ядро, или корневая ФС в формате, который программа не читает. | Проверьте файл (`fsforge-cli info`). |
+| `'<часть>' of the TP-Link … holds … and cannot be opened.` | В `vol=` указана часть без файловой системы (`kernel`, `os-image`, `support-list`…). | Выберите `rootfs` или `file-system`. |
+| Предупреждение: `The MD5 sum in the TP-Link header does not match the way this program computes it…`, `The MD5 sum of the TP-Link safeloader image does not match…` | Образ изменён после сборки или повреждён, либо производитель использует другой ключ. | Если файл скачан с сайта TP-Link или OpenWrt — скачайте заново; образ открыт. |
+| Предупреждение: `… cannot be rebuilt around it: The MD5 sum of the TP-Link image could not be checked the way this program computes it…` | MD5 не подтвердился (другой ключ или образ изменён): программа не может сделать его заново. | Сохраните ФС под новым именем и соберите прошивку `mktplinkfw` или `tplink-safeloader`. |
+| Предупреждение: `… The TP-Link image carries a bootloader, which is not rebuilt.`, `… The "?NEW" kind of safeloader image is not rebuilt.`, `… There is data behind the root filesystem of the TP-Link image that is not mktplinkfw's padding.`, `… The partitions of the safeloader image do not follow one another as tplink-safeloader puts them.` | Раскладка отличается от той, что делают утилиты OpenWrt: пересобрать её так же нельзя. | Сохраните ФС отдельно и соберите прошивку средствами производителя или OpenWrt. |
+| `The new root filesystem does not fit into the flash layout of the TP-Link image: …`, `The new file-system (<N> bytes) is too big for its flash partition (<M> bytes).` | Новая ФС больше места, которое под неё отведено во флеш-памяти. | Уменьшите содержимое или выберите более сильное сжатие (SquashFS xz). |
+| `The partition table of the safeloader image would overflow.` | Таблица разделов не помещается в 0x800 байт. | Не должно встречаться на образах OpenWrt; сообщите об ошибке. |
+
 ## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |

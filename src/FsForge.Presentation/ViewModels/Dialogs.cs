@@ -931,6 +931,15 @@ public sealed class ImageInfoViewModel : DialogViewModel
                     Add(L.T("Контрольные суммы CHK"), trx.ChkChecksumsValid == true ? L.T("совпадают, при сохранении пересчитываются") : L.T("не совпадают с расчётом программы — образ только читается"));
                 }
             }
+            if (fw.Image is Core.Firmware.TpLinkImage tp)
+            {
+                Add(L.T("Заголовок TP-Link"), tp.Safeloader ? L.T("safeloader (таблица разделов fwup-ptn)") : L.F("версия {0}, оборудование 0x{1:X8}, ревизия {2}", tp.HeaderVersion, tp.HardwareId, tp.HardwareRevision));
+                if (tp.Vendor.Length > 0) Add(L.T("Производитель"), tp.Vendor);
+                if (tp.FirmwareVersion.Length > 0) Add(L.T("Версия прошивки"), tp.FirmwareVersion);
+                if (tp.Md5Matches is { } md5)
+                    Add(L.T("Контрольная сумма MD5"), md5 ? L.T("совпадает") : L.T("не совпадает с расчётом программы (образ изменён или посчитан другим ключом)"));
+                if (tp.SupportList.Length > 0) Add(L.T("Поддерживаемые устройства"), string.Join("; ", tp.SupportList.Split('\n').Where(l => l.Length > 0).Take(8)));
+            }
             if (fw.Image is Core.Firmware.FitImage fit)
             {
                 if (fit.DefaultConfiguration.Length > 0)
@@ -952,6 +961,8 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 ? L.F("прошивка целиком: заменяется только корневая файловая система, образ {0} с ядром не меняется", fw.Image.ShortKind)
                 : fw.Image is Core.Firmware.FitImage
                 ? L.T("прошивка целиком: заменяется только открытый образ, его хеши и размер в дереве FIT пересчитываются")
+                : fw.Image is Core.Firmware.TpLinkImage
+                ? L.T("прошивка целиком: заменяется только корневая файловая система, длины, таблица разделов и MD5 пересчитываются, как у утилит OpenWrt")
                 : fw.Image is Core.Firmware.TrxImage
                 ? L.T("прошивка целиком: заменяется только открытая часть, длина, смещения и CRC-32 в заголовке TRX (и суммы CHK) пересчитываются")
                 : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
