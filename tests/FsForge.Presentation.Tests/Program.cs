@@ -237,6 +237,8 @@ internal static class Program
         return (vm, dialogs, shell, store);
     }
 
+    private static byte[] BigEndian(uint v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
+
     private static NodeItem Item(MainViewModel vm, string name) => vm.Items.FirstOrDefault(i => i.Name == name) ?? throw new InvalidOperationException($"'{name}' is not in the list: {string.Join(", ", vm.Items.Select(i => i.Name))}");
 
     private static void Select(MainViewModel vm, params string[] names) => vm.SetSelection(names.Select(n => Item(vm, n)));
@@ -1456,6 +1458,75 @@ internal static class Program
             byte[] written = File.ReadAllBytes(boot);
             Check(Encoding.ASCII.GetString(written, 0, 8) == "ANDROID!" && vm.Document is { Android.Part.Name: "ramdisk" } && vm.Document.Tree.Resolve("/init.rc") is not null,
                 "the boot image was not written again");
+            vm.Dispose();
+        });
+
+        await Test("U-Boot uImage: choice of part, information, never saved over the firmware", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            // A multi-file uImage: a kernel, an uncompressed cpio ramdisk and a SquashFS, each padded to 4 bytes.
+            byte[] squash = File.ReadAllBytes(MakeImage("ui.sqfs")), cpio;
+            using (ImageDocument source = ImageDocument.Open(MakeImage("ui-src.sqfs"), _dir))
+            {
+                var ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.None } });
+                cpio = ms.ToArray();
+            }
+            byte[][] images = { new byte[10001], cpio, squash };
+            var body = new MemoryStream();
+            foreach (byte[] i in images.Append(Array.Empty<byte>())) body.Write(BigEndian((uint)i.Length));
+            foreach (byte[] i in images) { body.Write(i); body.Write(new byte[(4 - i.Length % 4) % 4]); }
+            byte[] data = body.ToArray();
+            byte[] header = new byte[64];
+            BigEndian(0x27051956).CopyTo(header, 0);
+            BigEndian((uint)data.Length).CopyTo(header, 12);
+            BigEndian(FsForge.Core.Compression.Crc32.Compute(data)).CopyTo(header, 24);
+            (header[28], header[29], header[30], header[31]) = (5, 2, 4, 0);       // Linux, ARM, multi, uncompressed
+            Encoding.ASCII.GetBytes("board firmware").CopyTo(header, 32);
+            BigEndian(FsForge.Core.Compression.Crc32.Compute(header)).CopyTo(header, 4);
+            string fw = Path.Combine(_dir, "board.uImage");
+            File.WriteAllBytes(fw, header.Concat(data).ToArray());
+            byte[] original = File.ReadAllBytes(fw);
+
+            int asked = 0;
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                asked++;
+                Check(c.Title == "Выбор части прошивки" && c.Summary.Contains("U-Boot uImage (multi-file) «board firmware»") && c.Rows.Count == 3, "dialog: " + c.Summary);
+                Check(c.Rows[0] is { Name: "kernel", IsEditable: false } && c.Rows[1] is { Name: "ramdisk", Content: "cpio" } && c.Rows[2] is { Name: "rootfs", Content: "SquashFS" },
+                    "rows: " + string.Join("; ", c.Rows.Select(r => r.Name + " " + r.Content)));
+                c.Selected = c.Rows[0];
+                Check(!c.Accept() && c.Error!.Contains("нет файловой системы"), "the kernel was accepted");
+                c.Selected = c.Rows[2];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(fw), "open failed: " + string.Join("; ", d.Messages));
+            Check(asked == 1 && vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: true }
+                  && vm.DocumentInfo.StartsWith("uImage · rootfs из 3 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Прошивка" && r.Value.Contains("board firmware"))
+                                                                    && i.Rows.Any(r => r.Label == "Заголовок uImage" && r.Value.StartsWith("Linux ARM, тип multi"))
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма данных" && r.Value == "совпадает")
+                                                                    && i.Rows.Any(r => r.Label == "▸ rootfs (открыт)" && r.Value.StartsWith("SquashFS"))
+                                                                    && i.Rows.Any(r => r.Label == "ramdisk" && r.Value.StartsWith("cpio"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a uImage");
+
+            // Ctrl+S asks where to put the filesystem; the firmware file stays as it was.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(!s.HasContainer && !s.WritesDisk, "save dialog of a firmware part");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "board-rootfs.squashfs"));
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName != "board.uImage" && !d.LastSaveWasDisk, "suggested name: " + d.LastSuggestedName);
+            Check(File.ReadAllBytes(fw).AsSpan().SequenceEqual(original), "the firmware file was changed");
+            using (ImageDocument saved = ImageDocument.Open(Path.Combine(_dir, "board-rootfs.squashfs"), _dir))
+                Check(saved.Firmware is null && saved.Tree.Resolve("/etc/Banner") is null && saved.Tree.Resolve("/etc/passwd") is not null, "the filesystem saved alone");
             vm.Dispose();
         });
 

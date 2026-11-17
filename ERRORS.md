@@ -287,6 +287,21 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | `The boot image is truncated: its header describes <N> bytes, the file has <M>.` | Файл короче, чем указано в заголовке. | Снимите образ раздела целиком. |
 | `Not a legacy LZ4 stream.`, `The LZ4 data is truncated.`, `Corrupt LZ4 data…` (в составе `The cpio archive is corrupt: …`) | Повреждённый ramdisk в lz4. | Получите образ заново; `lz4 -t` проверит данные. |
 
+## 7d. Прошивки U-Boot (uImage)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The U-Boot uImage '<имя>' holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | В образе только ядро (uImage ядра без корневой ФС за ним), дерево устройств или скрипт загрузки, либо ФС за ядром в неизвестном формате. | Откройте файл с корневой файловой системой (sysupgrade- или factory-образ целиком, `rootfs.squashfs`). |
+| `'<часть>' of the U-Boot uImage … holds kernel and cannot be opened.`, `… holds device tree …` | В `vol=` указана часть без файловой системы. | Выберите `rootfs`, `ramdisk` или `filesystem` (список — `fsforge-cli info`). |
+| `The U-Boot uImage … has no part '<имя>'. It holds: …` | Неверное имя или номер в `vol=`. | Возьмите имя из списка; номера — как в `mkimage -l` (с нуля). |
+| `The file is a firmware image and has no partition table, so there is no partition <N> to open; use the part name.` | Для uImage указан `part=`. | Используйте `vol=<имя части>`. |
+| `The list of images of the multi-file uImage is damaged: it has no end.` | Таблица размеров multi-file образа не завершена нулём в пределах данных. | Получите образ заново. |
+| `The <сжатие> data of the firmware part is damaged: …` | Сжатый ramdisk (например, ext2 в gzip) повреждён. | Получите образ заново; `dumpimage -T ramdisk -p 0 -o r.gz uInitrd` и `gzip -t r.gz` покажут, цел ли он. |
+| Предупреждение: `The CRC-32 of the uImage data does not match its header: the image was changed or damaged, and U-Boot would refuse to boot it.` | Данные изменены после `mkimage` или файл повреждён. | Образ открыт. Если файл скачан — скачайте заново; если правился вручную — пересоберите `mkimage`. |
+| Предупреждение: `The uImage header gives <N> bytes of data, but the file ends <M> bytes before that: it is truncated.` | Файл обрезан. | Открыто то, что есть; возьмите файл целиком. |
+| Предупреждение: `Image <N> of the multi-file uImage reaches beyond the data the header covers.` | Размеры в таблице multi-file образа больше размера данных из заголовка. | Образ, скорее всего, повреждён; результату не доверяйте. |
+| Предупреждение: `The <формат> was opened from '<часть>' of the U-Boot uImage … (offset 0x<…>). Rebuilding the firmware is not supported yet: saving writes the filesystem alone to a new file, and the firmware file stays as it is.` | Прошивка uImage пока только читается. | Сохраните ФС под новым именем и соберите прошивку средствами сборки (OpenWrt ImageBuilder, `mkimage`). |
+
 ## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |
@@ -558,6 +573,12 @@ EROFS хранит всё, что есть в дереве: владельцев
 | Предупреждение: `The boot signature of the image (GKI) no longer matches the changed ramdisk.` | Подпись boot v4 (GKI) не совпадает. | Обычно не мешает на разблокированном загрузчике. |
 | Предупреждение: `The boot image grew from <N> to <M>: the partition must have room for it.` | Образ стал больше исходного файла. | Сравните с размером раздела boot на устройстве перед прошивкой. |
 | `The ramdisk is too large for a boot image.`, `The image is too large for the Android sparse format.` | Ограничения форматов (4 ГБ, 2³² блоков). | Уменьшите содержимое. |
+
+### Прошивка U-Boot (uImage)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The file is a firmware image (U-Boot uImage …), and rebuilding it is not supported yet: saving over it would replace the whole firmware with the filesystem alone. Save under another name.` | Попытка сохранить поверх файла прошивки (в `fsforge-cli edit fw.bin fw.bin …`). Прошивка пока не пересобирается, а одна файловая система вместо неё испортила бы файл. | Укажите другое имя выходного файла. |
 
 ### Запись в сжатый файл или архив
 

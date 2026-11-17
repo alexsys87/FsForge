@@ -10,7 +10,7 @@
 # busybox> the kernel also boots the archives FsForge writes as its initramfs), mkfs.cramfs and fsck.cramfs
 # (util-linux), genromfs (with CRR_MODULES=<folder with mtd.ko, cramfs.ko and romfs.ko> as well, the kernel
 # mounts CramFS and romfs images), lz4, mkbootimg (boot images), android-sdk-libsparse-utils (simg2img) and
-# lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img), f2fs-tools (mkfs.f2fs, sload.f2fs,
+# lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img), u-boot-tools (mkimage, for uImage), f2fs-tools (mkfs.f2fs, sload.f2fs,
 # fsck.f2fs; with F2FS_MODULES=<folder with f2fs.ko, lz4_compress.ko and lz4hc_compress.ko> or a kernel with
 # F2FS built in, CPIO_KERNEL also mounts, changes and compresses F2FS images in QEMU), 7zip, zip/unzip, pigz,
 # pbzip2, lbzip2, zstd/pzstd and bmap-tools for compressed images and archives (FLASHTOOL_SRC=<checkout of FlashTool>
@@ -412,6 +412,12 @@ arc_flashtool
 # and checked by lpunpack; boot and vendor_boot images from mkbootimg changed and compared with mkbootimg's own.
 . "$HERE/verify-android.sh"
 android_run
+
+# ------------------------------------------------------- vendor firmware
+# See tests/verify-firmware.sh: U-Boot uImage files from mkimage (sysupgrade image, uInitrd, multi-file image)
+# opened at the filesystem they hold; saving over the firmware is refused.
+. "$HERE/verify-firmware.sh"
+fw_run
 
 # ------------------------------------------------------ folders and ACLs
 echo "folders"

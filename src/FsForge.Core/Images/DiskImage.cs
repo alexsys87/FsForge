@@ -39,6 +39,9 @@ public enum PartitionContent
 
     /// <summary>A cpio archive (the ramdisk of an Android boot image).</summary>
     Cpio,
+
+    /// <summary>A JFFS2 filesystem (the root filesystem behind the kernel of NOR flash firmware).</summary>
+    Jffs2,
 }
 
 /// <summary>One entry of a partition table.</summary>

@@ -51,6 +51,11 @@ internal static class Program
         partition (system_a, vendor_a...) or vendor ramdisk. "convert" writes the whole Android image again with only
         that part replaced, unless the output name or container=0 says otherwise.
 
+        U-Boot uImage files (uImage, uInitrd, OpenWrt sysupgrade images with the root filesystem behind the
+        kernel) are opened at the filesystem or ramdisk they hold; add vol=<name or number> to pick another part
+        (rootfs, ramdisk, filesystem, or the number of the image as mkimage -l counts them). The firmware is not rebuilt yet: saving writes the filesystem
+        alone, and only under another name.
+
         A UBI image (ubinize output, a flash dump without out-of-band data) is opened at the volume that holds
         the most data; add vol=<name or number> to any command to pick another one. "convert" writes the whole
         UBI image again with only that volume replaced, unless the output name or container=0 says otherwise.
@@ -272,6 +277,15 @@ internal static class Program
             foreach (FsForge.Core.Android.AndroidPart p in an.Image.Parts)
                 Console.WriteLine($"  {(ReferenceEquals(p, an.Part) ? '*' : ' ')} {p}");
         }
+        if (doc.Firmware is { } fw)
+        {
+            Console.WriteLine($"Firmware:    {fw.Image.Description}");
+            if (fw.Image is FsForge.Core.Firmware.UImage ui)
+                Console.WriteLine($"             {ui.OsName} {ui.ArchitectureName} {ui.TypeName}, compression {ui.CompressionName}, load 0x{ui.LoadAddress:X8}, entry 0x{ui.EntryPoint:X8}, " +
+                                  $"{ui.DataSize} bytes of data, data CRC {(ui.DataCrcMatches ? "ok" : "wrong")}");
+            foreach (FsForge.Core.Firmware.FirmwarePart p in fw.Image.Parts)
+                Console.WriteLine($"  {(ReferenceEquals(p, fw.Part) ? '*' : ' ')} {p}");
+        }
         if (doc.EmbeddedOffset > 0) Console.WriteLine($"Offset:      0x{doc.EmbeddedOffset:X}");
         Console.WriteLine($"Content:     {st.Files} files, {st.Directories} directories, {st.Symlinks} symlinks, {st.Specials} special, {st.DataBytes} bytes");
         foreach (string w in doc.Warnings) Console.Error.WriteLine("warning: " + w);
@@ -301,6 +315,8 @@ internal static class Program
         Dump(doc.Tree, w);
         w.Flush();
         foreach (string s in doc.Warnings) Console.Error.WriteLine("warning: " + s);
+        if (doc.Firmware is { } fw)
+            Console.Error.WriteLine($"firmware kind={fw.Image.Kind} part={fw.Part.Name} parts={string.Join(',', fw.Image.Parts.Select(p => p.Name + ":" + p.ContentName))}");
         if (doc.Android is { } an)
             Console.Error.WriteLine($"android kind={an.Image.Kind} part={an.Part.Name} parts={string.Join(',', an.Image.Parts.Select(p => p.Name + ":" + p.ContentName))}");
         if (doc.Ext is { } e)

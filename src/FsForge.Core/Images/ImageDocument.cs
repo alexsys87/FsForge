@@ -10,6 +10,7 @@ using FsForge.Core.Romfs;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
 using FsForge.Core.Fat;
+using FsForge.Core.Firmware;
 using FsForge.Core.Jffs2;
 using FsForge.Core.Ubifs;
 
@@ -128,6 +129,9 @@ public sealed record UbiContainer(UbiImage Image, UbiVolumeInfo Volume);
 /// <summary>An Android container (super.img, boot.img, vendor_boot.img) and the part of it that is open.</summary>
 public sealed record AndroidContainer(AndroidImage Image, AndroidPart Part);
 
+/// <summary>A vendor firmware file (U-Boot uImage, ...) and the part of it that is open.</summary>
+public sealed record FirmwareContainer(FirmwareImage Image, FirmwarePart Part);
+
 /// <summary>
 /// An opened image: the editable tree plus what is known about the file it came from.
 /// </summary>
@@ -172,6 +176,12 @@ public sealed class ImageDocument : IDisposable
     public AndroidContainer? Android { get; private init; }
 
     /// <summary>
+    /// The firmware file (U-Boot uImage, ...) the filesystem or ramdisk was opened from. The firmware is not
+    /// rebuilt yet: saving writes the filesystem alone.
+    /// </summary>
+    public FirmwareContainer? Firmware { get; private init; }
+
+    /// <summary>
     /// Offset of the filesystem inside the (unpacked) file: the start of its partition, or the place
     /// where it was found in a firmware container. 0 for plain images.
     /// </summary>
@@ -200,7 +210,7 @@ public sealed class ImageDocument : IDisposable
     /// container with its own headers and checksums, an Android sparse image). Saving writes the
     /// filesystem alone (or the UBI image alone), so it must go to a new file.
     /// </summary>
-    public bool SavesFilesystemOnly => AndroidSparse && Android is null || (EmbeddedOffset > 0 && Container is null);
+    public bool SavesFilesystemOnly => AndroidSparse && Android is null || (EmbeddedOffset > 0 && Container is null) || Firmware is not null;
 
     public long FileSize { get; private init; }
 
@@ -256,6 +266,23 @@ public sealed class ImageDocument : IDisposable
         IBlockSource src = file;
         if (IsAndroidSparse(file)) src = new AndroidSparseSource(file);
         if (FilesystemAt(src) is { } direct) return direct;
+        if (ReferenceEquals(src, file) && FirmwareImage.IsFirmware(src))
+        {
+            try
+            {
+                return FirmwareImage.TryRead(src)?.PickDefault()?.Content switch
+                {
+                    null => null,
+                    PartitionContent.Jffs2 => ImageFormat.Jffs2,
+                    PartitionContent.Ubi or PartitionContent.Ubifs => ImageFormat.Ubifs,
+                    var content => FormatOf(content.Value),
+                };
+            }
+            catch (FsException)
+            {
+                return null;
+            }
+        }
         if (AndroidImage.IsAndroidImage(src))
         {
             try
@@ -432,7 +459,8 @@ public sealed class ImageDocument : IDisposable
         int partition = 0, Func<PartitionTable, PartitionInfo?>? choosePartition = null,
         string? volume = null, Func<UbiImage, UbiVolumeInfo?>? chooseVolume = null,
         Func<AndroidImage, AndroidPart?>? chooseAndroidPart = null,
-        string? archiveEntry = null, Func<ImageArchive, ArchiveEntry?>? chooseArchiveEntry = null)
+        string? archiveEntry = null, Func<ImageArchive, ArchiveEntry?>? chooseArchiveEntry = null,
+        Func<FirmwareImage, FirmwarePart?>? chooseFirmwarePart = null)
     {
         path = Path.GetFullPath(path);
         FileBlockSource file;
@@ -447,6 +475,8 @@ public sealed class ImageDocument : IDisposable
 
         // "src" is the whole (unpacked) file and is what gets closed on failure; "fs" is the filesystem in it.
         IBlockSource src = file;
+        // A firmware part unpacked into a temporary file; the reader takes it over, a failure deletes it.
+        IBlockSource? unpackedPart = null;
         try
         {
             // A compressed file that is not a tar archive is taken for a compressed image
@@ -476,8 +506,25 @@ public sealed class ImageDocument : IDisposable
             PartitionTable? table = null;
             UbiContainer? ubi = null;
             AndroidContainer? android = null;
+            FirmwareContainer? firmware = null;
 
-            if (FilesystemAt(src) is null && AndroidImage.IsAndroidImage(src))
+            if (!sparse && FilesystemAt(src) is null && FirmwareImage.IsFirmware(src))
+            {
+                if (partition > 0) throw new FsException($"The file is a firmware image and has no partition table, so there is no partition {partition} to open; use the part name.");
+                FirmwareImage image = FirmwareImage.TryRead(src, ct)!;
+                FirmwarePart part = ChooseFirmwarePart(image, volume, chooseFirmwarePart, out bool volumeUsed);
+                firmware = new FirmwareContainer(image, part);
+                offset = part.Offset;
+                fs = image.Open(part);
+                if (part.Packed is { } partPacking) fs = unpackedPart = UnpackPart(fs, partPacking, tempDirectory, progress, ct);
+                if (part.Content == PartitionContent.Ubi)
+                {
+                    (fs, ubi) = OpenUbi(fs, volumeUsed ? null : volume, chooseVolume, ct);
+                }
+                else if (volume is not null && !volumeUsed)
+                    throw new FsException($"The {image.Description} has no part '{volume}'. It holds: {string.Join("; ", image.Parts.Select(p => p.ToString()))}.");
+            }
+            else if (FilesystemAt(src) is null && AndroidImage.IsAndroidImage(src))
             {
                 if (partition > 0) throw new FsException($"The file is an Android image and has no partition table, so there is no partition {partition} to open; use the partition name.");
                 (fs, android) = OpenAndroid(src, sparse, volume, chooseAndroidPart);
@@ -532,7 +579,7 @@ public sealed class ImageDocument : IDisposable
                     }
                 }
             }
-            if (volume is not null && ubi is null && android is null)
+            if (volume is not null && ubi is null && android is null && firmware is null)
                 throw new FsException($"The file is neither a UBI image nor an Android image, so there is no volume or partition '{volume}' to open.");
 
             ImageDocument doc;
@@ -544,7 +591,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ubifs, path)
                 {
                     Ubifs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.ReplayedNodes > 0)
@@ -559,7 +606,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.SquashFs, path)
                 {
                     SquashFs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
                 if (r.Info.Compression is SquashCompression.Lzo or SquashCompression.Lzma)
@@ -574,7 +621,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Erofs, path)
                 {
                     Erofs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -586,7 +633,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Cramfs, path)
                 {
                     Cramfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -598,7 +645,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.F2fs, path)
                 {
                     F2fs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -610,15 +657,18 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Romfs, path)
                 {
                     Romfs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
-            else if (android is not null && !ExtReader.IsExt(fs) && CpioReader.IsCpio(fs, out _))
+            else if ((android is not null || firmware is not null) && !ExtReader.IsExt(fs) && CpioReader.IsCpio(fs, out _))
             {
-                // The ramdisk of a boot image: a (compressed) cpio archive.
+                // The ramdisk of a boot image or a uInitrd: a (compressed) cpio archive.
                 CpioReader.Result res = CpioReader.Read(fs, tempDirectory, progress, ct);
-                doc = new ImageDocument(res.Tree, ImageFormat.Cpio, path) { Cpio = res.Info, FileSize = file.Length, Android = android, AndroidSparse = sparse };
+                doc = new ImageDocument(res.Tree, ImageFormat.Cpio, path)
+                {
+                    Cpio = res.Info, FileSize = file.Length, Android = android, AndroidSparse = sparse, Firmware = firmware, EmbeddedOffset = firmware is null ? 0 : offset,
+                };
                 doc._warnings.AddRange(res.Warnings);
             }
             else if (!ExtReader.IsExt(fs) && FatReader.IsFat(fs))
@@ -629,7 +679,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Fat, path)
                 {
                     Fat = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -641,7 +691,7 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Jffs2, path)
                 {
                     Jffs2 = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
@@ -653,16 +703,24 @@ public sealed class ImageDocument : IDisposable
                 doc = new ImageDocument(tree, ImageFormat.Ext, path)
                 {
                     Ext = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
-                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
             // The readers look through a window that does not own the file: the tree keeps it open.
             if (!ReferenceEquals(fs, src)) doc.Tree.AttachResource(src);
+            if (unpackedPart is not null && ubi is not null) doc.Tree.AttachResource(unpackedPart);
 
             if (ubi is not null) doc._warnings.AddRange(ubi.Image.Warnings);
             if (android is not null) doc._warnings.AddRange(android.Image.Warnings);
-            if (sparse && android is null)
+            if (firmware is not null)
+            {
+                doc._warnings.AddRange(firmware.Image.Warnings);
+                doc._warnings.Add($"The {(ubi is not null ? "UBI image" : doc.FormatName)} was opened from '{firmware.Part.Name}' of the {firmware.Image.Description} " +
+                                  $"(offset 0x{firmware.Part.Offset:X}). Rebuilding the firmware is not supported yet: saving writes the " +
+                                  $"{(ubi is not null ? "UBI image" : "filesystem")} alone to a new file, and the firmware file stays as it is.");
+            }
+            else if (sparse && android is null)
                 doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image of the filesystem.");
             else if (offset > 0 && container is null && ubi is not null)
                 doc._warnings.Add($"The UBI image was found inside the file at offset 0x{offset:X}. " +
@@ -674,6 +732,7 @@ public sealed class ImageDocument : IDisposable
         }
         catch (Exception ex)
         {
+            unpackedPart?.Dispose();
             src.Dispose();
             // Safety net: a damaged image must never take the application down with it.
             if (ex is IndexOutOfRangeException or ArgumentException or OverflowException or InvalidCastException
@@ -734,6 +793,67 @@ public sealed class ImageDocument : IDisposable
             }
         }
         return (image.Open(chosen), new AndroidContainer(image, chosen));
+    }
+
+    /// <summary>
+    /// Selects the part of a firmware file to open: the one named by <paramref name="wanted"/> (then
+    /// <paramref name="used"/> is set), the one the caller picks when there are several, or else the largest one.
+    /// A name that is no part is left for the UBI image the default part may hold.
+    /// </summary>
+    private static FirmwarePart ChooseFirmwarePart(FirmwareImage image, string? wanted, Func<FirmwareImage, FirmwarePart?>? ask, out bool used)
+    {
+        string list = string.Join("; ", image.Parts.Select(p => p.ToString()));
+        used = false;
+        if (wanted is not null && image.Find(wanted) is { } named)
+        {
+            used = true;
+            if (!named.IsReadable)
+                throw new FsException($"'{named.Name}' of the {image.Description} holds {(named.ContentName.Length > 0 ? named.ContentName : "an unknown format")} and cannot be opened.");
+            return named;
+        }
+        IReadOnlyList<FirmwarePart> readable = image.Readable;
+        if (readable.Count == 0)
+            throw new FsException($"The {image.Description} holds no filesystem, UBI image or cpio archive this program can read. It holds: {list}.");
+        if (wanted is not null || readable.Count == 1 || ask is null) return image.PickDefault()!;
+        FirmwarePart chosen = ask(image) ?? throw new OperationCanceledException();
+        if (!chosen.IsReadable || !image.Parts.Contains(chosen)) throw new FsException("The selected part of the firmware cannot be opened.");
+        return chosen;
+    }
+
+    /// <summary>Unpacks a compressed part of a firmware file (a gzipped ext2 ramdisk) into a temporary file.</summary>
+    private static IBlockSource UnpackPart(IBlockSource data, ArchiveCompression compression, string? tempDirectory,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        string tmp = NewTempFile(tempDirectory);
+        try
+        {
+            var raw = new BlockSourceStream(data, 0, data.Length);
+            using (Stream input = ArchiveCodec.OpenDecompressor(raw, compression))
+            using (var output = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20))
+            {
+                byte[] buffer = new byte[1 << 17];
+                int n;
+                while ((n = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    output.Write(buffer, 0, n);
+                    progress?.Report(new ProgressInfo("unpack", raw.Position, data.Length));
+                }
+            }
+            return new TempFileSource(tmp);
+        }
+        catch (Exception ex)
+        {
+            TryDelete(tmp);
+            if (ex is InvalidDataException or ZstdSharp.ZstdException or EndOfStreamException)
+                throw new FsException($"The {ArchiveCodec.DisplayName(compression)} data of the firmware part is damaged: {ex.Message}", ex);
+            if (ex is IOException io && IsDiskFull(io)) throw NoTempSpace(tmp, -1, ex);
+            throw;
+        }
+        finally
+        {
+            data.Dispose();
+        }
     }
 
     /// <summary>Reads the volumes of a UBI image and selects the one to open.</summary>
@@ -1063,6 +1183,9 @@ public sealed class ImageDocument : IDisposable
 
         // Fail early, before the long write, when the target obviously cannot be replaced.
         if (Directory.Exists(path)) throw new FsException($"'{path}' is a folder.");
+        if (samePath && Firmware is not null)
+            throw new FsException($"The file is a firmware image ({Firmware.Image.Description}), and rebuilding it is not supported yet: " +
+                                  "saving over it would replace the whole firmware with the filesystem alone. Save under another name.");
         if (File.Exists(path))
         {
             if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
