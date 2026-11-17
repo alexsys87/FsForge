@@ -26,9 +26,12 @@
 #               unsquashfs unpacks the new root filesystem. With TRX=<trx of OpenWrt's firmware-utils> the images are
 #               also made by trx (version 1, -F, version 2 with a bin-header), and after the change each must be byte
 #               for byte what trx makes from the same parts and the new filesystem.
+#               With MKCHKIMG=<mkchkimg> the TRX is also wrapped by mkchkimg (its default board, and another board
+#               and region); after the change the CHK header must be byte for byte what mkchkimg makes.
 #               TP-Link images (the classic header of mktplinkfw: cut with -s, padded to the flash layout, with the
 #               JFFS2 markers, combined; safeloader factory images with their partition table) made by a Python script
-#               after OpenWrt's mktplinkfw.c and tplink-safeloader.c, and with MKTPLINKFW=<mktplinkfw> and
+#               after OpenWrt's mktplinkfw.c and tplink-safeloader.c, and with MKTPLINKFW=<mktplinkfw> (also -a),
+#               MKTPLINKFW2=<mktplinkfw2> (header versions 2 and 3: -s, padded, -j, -a, -c) and
 #               TPLINK_SAFELOADER=<tplink-safeloader> by those tools themselves, must read as the SquashFS of
 #               mksquashfs, with their MD5 found right; a changed byte must be reported. Each is then changed in place:
 #               Python checks the new MD5 with the key, unsquashfs unpacks the new root filesystem, and with the tools
@@ -357,6 +360,19 @@ PY
       else bad "edit trx ($name): $(grep -v '^warning' fw/t.err | head -2)"; fi
     done
   else echo "  --    trx checks skipped: set TRX to the trx of OpenWrt's firmware-utils"; fi
+  if [ -n "${MKCHKIMG:-}" ] && [ -x "$MKCHKIMG" ]; then
+    local hl
+    for name in default R7000; do
+      args=(); [ $name = R7000 ] && args=(-b R7000 -r 2)
+      "$MKCHKIMG" -o fw/c_$name.chk -k fw/v1.trx "${args[@]}" 2>/dev/null
+      if $F dump fw/c_$name.chk 2>/dev/null | cmp -s - tree.ref && $F edit fw/c_$name.chk fw/c_$name.chk "add:/:fw/big.bin" > /dev/null 2> fw/c.err; then
+        hl=$(python3 -c "import struct; print(struct.unpack('>I', open('fw/c_$name.chk','rb').read()[4:8])[0])")
+        tail -c +$((hl + 1)) fw/c_$name.chk > fw/c_new.trx
+        "$MKCHKIMG" -o fw/c_ref.chk -k fw/c_new.trx "${args[@]}" 2>/dev/null
+        cmp -s fw/c_$name.chk fw/c_ref.chk && ok "mkchkimg ($name): read; the rebuilt CHK header is byte for byte what mkchkimg makes" || bad "mkchkimg ($name): the rebuilt CHK header differs"
+      else bad "mkchkimg ($name): $(grep -v '^warning' fw/c.err 2>/dev/null | head -2)"; fi
+    done
+  else echo "  --    mkchkimg checks skipped: set MKCHKIMG to the mkchkimg of OpenWrt's firmware-utils"; fi
 }
 
 fw_tplink() {
@@ -410,7 +426,8 @@ PY
     "$MKTPLINKFW" -H 0x07500001 -W 1 -F 4Mlzma -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-full.bin > /dev/null 2>&1
     "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-jffs2.bin -s -j > /dev/null 2>&1
     cat fw/tp-kernel.bin img/xz.sqfs > fw/m-k+r.bin; "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -c -k fw/m-k+r.bin -o fw/m-combined.bin -s > /dev/null 2>&1
-    for f in m-strip m-full m-jffs2 m-combined; do
+    "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-align.bin -s -a 0x10000 > /dev/null 2>&1
+    for f in m-strip m-full m-jffs2 m-combined m-align; do
       if $F dump fw/$f.bin 2>/dev/null | cmp -s - tree.ref && $F info fw/$f.bin 2>/dev/null | grep -q "MD5 ok"; then ok "mktplinkfw ($f): read, MD5 right"; else bad "mktplinkfw ($f)"; fi
     done
   else echo "  --    mktplinkfw checks skipped: set MKTPLINKFW to the mktplinkfw of OpenWrt's firmware-utils"; fi
@@ -442,7 +459,7 @@ PY
   done
   local args
   if [ -n "${MKTPLINKFW:-}" ] && [ -x "$MKTPLINKFW" ]; then
-    for f in m-strip m-full m-jffs2 m-combined; do
+    for f in m-strip m-full m-jffs2 m-combined m-align; do
       cp fw/$f.bin fw/w_$f.bin
       $F edit fw/w_$f.bin fw/w_$f.bin "add:/:fw/big.bin" > /dev/null 2>&1
       python3 -c "import sys,struct; d=open('fw/w_$f.bin','rb').read(); a=d.index(b'hsqs', 0x200); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/w_tp.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
@@ -451,6 +468,7 @@ PY
         m-full) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 4Mlzma -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin > /dev/null 2>&1;;
         m-jffs2) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin -s -j > /dev/null 2>&1;;
         m-combined) cat fw/tp-kernel.bin fw/w_tp.sqfs > fw/m-k+r2.bin; "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -c -k fw/m-k+r2.bin -o fw/ref.bin -s > /dev/null 2>&1;;
+        m-align) "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r fw/w_tp.sqfs -o fw/ref.bin -s -a 0x10000 > /dev/null 2>&1;;
       esac
       cmp -s fw/w_$f.bin fw/ref.bin && ok "mktplinkfw ($f): the rebuilt image is byte for byte what mktplinkfw makes" || bad "mktplinkfw ($f): the rebuilt image differs"
     done
@@ -465,5 +483,27 @@ PY
       cmp -s fw/w_$f.bin fw/ref.bin && ok "tplink-safeloader ($f): the rebuilt image is byte for byte what tplink-safeloader makes" || bad "tplink-safeloader ($f): the rebuilt image differs"
     done
   fi
+  if [ -n "${MKTPLINKFW2:-}" ] && [ -x "$MKTPLINKFW2" ]; then
+    # Header versions 2 and 3: each image read, changed, and compared with what mktplinkfw2 makes from the new filesystem.
+    local root
+    for f in v2-strip v2-full v3-jffs2 v2-align v2-combined; do
+      for root in img/xz.sqfs fw/w_tp.sqfs; do
+        local out=fw/$f.bin; [ $root = fw/w_tp.sqfs ] && out=fw/ref.bin
+        case $f in
+          v2-strip) "$MKTPLINKFW2" -B TD-W8970v1 -k fw/tp-kernel.bin -r $root -o $out -s;;
+          v2-full) "$MKTPLINKFW2" -B TD-W8980v1 -k fw/tp-kernel.bin -r $root -o $out;;
+          v3-jffs2) "$MKTPLINKFW2" -B ArcherC20i -k fw/tp-kernel.bin -r $root -o $out -s -j;;
+          v2-align) "$MKTPLINKFW2" -B ArcherVR200V -k fw/tp-kernel.bin -r $root -o $out -s -a 0x10000;;
+          v2-combined) cat fw/tp-kernel.bin $root > fw/m2-k+r.bin; "$MKTPLINKFW2" -B TD-W8970v1 -c -k fw/m2-k+r.bin -o $out -s;;
+        esac > /dev/null 2>&1
+        [ $root = fw/w_tp.sqfs ] && break
+        if $F dump fw/$f.bin 2>/dev/null | cmp -s - tree.ref && $F info fw/$f.bin 2>/dev/null | grep -q "MD5 ok"; then ok "mktplinkfw2 ($f): read, MD5 right"; else bad "mktplinkfw2 ($f)"; fi
+        cp fw/$f.bin fw/w_$f.bin
+        $F edit fw/w_$f.bin fw/w_$f.bin "add:/:fw/big.bin" > /dev/null 2>&1
+        python3 -c "import sys,struct; d=open('fw/w_$f.bin','rb').read(); a=d.index(b'hsqs', 0x200); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/w_tp.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
+      done
+      cmp -s fw/w_$f.bin fw/ref.bin && ok "mktplinkfw2 ($f): the rebuilt image is byte for byte what mktplinkfw2 makes" || bad "mktplinkfw2 ($f): the rebuilt image differs"
+    done
+  else echo "  --    mktplinkfw2 checks skipped: set MKTPLINKFW2 to the mktplinkfw2 of OpenWrt's firmware-utils"; fi
 }
 

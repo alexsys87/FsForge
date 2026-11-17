@@ -26,6 +26,7 @@ internal static partial class SelfTest
     }
 
     private static readonly byte[] TpSaltNormal = { 0xDC, 0xD7, 0x3A, 0xA5, 0xC3, 0x95, 0x98, 0xFB, 0xDD, 0xF9, 0xE7, 0xF4, 0x0E, 0xAE, 0x47, 0x38 };
+    private static readonly byte[] TpSaltNormal2 = { 0xDC, 0xD7, 0x3A, 0xA5, 0xC3, 0x95, 0x98, 0xFB, 0xDC, 0xF9, 0xE7, 0xF4, 0x0E, 0xAE, 0x47, 0x37 };
     private static readonly byte[] TpSaltBoot = { 0x8C, 0xEF, 0x33, 0x5B, 0xD5, 0xC5, 0xCE, 0xFA, 0xA7, 0x9C, 0x28, 0xDA, 0xB2, 0xE9, 0x0F, 0x42 };
     private static readonly byte[] TpSaltSafeloader = { 0x7A, 0x2B, 0x15, 0xED, 0x9B, 0x98, 0x59, 0x6D, 0xE5, 0x04, 0xAB, 0x44, 0xAC, 0x2A, 0x9F, 0x4E };
 
@@ -33,20 +34,25 @@ internal static partial class SelfTest
     /// A classic TP-Link image as mktplinkfw builds it: a buffer of the flash layout size filled with 0xFF, the 512-byte
     /// header, the kernel at 0x200, the root filesystem at its offset (none for a combined image), cut behind the root
     /// filesystem with <paramref name="strip"/> (-s); fw_length is the layout size; the MD5 covers the file with the key
-    /// in place of the sum. Version 2 uses the field places of mktplinkfw2.
+    /// in place of the sum. Versions 2 and 3 follow mktplinkfw2's fill_header: the header filled with 0xFF, its own
+    /// field places and key, 0x55AA and 0xA5 at 0x8C and 0x90, and rootfs_ofs and rootfs_len left 0xFFFFFFFF in a
+    /// combined image. <paramref name="align"/> is -a: kernel_len padded so that the root filesystem follows the kernel
+    /// on that boundary, while rootfs_ofs keeps the layout's offset.
     /// </summary>
     private static byte[] BuildTpLinkClassic(int version, byte[] kernel, byte[]? rootfs, byte[]? boot = null, int rootfsOffset = 0x40000,
-        int layoutSize = 0x100000, bool strip = true, bool jffs2 = false)
+        int layoutSize = 0x100000, bool strip = true, bool jffs2 = false, int align = 0)
     {
         byte[] buf = new byte[layoutSize];
         buf.AsSpan().Fill(0xFF);
-        buf.AsSpan(0, 0x200).Clear();
+        if (version == 1) buf.AsSpan(0, 0x200).Clear();
         kernel.CopyTo(buf, 0x200);
-        int length = 0x200 + kernel.Length, bootOffset = 0;
+        int kernelLength = align > 0 ? ((0x200 + kernel.Length + align - 1) & -align) - 0x200 : kernel.Length;
+        int length = 0x200 + kernelLength, bootOffset = 0;
         if (rootfs is not null)
         {
-            rootfs.CopyTo(buf, rootfsOffset);
-            length = rootfsOffset + rootfs.Length;
+            int at = align > 0 ? length : rootfsOffset;
+            rootfs.CopyTo(buf, at);
+            length = at + rootfs.Length;
             if (jffs2)
             {
                 // pad_jffs2 with its 64 KiB mask: one marker at the next 64 KiB of the file.
@@ -71,16 +77,20 @@ internal static partial class SelfTest
         }
         else
         {
-            Encoding.ASCII.GetBytes("ver. 2.0.0.1").CopyTo(img, 4);
+            Encoding.ASCII.GetBytes("ver. 2.0.0.1\0").CopyTo(img, 4);
             (hw, md5, lengths) = (52, 64, 104);
+            BinaryPrimitives.WriteUInt32BigEndian(img.AsSpan(0x3C), 0);  // unk1
+            BinaryPrimitives.WriteUInt32BigEndian(img.AsSpan(0x50), 0);  // unk2
+            img[0x8C] = 0x55; img[0x8D] = 0xAA; img[0x8E] = 1; img[0x8F] = 0; img[0x90] = 0xA5; img[0x91] = img[0x92] = img[0x93] = 0;
         }
-        BinaryPrimitives.WriteUInt32BigEndian(img, (uint)version << 24);
+        BinaryPrimitives.WriteUInt32BigEndian(img, (uint)version << 24);  // htonl(bswap_32(version))
         BinaryPrimitives.WriteUInt32BigEndian(img.AsSpan(hw), 0x08410001);
         BinaryPrimitives.WriteUInt32BigEndian(img.AsSpan(hw + 4), 5);
-        uint[] fields = { 0x80060000, 0x80060000, (uint)layoutSize, 0x200, (uint)kernel.Length, rootfs is null ? 0u : (uint)rootfsOffset,
-            (uint)(rootfs?.Length ?? 0), (uint)bootOffset, (uint)(boot?.Length ?? 0) };
+        uint none = version == 1 ? 0u : uint.MaxValue;
+        uint[] fields = { 0x80060000, 0x80060000, (uint)layoutSize, 0x200, (uint)kernelLength, rootfs is null ? none : (uint)rootfsOffset,
+            rootfs is null ? none : (uint)rootfs.Length, (uint)bootOffset, (uint)(boot?.Length ?? 0) };
         for (int i = 0; i < fields.Length; i++) BinaryPrimitives.WriteUInt32BigEndian(img.AsSpan(lengths + 4 * i), fields[i]);
-        (boot is null ? TpSaltNormal : TpSaltBoot).CopyTo(img, md5);
+        (boot is not null ? TpSaltBoot : version == 1 ? TpSaltNormal : TpSaltNormal2).CopyTo(img, md5);
         MD5.HashData(img).CopyTo(img, md5);
         return img;
     }
@@ -189,6 +199,24 @@ internal static partial class SelfTest
             Same(expected, Program.DumpToString(doc.Tree), "combined");
         }
 
+        // mktplinkfw2: its own key; a combined image leaves rootfs_ofs 0xFFFFFFFF. -a: the root filesystem right behind the
+        // padded kernel, rootfs_ofs still the layout's offset (here past the end of the file).
+        path = WriteFile("tp-v2c.bin", BuildTpLinkClassic(2, kernel.Concat(squash).ToArray(), null));
+        using (ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false))
+        {
+            Check(doc.Firmware?.Image is TpLinkImage { HeaderVersion: 2, Md5Matches: true } && doc.Firmware.Part is { Name: "rootfs", Offset: var o } && o == 0x200 + kernel.Length,
+                "version 2 combined: " + string.Join("; ", doc.Firmware?.Image.Parts ?? []));
+            Same(expected, Program.DumpToString(doc.Tree), "version 2 combined");
+        }
+        foreach (int version in new[] { 1, 3 })
+        {
+            path = WriteFile("tp-a.bin", BuildTpLinkClassic(version, kernel, squash, rootfsOffset: 0x140000, layoutSize: 0x200000, align: 0x10000));
+            using ImageDocument doc = ImageDocument.Open(path, _dir, searchEmbedded: false);
+            Check(doc.Firmware?.Image is TpLinkImage { Md5Matches: true } && doc.Firmware.Part is { Name: "rootfs" } p && p.Offset == ((0x200 + kernel.Length + 0xFFFF) & ~0xFFFF) && p.Detail.Contains("-a"),
+                $"version {version} -a: " + string.Join("; ", doc.Firmware?.Image.Parts ?? []));
+            Same(expected, Program.DumpToString(doc.Tree), $"version {version} -a");
+        }
+
         byte[] changed = BuildTpLinkClassic(1, kernel, squash);
         changed[^30] ^= 1;
         path = WriteFile("tp-changed.bin", changed);
@@ -276,7 +304,11 @@ internal static partial class SelfTest
             ("classic padded", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000, strip: false)),
             ("classic -j", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000, jffs2: true)),
             ("classic -c", root => BuildTpLinkClassic(1, kernel.Concat(root).ToArray(), null, layoutSize: 0x200000)),
+            ("classic -a", root => BuildTpLinkClassic(1, kernel, root, layoutSize: 0x200000, align: 0x10000)),
             ("version 2", root => BuildTpLinkClassic(2, kernel, root, layoutSize: 0x200000)),
+            ("version 3 -j", root => BuildTpLinkClassic(3, kernel, root, layoutSize: 0x200000, jffs2: true)),
+            ("version 2 padded -a", root => BuildTpLinkClassic(2, kernel, root, layoutSize: 0x200000, strip: false, align: 0x10000)),
+            ("version 2 -c", root => BuildTpLinkClassic(2, kernel.Concat(root).ToArray(), null, layoutSize: 0x200000)),
             ("safeloader", root => BuildTpLinkSafeloader(kernel, root)),
             ("safeloader -j", root => BuildTpLinkSafeloader(kernel, root, jffs2: true)),
         };
