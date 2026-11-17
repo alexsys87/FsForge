@@ -311,6 +311,9 @@ internal static class Program
             if (fw.Image is FsForge.Core.Firmware.TrxImage trx)
                 Console.WriteLine($"             TRX version {trx.Version}, flags 0x{trx.Flags:X4}, {trx.Length} bytes at 0x{trx.TrxOffset:X}, CRC " +
                                   $"{(trx.CrcMatches ? $"ok ({trx.CrcScheme})" : "wrong")}{(trx.ChkBoard is { } board ? $", Netgear CHK board '{board}'" : "")}");
+            if (fw.Image is FsForge.Core.Firmware.NetgearChkImage chk)
+                Console.WriteLine($"             board '{chk.Board}', region {chk.Region}, kernel {chk.KernelPartLength} bytes, rootfs part {chk.RootfsPartLength} bytes, " +
+                                  $"checksums {(chk.ChkChecksumsValid ? "ok" : "wrong")}");
             if (fw.Image is FsForge.Core.Firmware.TpLinkImage tp)
                 Console.WriteLine(tp.Safeloader
                     ? $"             safeloader, MD5 {(tp.Md5Matches is { } m ? m ? "ok" : "not matching" : "not checked")}, soft-version '{tp.FirmwareVersion}'" +

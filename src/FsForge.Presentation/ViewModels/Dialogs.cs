@@ -941,6 +941,11 @@ public sealed class ImageInfoViewModel : DialogViewModel
                     Add(L.T("Контрольные суммы CHK"), trx.ChkChecksumsValid == true ? L.T("совпадают, при сохранении пересчитываются") : L.T("не совпадают с расчётом программы — образ только читается"));
                 }
             }
+            if (fw.Image is Core.Firmware.NetgearChkImage chk)
+            {
+                Add(L.T("Плата (Netgear CHK)"), chk.Board.Length > 0 ? chk.Board : L.T("не указана"));
+                Add(L.T("Контрольные суммы CHK"), chk.ChkChecksumsValid ? L.T("совпадают, при сохранении пересчитываются") : L.T("не совпадают с расчётом программы — образ только читается"));
+            }
             if (fw.Image is Core.Firmware.TpLinkImage tp)
             {
                 Add(L.T("Заголовок TP-Link"), tp.Safeloader ? L.T("safeloader (таблица разделов fwup-ptn)") : L.F("версия {0}, оборудование 0x{1:X8}, ревизия {2}", tp.HeaderVersion, tp.HardwareId, tp.HardwareRevision));
@@ -975,6 +980,8 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 ? L.T("прошивка целиком: заменяется только корневая файловая система, длины, таблица разделов и MD5 пересчитываются, как у утилит OpenWrt")
                 : fw.Image is Core.Firmware.TrxImage
                 ? L.T("прошивка целиком: заменяется только открытая часть, длина, смещения и CRC-32 в заголовке TRX (и суммы CHK) пересчитываются")
+                : fw.Image is Core.Firmware.NetgearChkImage
+                ? L.T("прошивка целиком: заменяется только корневая файловая система, длины и контрольные суммы заголовка CHK пересчитываются, как у mkchkimg")
                 : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");

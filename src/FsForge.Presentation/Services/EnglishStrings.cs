@@ -769,6 +769,8 @@ internal static class EnglishStrings
         ["Поддерживаемые устройства"] = "Supported devices",
         ["Длина, смещения и CRC-32 в заголовке TRX и контрольные суммы заголовка Netgear CHK пересчитываются, остальные части переносятся без изменений. "] = "The length, offsets and CRC-32 in the TRX header and the checksums of the Netgear CHK header are recalculated; the other parts are carried over unchanged. ",
         ["Длина, смещения и CRC-32 в заголовке TRX пересчитываются так, как их пишет trx из OpenWrt, остальные части переносятся без изменений. "] = "The length, offsets and CRC-32 in the TRX header are recalculated as OpenWrt's trx writes them; the other parts are carried over unchanged. ",
+        ["Длины и контрольные суммы заголовка Netgear CHK пересчитываются так, как их пишет mkchkimg, ядро переносится без изменений. "] = "The lengths and checksums of the Netgear CHK header are recalculated as mkchkimg writes them; the kernel is carried over unchanged. ",
+        ["прошивка целиком: заменяется только корневая файловая система, длины и контрольные суммы заголовка CHK пересчитываются, как у mkchkimg"] = "the whole firmware: only the root filesystem is replaced, the lengths and checksums of the CHK header are recalculated as mkchkimg does",
         ["прошивка целиком: заменяется только открытая часть, длина, смещения и CRC-32 в заголовке TRX (и суммы CHK) пересчитываются"] = "the whole firmware: only the open part is replaced, the length, offsets and CRC-32 in the TRX header (and the CHK checksums) are recalculated",
         ["Контрольные суммы CHK"] = "CHK checksums",
         ["совпадают, при сохранении пересчитываются"] = "match and are recalculated on save",

@@ -352,6 +352,9 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | Предупреждение: `… cannot be rebuilt around it: The CRC-32 of the TRX image matches neither form it is written in…` | CRC не совпал ни в форме `trx`, ни в форме zlib: неизвестно, какую ждёт загрузчик. | Получите образ заново; если он верен, сохраните ФС отдельно и соберите TRX `trx`. |
 | Предупреждение: `… The root filesystem lies in a part of the Netgear CHK image of its own, which is not rebuilt.` | Корневая ФС лежит в отдельной части CHK (`rootfs_len`), а не в TRX. | Сохраните ФС отдельно. |
 | `The new image is too large for a TRX image (4 GiB at most).`, `The new image is too large for a Netgear CHK image.` | Длины в заголовках 32-битные. | Уменьшите содержимое. |
+| Предупреждение: `The checksums of the Netgear CHK header do not match the way mkchkimg computes them…` | CHK без TRX изменён после сборки или собран не `mkchkimg`. | Образ только читается; сохраните ФС под новым именем и соберите CHK заново. |
+| `Only the root filesystem of a Netgear CHK image is rebuilt, not 'kernel'.` | В `vol=` указана часть ядра. | Выберите `rootfs`. |
+| Предупреждение: `… bytes follow the parts the Netgear CHK header lists; they are carried over unchanged.` | За частями, которые перечисляет заголовок, есть ещё данные. | Обычно ничего; они переносятся как есть. |
 | `The checksums of the written Broadcom TRX image do not match its data.`, `The content of '<часть>' differs from the source firmware.` | Проверка после записи нашла расхождение; новый файл отброшен, исходный не изменён. | Сообщите об ошибке, приложив образ. |
 
 ## 7g. Образы TP-Link

@@ -1811,6 +1811,71 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("Netgear CHK image: information, rebuilt on save, filesystem saved alone", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] squash = File.ReadAllBytes(MakeImage("chk.sqfs"));
+            // As mkchkimg -k kernel -f rootfs -b R7800 makes it: the header with Netgear's checksums, the kernel, the SquashFS.
+            static uint Sum(ReadOnlySpan<byte> data)
+            {
+                uint c0 = 0, c1 = 0;
+                foreach (byte b in data) { c0 += b; c1 += c0; }
+                uint f0 = (c0 & 0xFFFF) + (c0 >> 16), f1 = (c1 & 0xFFFF) + (c1 >> 16);
+                return ((((f1 >> 16) + f1) & 0xFFFF) << 16) | (((f0 >> 16) + f0) & 0xFFFF);
+            }
+            static byte[] Chk(byte[] kernel, byte[] rootfs)
+            {
+                byte[] h = new byte[45];
+                BigEndian(0x2A23245E).CopyTo(h, 0);
+                BigEndian(45).CopyTo(h, 4);
+                h[8] = 1; h[9] = 1; h[10] = 1; h[11] = 99;
+                BigEndian(Sum(kernel)).CopyTo(h, 16);
+                BigEndian(Sum(rootfs)).CopyTo(h, 20);
+                BigEndian((uint)kernel.Length).CopyTo(h, 24);
+                BigEndian((uint)rootfs.Length).CopyTo(h, 28);
+                BigEndian(Sum(kernel.Concat(rootfs).ToArray())).CopyTo(h, 32);
+                Encoding.ASCII.GetBytes("R7800").CopyTo(h, 40);
+                BigEndian(Sum(h)).CopyTo(h, 36);
+                return h.Concat(kernel).Concat(rootfs).ToArray();
+            }
+            byte[] kernel = new byte[20000];
+            new Random(7).NextBytes(kernel);
+            byte[] img = Chk(kernel, squash);
+            string file = Path.Combine(_dir, "netgear.chk");
+            File.WriteAllBytes(file, img);
+
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(file), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: false }
+                  && vm.DocumentInfo.StartsWith("CHK · rootfs из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Плата (Netgear CHK)" && r.Value == "R7800")
+                                                                    && i.Rows.Any(r => r.Label == "Контрольные суммы CHK" && r.Value.StartsWith("совпадают"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a CHK image");
+
+            // Ctrl+S writes the image again as mkchkimg would from the same kernel and the new filesystem.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] rebuilt = File.ReadAllBytes(file);
+            Check(rebuilt.AsSpan().SequenceEqual(Chk(kernel, rebuilt[(45 + kernel.Length)..])), "the CHK image was not rebuilt as mkchkimg makes it");
+            Check(vm.Document is { Firmware.Image: FsForge.Core.Firmware.NetgearChkImage { ChkChecksumsValid: true } } && vm.Document.Tree.Resolve("/etc/Banner") is null, "the rebuilt image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the CHK image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("как их пишет mkchkimg"), "save dialog of a CHK image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "chk-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the CHK image unchanged");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();
