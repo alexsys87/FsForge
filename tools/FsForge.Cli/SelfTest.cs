@@ -394,6 +394,9 @@ internal static partial class SelfTest
                 o.Tar.XzEffort = 0;
                 doc = doc.Save(path, o).Document;
                 Check(doc.Format == ImageFormat.Ext && doc.OuterCompression == c, $"{c}: the image saved in place is not compressed any more");
+                // Nothing may keep the saved file open (on Windows it could not be replaced the next time).
+                try { using var exclusive = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None); }
+                catch (IOException ex) { throw new TestFailure($"{c}: the saved file is still open: {ex.Message}"); }
                 Same(expected, Program.DumpToString(doc.Tree), "wrapped " + c + " after saving in place");
             }
             finally

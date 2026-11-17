@@ -1656,6 +1656,7 @@ public sealed class ImageDocument : IDisposable
 
         // The compressors are our own code paths too: make sure the file unpacks to exactly what went in.
         ImageArchive? written = null;
+        FileStream? packedFile = null;      // closed here: some decompressors (zstd) leave their input open
         try
         {
             Stream unpacker;
@@ -1665,7 +1666,11 @@ public sealed class ImageDocument : IDisposable
                 ArchiveEntry entry = written.Find(imageName) ?? throw new FsException($"The written archive does not hold '{imageName}'.");
                 unpacker = written.OpenEntry(entry);
             }
-            else unpacker = ArchiveCodec.OpenDecompressor(new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20), compression);
+            else
+            {
+                packedFile = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                unpacker = ArchiveCodec.OpenDecompressor(packedFile, compression);
+            }
             using (unpacker)
             using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
             {
@@ -1693,6 +1698,7 @@ public sealed class ImageDocument : IDisposable
         finally
         {
             written?.Dispose();
+            packedFile?.Dispose();
         }
     }
 
