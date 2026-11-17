@@ -98,11 +98,12 @@ public abstract class FirmwareImage
     public abstract IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open);
 
     /// <summary>True when the file starts with a firmware header this program understands.</summary>
-    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source);
+    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source) || TrxImage.IsTrx(source);
 
     /// <summary>Reads the firmware header and finds the parts; null when the file has none.</summary>
     public static FirmwareImage? TryRead(IBlockSource source, CancellationToken ct = default) =>
-        UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct) : null;
+        UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct)
+        : TrxImage.IsTrx(source) ? TrxImage.Read(source, ct) : null;
 
     // ------------------------------------------- shared by the rebuilding images
 
@@ -146,32 +147,42 @@ public abstract class FirmwareImage
     /// </summary>
     protected List<IBlockSource> TrailingPieces(FirmwarePart part, IBlockSource data)
     {
+        var pieces = new List<IBlockSource> { Slice(0, part.Offset), data };
+        pieces.AddRange(TailPieces(part, part.Offset + data.Length, ContentEnd, 0));
+        return pieces;
+    }
+
+    /// <summary>
+    /// What follows a new root filesystem that now ends at <paramref name="newEnd"/>: what followed the old one up to
+    /// <paramref name="end"/>, with OpenWrt's 0xdeadc0de markers on the first erase block boundaries behind the new one
+    /// and anything else on the same kind of boundary as before. Boundaries count from <paramref name="origin"/> (the
+    /// start of the image the filesystem lies in).
+    /// </summary>
+    protected List<IBlockSource> TailPieces(FirmwarePart part, long newEnd, long end, long origin)
+    {
         var pieces = new List<IBlockSource>();
-        pieces.Add(Slice(0, part.Offset));
-        pieces.Add(data);
-        long newEnd = part.Offset + data.Length;
-        Tail tail = TailOf(part);
+        Tail tail = TailOf(part, end, origin);
         if (tail.Markers.Count > 0)
         {
             // A marker on the first boundary of each of these sizes behind the new filesystem (one boundary can serve
             // several sizes), padding in between.
             long pos = newEnd;
-            foreach (long at in tail.Markers.Select(size => RoundUp(newEnd, size)).Distinct().Order())
+            foreach (long at in tail.Markers.Select(size => origin + RoundUp(newEnd - origin, size)).Distinct().Order())
             {
                 pieces.Add(Fill(at - pos, tail.Fill));
                 pieces.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
                 pos = at + 4;
             }
-            pieces.Add(Slice(tail.Rest, ContentEnd));
+            pieces.Add(Slice(tail.Rest, end));
         }
-        else if (tail.Start < ContentEnd)
+        else if (tail.Start < end)
         {
-            long at = Shifted(tail.Start, newEnd, tail.Align);
+            long at = origin + Shifted(tail.Start - origin, newEnd - origin, tail.Align);
             pieces.Add(Fill(at - newEnd, tail.Fill));
-            pieces.Add(Slice(tail.Start, ContentEnd));
+            pieces.Add(Slice(tail.Start, end));
         }
         else if (tail.Align > 1)
-            pieces.Add(Fill(RoundUp(newEnd, tail.Align) - newEnd, tail.Fill));
+            pieces.Add(Fill(origin + RoundUp(newEnd - origin, tail.Align) - newEnd, tail.Fill));
         return pieces;
     }
 
@@ -216,17 +227,26 @@ public abstract class FirmwareImage
     /// What a rewrite keeps behind the image: what followed the root filesystem behind it when that is the part
     /// rewritten, and the fwtool blocks without their checksums.
     /// </summary>
-    protected IEnumerable<(string Name, IBlockSource Data)> BehindSections(FirmwarePart? trailing, FirmwarePart open)
+    protected IEnumerable<(string Name, IBlockSource Data)> BehindSections(FirmwarePart? trailing, FirmwarePart open) =>
+        TailSections(trailing, open, ContentEnd, 0).Concat(FwtoolSections());
+
+    /// <summary>What a rewrite of <paramref name="trailing"/> keeps behind it, up to <paramref name="end"/> (see <see cref="TailPieces"/>).</summary>
+    protected IEnumerable<(string Name, IBlockSource Data)> TailSections(FirmwarePart? trailing, FirmwarePart open, long end, long origin)
     {
         if (trailing is not null && open.Name == trailing.Name)
         {
-            Tail tail = TailOf(trailing);
+            Tail tail = TailOf(trailing, end, origin);
             // Behind a new filesystem one marker can serve more block sizes than before (an 8 KiB boundary may also be
             // the first 16 KiB one), so only what follows the markers is compared.
             if (tail.Markers.Count > 0)
-                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, ContentEnd - tail.Rest, ownsInner: false));
-            else yield return ("data after " + trailing.Name, new SubBlockSource(Source, tail.Start, ContentEnd - tail.Start, ownsInner: false));
+                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, end - tail.Rest, ownsInner: false));
+            else yield return ("data after " + trailing.Name, new SubBlockSource(Source, tail.Start, end - tail.Start, ownsInner: false));
         }
+    }
+
+    /// <summary>OpenWrt's fwtool blocks without their checksums, which a rewrite makes again.</summary>
+    protected IEnumerable<(string Name, IBlockSource Data)> FwtoolSections()
+    {
         if (_fwtool is not null)
             foreach ((string name, IBlockSource data) in _fwtool.Sections(Source)) yield return (name, data);
     }
@@ -246,10 +266,10 @@ public abstract class FirmwareImage
     /// What follows a root filesystem behind the image. Only the end of a SquashFS, EROFS, CramFS, romfs or ext
     /// filesystem is known; any other one runs to the end of the file.
     /// </summary>
-    protected Tail TailOf(FirmwarePart part)
+    protected Tail TailOf(FirmwarePart part, long end = -1, long origin = 0)
     {
-        long eof = ContentEnd;
-        long fsEnd = part.Packed is null ? part.Offset + FilesystemLength(part.Offset, part.Content) : eof;
+        long eof = end < 0 ? ContentEnd : end;
+        long fsEnd = part.Packed is null ? part.Offset + FilesystemLength(part.Offset, part.Content, eof) : eof;
         long start = fsEnd;
         byte[] buf = new byte[1 << 16];
         while (start < eof)
@@ -261,7 +281,7 @@ public abstract class FirmwareImage
             start += n;
         }
         byte fill = start > fsEnd ? Source.ReadBytes(start - 1, 1)[0] : (byte)0xFF;
-        if (start >= eof) return new Tail(eof, eof > fsEnd ? Alignment(eof) : 1, fill, new List<long>(), eof);
+        if (start >= eof) return new Tail(eof, eof > fsEnd ? Alignment(eof - origin) : 1, fill, new List<long>(), eof);
 
         // OpenWrt's padjffs2 puts 0xdeadc0de at the first 4, 8 ... 256 KiB boundaries behind the filesystem, so that the
         // kernel finds one at the start of the next erase block, whatever size the flash has. What matters is which
@@ -277,18 +297,18 @@ public abstract class FirmwareImage
         }
         var markers = new List<long>();
         for (long size = 4096; size <= MaxAlignment; size <<= 1)
-            if (found.Contains(RoundUp(fsEnd, size))) markers.Add(size);
-        if (markers.Count == 0) return new Tail(start, Alignment(start), fill, markers, start);
-        return new Tail(start, Math.Max(Alignment(start), markers.Max()), fill, markers, rest);
+            if (found.Contains(origin + RoundUp(fsEnd - origin, size))) markers.Add(size);
+        if (markers.Count == 0) return new Tail(start, Alignment(start - origin), fill, markers, start);
+        return new Tail(start, Math.Max(Alignment(start - origin), markers.Max()), fill, markers, rest);
     }
 
     /// <summary>
     /// How long the filesystem at <paramref name="at"/> is, as its superblock gives it (SquashFS, EROFS, CramFS, romfs,
     /// ext2/3/4); anything else, or a size that makes no sense, runs to the end of the file.
     /// </summary>
-    protected long FilesystemLength(long at, PartitionContent content)
+    protected long FilesystemLength(long at, PartitionContent content, long end = -1)
     {
-        long rest = ContentEnd - at;
+        long rest = (end < 0 ? ContentEnd : end) - at;
         long length = 0;
         try
         {
@@ -382,6 +402,8 @@ public abstract class FirmwareImage
     /// </summary>
     protected long? FindTrailing(long end, CancellationToken ct)
     {
+        // Right at the end of the image (which need not be on a 4-byte boundary of the file, behind a CHK header), then behind padding.
+        if (end < Source.Length && Jffs2OrOtherAt(end)) return end;
         long start = SkipErased((end + 3) & ~3L, ct);
         if (start >= Source.Length) return null;
         long limit = Math.Min(Source.Length - start, TrailingScan);

@@ -1640,6 +1640,58 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("TRX image: information, rebuilt on save, filesystem saved alone", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] squash = File.ReadAllBytes(MakeImage("trx.sqfs"));
+            // A TRX image (version 1): header, a kernel at 28, the SquashFS at 64 KiB; the CRC from the flags to the end.
+            byte[] trx = new byte[65536 + squash.Length];
+            new Random(5).NextBytes(trx.AsSpan(28, 30000));
+            squash.CopyTo(trx, 65536);
+            BitConverter.GetBytes(0x30524448u).CopyTo(trx, 0);
+            BitConverter.GetBytes((uint)trx.Length).CopyTo(trx, 4);
+            BitConverter.GetBytes((ushort)1).CopyTo(trx, 14);
+            BitConverter.GetBytes(28u).CopyTo(trx, 16);
+            BitConverter.GetBytes(65536u).CopyTo(trx, 20);
+            BitConverter.GetBytes(~FsForge.Core.Compression.Crc32.Compute(trx.AsSpan(12))).CopyTo(trx, 8);
+            string file = Path.Combine(_dir, "router.trx");
+            File.WriteAllBytes(file, trx);
+
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(file), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: false }
+                  && vm.DocumentInfo.StartsWith("TRX · rootfs из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Заголовок TRX" && r.Value.StartsWith("версия 1"))
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма данных" && r.Value == "совпадает")
+                                                                    && i.Rows.Any(r => r.Label == "▸ rootfs (открыт)" && r.Value.StartsWith("SquashFS"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a TRX image");
+
+            // Ctrl+S writes the TRX image again: the kernel stays, the header gets the new length and CRC.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] rebuilt = File.ReadAllBytes(file);
+            uint length = BitConverter.ToUInt32(rebuilt, 4);
+            Check(length == rebuilt.Length && BitConverter.ToUInt32(rebuilt, 8) == ~FsForge.Core.Compression.Crc32.Compute(rebuilt.AsSpan(12, (int)length - 12))
+                  && rebuilt.AsSpan(28, 30000).SequenceEqual(trx.AsSpan(28, 30000)), "the TRX image was not rebuilt as trx lays it out");
+            Check(vm.Document is { Firmware.Image: FsForge.Core.Firmware.TrxImage { CrcMatches: true } } && vm.Document.Tree.Resolve("/etc/Banner") is null, "the rebuilt TRX image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the TRX image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("как их пишет trx"), "save dialog of a TRX image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "router-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the TRX image unchanged");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();
