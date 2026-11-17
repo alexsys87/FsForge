@@ -1091,7 +1091,7 @@ internal static class Program
             Check(await vm.SaveAsAsync(), "save as EROFS failed: " + string.Join("; ", d.Messages));
             Check(vm.Document is { Format: ImageFormat.Erofs, Erofs: { Compression: FsForge.Core.Erofs.ErofsCompression.Lz4, VolumeName: "vendor", BigPcluster: true } e2 } && e2.Uuid == uuid
                   && vm.DocumentInfo.StartsWith("EROFS · lz4 · кластер "), "saved image: " + vm.DocumentInfo);
-            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+            Check(vm.Document!.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
 
             // An edit and Ctrl+S: the same file, the same settings.
             vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
@@ -1141,7 +1141,7 @@ internal static class Program
             Check(await vm.OpenPathAsync(initrd), "open failed: " + string.Join("; ", d.Messages));
             Check(vm.Document is { Format: ImageFormat.Cpio, Cpio: { Parts: 2, Compression: ArchiveCompression.Gzip, PathPrefix: "./" } }
                   && vm.DocumentInfo.StartsWith("cpio.gz"), "status line: " + vm.DocumentInfo);
-            Check(vm.Document.Tree.Resolve("/kernel/x86/microcode/GenuineIntel.bin") is not null && vm.Document.Tree.Resolve("/bin/ash")!.Inode.LinkCount == 2,
+            Check(vm.Document!.Tree.Resolve("/kernel/x86/microcode/GenuineIntel.bin") is not null && vm.Document.Tree.Resolve("/bin/ash")!.Inode.LinkCount == 2,
                 "both archives are read into one tree");
             Check(vm.IsInfoOpen && vm.InfoMessage.Contains("2 cpio archives"), "the two archives are not reported: " + vm.InfoMessage);
             bool infoShown = false;
@@ -1239,7 +1239,7 @@ internal static class Program
             Check(await vm.SaveAsAsync(), "save as CramFS failed: " + string.Join("; ", d.Messages));
             Check(vm.Document is { Format: ImageFormat.Cramfs, Cramfs: { BigEndian: false, BlockSize: 4096, Holes: true, VolumeName: "rootfs" } }
                   && vm.DocumentInfo.StartsWith("CramFS · little-endian · блок 4 КБ"), "saved image: " + vm.DocumentInfo);
-            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+            Check(vm.Document!.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
 
             // An edit and Ctrl+S: the same file, the same settings.
             vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
@@ -1369,7 +1369,7 @@ internal static class Program
                 "saved image: " + vm.DocumentInfo);
 
             // An edit and Ctrl+S: the same file and settings.
-            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
             Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
             Check(vm.Document is { Format: ImageFormat.ExFat, FilePath: var path, ExFat.Label: "Фото" } && path == again && vm.Document.Tree.Resolve("/etc/passwd") is null && !vm.IsModified,
                 "saved in place: " + vm.DocumentInfo);
