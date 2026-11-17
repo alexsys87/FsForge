@@ -21,6 +21,7 @@ public enum SaveFormat
     Ubifs,
     Jffs2,
     Fat,
+    ExFat,
     Tar,
     Cpio,
     Cramfs,
@@ -54,6 +55,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Ubifs, L.T("UBIFS (NAND- и NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Jffs2, L.T("JFFS2 (NOR-флеш)")),
         new Choice<SaveFormat>(SaveFormat.Fat, L.T("FAT (загрузочные разделы, флешки)")),
+        new Choice<SaveFormat>(SaveFormat.ExFat, L.T("exFAT (карты памяти больше 32 ГБ, флешки, камеры)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
         new Choice<SaveFormat>(SaveFormat.Cpio, L.T("Архив cpio (initramfs)")),
         new Choice<SaveFormat>(SaveFormat.F2fs, L.T("F2FS (userdata Android, флеш-накопители)")),
@@ -173,6 +175,12 @@ public static class OptionLists
             .Concat(new[] { 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536 }.Select(b => new Choice<int>(b, b < 1024 ? L.F("{0} байт", b) : L.F("{0} КБ", b / 1024))))
             .ToArray();
 
+    public static IReadOnlyList<Choice<int>> ExFatClusterSizes { get; } =
+        new[] { new Choice<int>(0, L.T("автоматически")) }
+            .Concat(new[] { 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576 }
+                .Select(b => new Choice<int>(b, b < 1024 ? L.F("{0} байт", b) : b < 1 << 20 ? L.F("{0} КБ", b / 1024) : L.F("{0} МБ", b >> 20))))
+            .ToArray();
+
     public static IReadOnlyList<Choice<ArchiveCompression>> TarCompressions { get; } = new[]
     {
         new Choice<ArchiveCompression>(ArchiveCompression.Gzip, "gzip (.tar.gz)"),
@@ -247,6 +255,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ImageFormat.Ubifs => SaveFormat.Ubifs,
             ImageFormat.Jffs2 => SaveFormat.Jffs2,
             ImageFormat.Fat => SaveFormat.Fat,
+            ImageFormat.ExFat => SaveFormat.ExFat,
             ImageFormat.Tar => SaveFormat.Tar,
             ImageFormat.Cpio => SaveFormat.Cpio,
             ImageFormat.Cramfs => SaveFormat.Cramfs,
@@ -291,6 +300,9 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         _f2fsSize = _o.F2fs.SizeBytes > 0 ? (_o.F2fs.SizeBytes >> 20).ToString() : "";
         _f2fsFree = (_o.F2fs.ExtraFreeBytes >> 20).ToString();
         _fatLabel = _o.Fat.Label;
+        _exfatSize = _o.ExFat.SizeBytes > 0 ? (_o.ExFat.SizeBytes >> 20).ToString() : "";
+        _exfatFree = (_o.ExFat.ExtraFreeBytes >> 20).ToString();
+        _exfatLabel = _o.ExFat.Label;
 
         _ubifsLeb = _o.Ubifs.LebSize.ToString();
         _ubifsMinIo = _o.Ubifs.MinIoSize.ToString();
@@ -376,7 +388,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
     public bool WritesDisk => IsFirmwareContainer ? _o.KeepContainer && FirmwareTakesFormat : HasContainer && _o.KeepContainer && (IsAndroidContainer
         ? IsSuperContainer ? !IsTar && !IsCpio && !IsJffs2 && !IsUbifs : IsCpio
-        : !IsTar && !IsCpio && !IsJffs2 && !((IsFat || IsF2fs) && IsUbiContainer));
+        : !IsTar && !IsCpio && !IsJffs2 && !((IsFat || IsExFat || IsF2fs) && IsUbiContainer));
 
     public string ContainerNote
     {
@@ -429,6 +441,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 return L.T("JFFS2 сохраняется отдельным файлом: в раздел образа диска или том UBI он не записывается.");
             if (IsFat && IsUbiContainer)
                 return L.T("FAT сохраняется отдельным файлом: в том UBI он не записывается.");
+            if (IsExFat && IsUbiContainer)
+                return L.T("exFAT сохраняется отдельным файлом: в том UBI он не записывается.");
             if (_doc.Ubi is { } ubi)
             {
                 if (IsTar) return L.T("Архив tar сохраняется отдельным файлом; образ UBI при этом не меняется.");
@@ -464,7 +478,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote), nameof(WritesUbi), nameof(ShowNewUbi),
                      nameof(ShowUbiOptions), nameof(CanEditUbifsGeometry), nameof(UbifsGeometryNote), nameof(Extension),
-                     nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote),
+                     nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(ExFatSizeEditable), nameof(ExFatSizeNote),
                      nameof(F2fsSizeEditable), nameof(F2fsSizeNote) }) OnPropertyChanged(p);
     }
 
@@ -500,7 +514,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsCramfs), nameof(IsRomfs), nameof(IsF2fs), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsCramfs), nameof(IsRomfs), nameof(IsF2fs), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(IsExFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -517,6 +531,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool IsJffs2 => _format == SaveFormat.Jffs2;
     public bool IsFat => _format == SaveFormat.Fat;
+    public bool IsExFat => _format == SaveFormat.ExFat;
     public bool HasJournalOption => _format is SaveFormat.Ext3 or SaveFormat.Ext4;
 
     public string FormatNote => _format switch
@@ -531,6 +546,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ext3 => L.T("ext3: журнал и карты блоков."),
         SaveFormat.Ext2 => L.T("ext2: без журнала, карты блоков."),
         SaveFormat.Fat => L.T("FAT12/16/32 с длинными именами: загрузочные разделы карт памяти, раздел EFI, флешки. Хранит только файлы и папки — без владельцев, прав и ссылок; время с точностью до 2 секунд."),
+        SaveFormat.ExFat => L.T("exFAT: карты памяти SDXC (больше 32 ГБ), флешки, камеры и видеорегистраторы. Файлы любого размера (больше 4 ГБ), длинные имена в Юникоде, время с точностью до 10 мс. Как и FAT, хранит только файлы и папки — без владельцев, прав (кроме «только чтение») и ссылок. Читается Windows, macOS и Linux 5.7 и новее."),
         SaveFormat.Jffs2 => L.T("Журналируемая файловая система для NOR-флеш (и старых NAND). Порядок байтов и размер блока стирания должны совпадать с устройством; для NAND маркеры очистки выключают."),
         SaveFormat.Ubifs => L.T("Файловая система для «сырой» флеш-памяти. Образ делается под конкретную память: размер блока стирания и страницы должны совпадать с её параметрами."),
         _ => L.T("Архив с правами, владельцами, ссылками, устройствами и расширенными атрибутами."),
@@ -840,10 +856,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- common to all formats
     /// <summary>JFFS2 has its own switch for attributes (a kernel without xattr support refuses such an image).</summary>
-    public bool ShowCommonXattrs => !IsJffs2 && !IsFat && !IsCpio && !IsCramfs && !IsRomfs;
+    public bool ShowCommonXattrs => !IsJffs2 && !IsFat && !IsExFat && !IsCpio && !IsCramfs && !IsRomfs;
 
     /// <summary>FAT and romfs have no owners: the "everything belongs to root" switch means nothing there.</summary>
-    public bool ShowAllRoot => !IsFat && !IsRomfs;
+    public bool ShowAllRoot => !IsFat && !IsExFat && !IsRomfs;
 
     // ---- FAT
     private string _fatSize, _fatLabel;
@@ -862,6 +878,21 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         : L.T("Пусто — наименьший размер, в который помещается содержимое.");
 
     public bool HasFatSizeNote => FatSizeNote.Length > 0;
+
+    // ---- exFAT
+    private string _exfatSize, _exfatFree, _exfatLabel;
+    public IReadOnlyList<Choice<int>> ExFatClusterSizes => OptionLists.ExFatClusterSizes;
+    public int ExFatClusterSize { get => _o.ExFat.ClusterSize; set { _o.ExFat.ClusterSize = value; OnPropertyChanged(); Error = null; } }
+    public string ExFatSizeMiB { get => _exfatSize; set { if (SetProperty(ref _exfatSize, value)) Error = null; } }
+    public string ExFatFreeMiB { get => _exfatFree; set { if (SetProperty(ref _exfatFree, value)) Error = null; } }
+    public string ExFatLabel { get => _exfatLabel; set { if (SetProperty(ref _exfatLabel, value)) Error = null; } }
+
+    /// <summary>In a disk image the filesystem fills its partition.</summary>
+    public bool ExFatSizeEditable => !WritesDisk;
+
+    public string ExFatSizeNote => WritesDisk && _doc.Container is { } exdisk
+        ? L.F("В образе диска exFAT занимает раздел целиком ({0}).", Fmt.Size(exdisk.Partition.Length))
+        : L.T("Пусто — наименьший размер, в который помещаются содержимое и запас свободного места.");
 
     public bool StoreXattrs
     {
@@ -889,6 +920,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Ubifs => ".ubifs",
         SaveFormat.Jffs2 => ".jffs2",
         SaveFormat.Fat => ".vfat",
+        SaveFormat.ExFat => ".exfat",
         SaveFormat.Ext4 => ".ext4",
         SaveFormat.Ext3 => ".ext3",
         SaveFormat.Ext2 => ".ext2",
@@ -928,6 +960,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             SaveFormat.Ubifs => ImageFormat.Ubifs,
             SaveFormat.Jffs2 => ImageFormat.Jffs2,
             SaveFormat.Fat => ImageFormat.Fat,
+            SaveFormat.ExFat => ImageFormat.ExFat,
             SaveFormat.Tar => ImageFormat.Tar,
             SaveFormat.Cpio => ImageFormat.Cpio,
             SaveFormat.Cramfs => ImageFormat.Cramfs,
@@ -979,6 +1012,19 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
             else o.Fat.SizeBytes = mib << 20;
             o.Fat.Label = _fatLabel.Trim();
+        }
+
+        if (IsExFat)
+        {
+            if (WritesDisk) o.ExFat.SizeBytes = 0;          // the partition decides
+            else if (_exfatSize.Trim().Length == 0) o.ExFat.SizeBytes = 0;
+            else if (!long.TryParse(_exfatSize.Trim(), out long mib) || mib < 1 || mib > 128L << 20)
+                return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
+            else o.ExFat.SizeBytes = mib << 20;
+            if (!long.TryParse(_exfatFree.Trim(), out long free) || free < 0)
+                return Fail(L.T("Запас свободного места — целое неотрицательное число мегабайт."));
+            o.ExFat.ExtraFreeBytes = free << 20;
+            o.ExFat.Label = _exfatLabel.Trim();
         }
 
         if (IsF2fs)
@@ -1051,6 +1097,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.Ubifs: o.Ubifs.Validate(); break;
                 case ImageFormat.Jffs2: o.Jffs2.Validate(); break;
                 case ImageFormat.Fat: o.Fat.Validate(); break;
+                case ImageFormat.ExFat: o.ExFat.Validate(); break;
                 case ImageFormat.Erofs: o.Erofs.Validate(); break;
                 case ImageFormat.Cpio: o.Cpio.Validate(); break;
                 case ImageFormat.Cramfs: o.Cramfs.Validate(); break;

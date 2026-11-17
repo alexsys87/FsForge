@@ -38,7 +38,7 @@ public sealed class FirmwarePart
 
     /// <summary>The part holds a filesystem, a UBI image or a cpio archive this program can open.</summary>
     public bool IsReadable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Erofs
-        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.Fat or PartitionContent.F2fs
+        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.Fat or PartitionContent.ExFat or PartitionContent.F2fs
         or PartitionContent.Cpio or PartitionContent.Ubi or PartitionContent.Ubifs or PartitionContent.Jffs2;
 
     public override string ToString()

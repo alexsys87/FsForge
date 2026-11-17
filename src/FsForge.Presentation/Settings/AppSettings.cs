@@ -111,6 +111,7 @@ public sealed class AppSettings
 
     /// <summary>Defaults of a new FAT image: type, cluster size, label.</summary>
     public FsForge.Core.Fat.FatOptions Fat { get; set; } = new();
+    public FsForge.Core.ExFat.ExFatOptions ExFat { get; set; } = new();
 
     /// <summary>Defaults of a new cpio archive: header format, compression, prefix.</summary>
     public FsForge.Core.Cpio.CpioOptions Cpio { get; set; } = new();
@@ -195,6 +196,7 @@ public sealed class AppSettings
             Ubifs = Ubifs.Clone(),
             Jffs2 = Jffs2.Clone(),
             Fat = Fat.Clone(),
+            ExFat = ExFat.Clone(),
             Erofs = Erofs.Clone(),
             Cpio = Cpio.Clone(),
             Cramfs = Cramfs.Clone(),
@@ -325,6 +327,12 @@ public sealed class SettingsStore
         s.Fat.VolumeId = null;
         s.Fat.HiddenSectors = 0;
         s.Fat.BootCode = null;
+        s.ExFat ??= new();
+        try { s.ExFat.Validate(); } catch (FsForge.Core.FsException) { s.ExFat = new(); }
+        s.ExFat.SizeBytes = 0;
+        s.ExFat.VolumeSerial = null;
+        s.ExFat.PartitionOffset = 0;
+        s.ExFat.BootCode = null;
         s.Cpio ??= new();
         try { s.Cpio.Validate(); } catch (FsForge.Core.FsException) { s.Cpio = new(); }
         s.Cramfs ??= new();

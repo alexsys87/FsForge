@@ -1327,6 +1327,67 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("exFAT: open a labelled image, keep its settings, save in place, convert to FAT", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string exfat = Path.Combine(_dir, "card.exfat");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("ex.sqfs"), _dir))
+            using (var fs = new FileStream(exfat, FileMode.Create))
+                ImageDocument.WriteTo(source.Tree, fs, new SaveOptions
+                {
+                    Format = ImageFormat.ExFat,
+                    ExFat = new FsForge.Core.ExFat.ExFatOptions { SizeBytes = 64L << 20, ClusterSize = 32768, Label = "CAMERA", VolumeSerial = 0x1234ABCD },
+                });
+            Check(await vm.OpenPathAsync(exfat), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.ExFat, ExFat: { Label: "CAMERA", ClusterSize: 32768 } } && vm.DocumentInfo.StartsWith("exFAT · 64 МБ · кластер 32 КБ · свободно"),
+                "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Метка" && r.Value == "CAMERA")
+                                                                    && i.Rows.Any(r => r.Label == "Серийный номер" && r.Value == "1234-ABCD")
+                                                                    && i.Rows.Any(r => r.Label == "Состояние" && r.Value == "чистая");
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of an exFAT image");
+
+            // "Save as" starts with the settings of the source.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsExFat && s.ExFatSizeMiB == "64" && s.ExFatClusterSize == 32768 && s.ExFatLabel == "CAMERA" && s.ExFatSizeEditable && s.Extension == ".exfat"
+                      && !s.ShowCommonXattrs && !s.ShowAllRoot && s.ExFatClusterSizes.Any(c => c.Value == 32768), "the dialog does not start with the settings of the source");
+                s.ExFatLabel = "twelve chars";
+                Check(!s.Accept() && s.Error is not null, "a label that is too long was accepted");
+                s.ExFatLabel = "Фото";
+                s.ExFatSizeMiB = "";
+                s.ExFatFreeMiB = "2";
+                s.ExFatClusterSize = 4096;
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "card-auto.exfat");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as exFAT failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.ExFat, ExFat: { Label: "Фото", ClusterSize: 4096, VolumeSerial: 0x1234ABCD } } && vm.Document.ExFat.SizeBytes < 64L << 20,
+                "saved image: " + vm.DocumentInfo);
+
+            // An edit and Ctrl+S: the same file and settings.
+            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.ExFat, FilePath: var path, ExFat.Label: "Фото" } && path == again && vm.Document.Tree.Resolve("/etc/passwd") is null && !vm.IsModified,
+                "saved in place: " + vm.DocumentInfo);
+
+            // Converting to FAT: the same kind of content.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.Fat;
+                Check(s.IsFat && !s.IsExFat && s.Extension == ".vfat", "FAT after exFAT");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "from-exfat.vfat"));
+            Check(await vm.SaveAsAsync(), "save as FAT failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.Fat && vm.Document.Tree.Resolve("/bin/busybox") is not null, "converted image");
+            vm.Dispose();
+        });
+
         await Test("F2FS: open a labelled image, keep its size and name, save in place, convert", async () =>
         {
             var (vm, d, _, _) = NewVm();

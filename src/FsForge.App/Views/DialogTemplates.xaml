@@ -567,6 +567,42 @@
                 </Border>
             </StackPanel>
 
+            <!--  exFAT  -->
+            <StackPanel Visibility="{Binding IsExFat, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="exFAT" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl Header="{l:Tr 'Размер кластера'}" Style="{StaticResource Row}">
+                            <ComboBox
+                                Width="220"
+                                DisplayMemberPath="Title"
+                                ItemsSource="{Binding ExFatClusterSizes}"
+                                SelectedValue="{Binding ExFatClusterSize}"
+                                SelectedValuePath="Value" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Размер, МиБ'}"
+                            IsEnabled="{Binding ExFatSizeEditable}"
+                            Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding ExFatSizeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Запас свободного места, МиБ'}"
+                            IsEnabled="{Binding ExFatSizeEditable}"
+                            Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding ExFatFreeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding ExFatSizeNote}" />
+                        <HeaderedContentControl Header="{l:Tr 'Метка тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding ExFatLabel, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  JFFS2  -->
             <StackPanel Visibility="{Binding IsJffs2, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="JFFS2" />

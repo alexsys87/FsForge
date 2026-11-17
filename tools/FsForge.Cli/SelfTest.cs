@@ -91,6 +91,7 @@ internal static partial class SelfTest
             UbifsTests(tree, reference);
             Jffs2Tests();
             FatTests();
+            ExFatTests();
             ErofsTests(tree, reference);
             CpioTests(tree, reference);
             CramfsRomfsTests();
@@ -273,6 +274,13 @@ internal static partial class SelfTest
                 f[2] = "*"; f[3] = f[4] = "0"; f[7] = f[8] = "-";
                 long t = long.Parse(f[5]);
                 f[5] = f[0] == "/" ? "*" : (Math.Clamp(t, 315532800, 4354819198) & ~1L).ToString();
+            }
+            if (o.Format == ImageFormat.ExFat)
+            {
+                // exFAT: files and directories only, no owners or permissions (read-only aside), times from 1980 to 2107.
+                if (f[1] is not ("f" or "d")) continue;
+                f[2] = "*"; f[3] = f[4] = "0"; f[7] = f[8] = "-";
+                f[5] = f[0] == "/" ? "*" : Math.Clamp(long.Parse(f[5]), 315532800, 4354819199).ToString();
             }
             if (noRoot && f[0] == "/") f[5] = "*";
             if (inode128 && long.Parse(f[5]) > int.MaxValue) f[5] = int.MaxValue.ToString();   // 32-bit timestamps are clamped
@@ -649,6 +657,7 @@ internal static partial class SelfTest
             ("cramfs big-endian holes 16k", new SaveOptions { Format = ImageFormat.Cramfs, Cramfs = new FsForge.Core.Cramfs.CramfsOptions { BigEndian = true, Holes = true, BlockSize = 16384, Pad = true } }),
             ("romfs", new SaveOptions { Format = ImageFormat.Romfs }),
             ("f2fs", new SaveOptions { Format = ImageFormat.F2fs }),
+            ("exfat", new SaveOptions { Format = ImageFormat.ExFat }),
             ("tar.bz2", new SaveOptions { Format = ImageFormat.Tar, Tar = new TarOptions { Compression = ArchiveCompression.Bzip2 } }),
             ("squashfs in bzip2", new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Lz4 } }),
             ("squashfs in 7z", new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Lz4 } }),
