@@ -325,7 +325,11 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | `The Broadcom TRX image … holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | Корневая ФС в формате, который программа не читает, или в образе только ядро. | Проверьте файл (`fsforge-cli info`); откройте образ с корневой файловой системой. |
 | `'<часть>' of the Broadcom TRX image … holds LZMA data and cannot be opened.` | В `vol=` указаны загрузчик или ядро. | Выберите `rootfs`. |
 | Предупреждение: `The CRC-32 of the TRX image does not match its header: the image was changed or damaged, and the bootloader would refuse it.` | Образ изменён после сборки или повреждён. | Образ открыт; если файл скачан — скачайте заново. |
-| Предупреждение: `… cannot be rebuilt around it: Rebuilding a TRX image is not supported yet.` | Образы TRX пока только читаются. | Сохраните ФС под новым именем и соберите прошивку средствами сборки (OpenWrt ImageBuilder, `trx`). Записать поверх файла TRX нельзя. |
+| Предупреждение: `… cannot be rebuilt around it: The checksums of the Netgear CHK header do not match the way this program computes them, so they cannot be made again.` | Суммы CHK посчитаны не так, как в `mkchkimg` (другая версия инструмента производителя), или заголовок изменён. | Сохраните ФС под новым именем и соберите CHK средствами производителя или `mkchkimg`. |
+| Предупреждение: `… cannot be rebuilt around it: The CRC-32 of the TRX image matches neither form it is written in…` | CRC не совпал ни в форме `trx`, ни в форме zlib: неизвестно, какую ждёт загрузчик. | Получите образ заново; если он верен, сохраните ФС отдельно и соберите TRX `trx`. |
+| Предупреждение: `… The root filesystem lies in a part of the Netgear CHK image of its own, which is not rebuilt.` | Корневая ФС лежит в отдельной части CHK (`rootfs_len`), а не в TRX. | Сохраните ФС отдельно. |
+| `The new image is too large for a TRX image (4 GiB at most).`, `The new image is too large for a Netgear CHK image.` | Длины в заголовках 32-битные. | Уменьшите содержимое. |
+| `The checksums of the written Broadcom TRX image do not match its data.`, `The content of '<часть>' differs from the source firmware.` | Проверка после записи нашла расхождение; новый файл отброшен, исходный не изменён. | Сообщите об ошибке, приложив образ. |
 
 ## 8. Чтение архивов tar
 

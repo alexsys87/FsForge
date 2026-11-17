@@ -1640,7 +1640,7 @@ internal static class Program
             vm.Dispose();
         });
 
-        await Test("TRX image: information, filesystem saved alone", async () =>
+        await Test("TRX image: information, rebuilt on save, filesystem saved alone", async () =>
         {
             var (vm, d, _, _) = NewVm();
             byte[] squash = File.ReadAllBytes(MakeImage("trx.sqfs"));
@@ -1659,7 +1659,7 @@ internal static class Program
 
             d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
             Check(await vm.OpenPathAsync(file), "open failed: " + string.Join("; ", d.Messages));
-            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: true }
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: false }
                   && vm.DocumentInfo.StartsWith("TRX · rootfs из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
             bool infoShown = false;
             d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Заголовок TRX" && r.Value.StartsWith("версия 1"))
@@ -1668,13 +1668,27 @@ internal static class Program
             vm.ImageInfoCommand.Execute(null);
             Check(infoShown, "image information of a TRX image");
 
-            // Ctrl+S asks where to put the filesystem: a TRX image is not rebuilt yet.
+            // Ctrl+S writes the TRX image again: the kernel stays, the header gets the new length and CRC.
             vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
-            d.OnDialog = o => o is SaveOptionsViewModel s && !s.HasContainer && !s.WritesDisk && s.Accept();
-            d.SavePicks.Enqueue(Path.Combine(_dir, "router-rootfs.squashfs"));
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
             Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
-            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(trx) && vm.Document is { Firmware: null } && vm.Document.Tree.Resolve("/etc/Banner") is null,
-                "the filesystem saved alone, the TRX image unchanged");
+            byte[] rebuilt = File.ReadAllBytes(file);
+            uint length = BitConverter.ToUInt32(rebuilt, 4);
+            Check(length == rebuilt.Length && BitConverter.ToUInt32(rebuilt, 8) == ~FsForge.Core.Compression.Crc32.Compute(rebuilt.AsSpan(12, (int)length - 12))
+                  && rebuilt.AsSpan(28, 30000).SequenceEqual(trx.AsSpan(28, 30000)), "the TRX image was not rebuilt as trx lays it out");
+            Check(vm.Document is { Firmware.Image: FsForge.Core.Firmware.TrxImage { CrcMatches: true } } && vm.Document.Tree.Resolve("/etc/Banner") is null, "the rebuilt TRX image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the TRX image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("как их пишет trx"), "save dialog of a TRX image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "router-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the TRX image unchanged");
             vm.Dispose();
         });
 

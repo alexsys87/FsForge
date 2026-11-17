@@ -21,7 +21,11 @@
 #               Broadcom TRX images (version 1 with loader, kernel and the root filesystem at 64 KiB and the JFFS2
 #               marker; version 2; the zlib form of the CRC) and a Netgear CHK image holding one, made by a Python
 #               script after OpenWrt's trx.h with the SquashFS of mksquashfs, must read as that SquashFS; a changed
-#               byte must be reported by the CRC. (No reference tool for TRX is packaged.)
+#               byte must be reported by the CRC. Each is then changed in place: Python checks the new CRC (with the
+#               bin-header of version 2 counted as CFE counts it) and the CHK checksums (as mkchkimg makes them), and
+#               unsquashfs unpacks the new root filesystem. With TRX=<trx of OpenWrt's firmware-utils> the images are
+#               also made by trx (version 1, -F, version 2 with a bin-header), and after the change each must be byte
+#               for byte what trx makes from the same parts and the new filesystem.
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -259,37 +263,91 @@ PY
 
 fw_trx() {
   echo "Broadcom TRX and Netgear CHK"
-  python3 - fw img/xz.sqfs <<'PY'
-import sys, struct, zlib, os
-d, root = sys.argv[1], open(sys.argv[2], 'rb').read()
+  cat > fw/trxlib.py <<'PY'
+# TRX after OpenWrt's trx.c and Netgear CHK after mkchkimg: building and checking.
+import struct, zlib
+def netgear(data):
+    c0 = c1 = 0
+    for b in data: c0 = (c0 + b) & 0xffffffff; c1 = (c1 + c0) & 0xffffffff
+    f0 = (c0 & 0xffff) + (c0 >> 16); f1 = (c1 & 0xffff) + (c1 >> 16)
+    return ((((f1 >> 16) + f1) & 0xffff) << 16) | (((f0 >> 16) + f0) & 0xffff)
 def trx(parts, version, aligns, marker=False, std=False):
     hs = 28 if version == 1 else 32
     body = bytearray(hs); offs = []
     for p, a in zip(parts, aligns):
         while len(body) % a: body.append(0)
         offs.append(len(body)); body += p
+        while len(body) % 4: body.append(0)
     if marker:
         while len(body) % 65536: body.append(0xFF)
         body += b'\xde\xad\xc0\xde'
-    while len(body) % 4: body.append(0)
+    while len(body) % 4096: body.append(0)
     slots = (hs - 16) // 4
     struct.pack_into('<IIIHH' + 'I' * slots, body, 0, 0x30524448, len(body), 0, 0, version, *(offs + [0] * (slots - len(offs))))
-    c = zlib.crc32(bytes(body[12:]))
-    struct.pack_into('<I', body, 8, c if std else ~c & 0xffffffff)
+    c = crc(bytes(body), 0)
+    struct.pack_into('<I', body, 8, (~c & 0xffffffff) if std else c)
     return bytes(body)
+def crc(d, at):
+    l = struct.unpack('<I', d[at + 4:at + 8])[0]; v = struct.unpack('<H', d[at + 14:at + 16])[0]
+    cov = bytearray(d[at + 12:at + l])
+    if v == 2:
+        b = struct.unpack('<I', d[at + 28:at + 32])[0]
+        if b: cov[b + 22 - 12:b + 30 - 12] = b'\xff' * 8
+    return (~zlib.crc32(bytes(cov))) & 0xffffffff
+def chk(t, board):
+    h = bytearray(struct.pack('>II8xIIIIII', 0x2A23245E, 40 + len(board), netgear(t), netgear(b''), len(t), 0, netgear(t), 0) + board)
+    struct.pack_into('>I', h, 36, netgear(h)); return bytes(h) + t
+def check(path):
+    d = open(path, 'rb').read(); at = 0; ok = True
+    if d[:4] == b'*#$^':
+        at = struct.unpack('>I', d[4:8])[0]; k, r = struct.unpack('>II', d[24:32])
+        h = bytearray(d[:at]); hs = struct.unpack('>I', h[36:40])[0]; h[36:40] = bytes(4)
+        ok = (struct.unpack('>I', d[16:20])[0] == netgear(d[at:at + k]) and struct.unpack('>I', d[32:36])[0] == netgear(d[at:at + k + r]) and hs == netgear(h))
+    stored = struct.unpack('<I', d[at + 8:at + 12])[0]; c = crc(d, at)
+    return ok and stored in (c, ~c & 0xffffffff)
+PY
+  python3 - fw img/xz.sqfs <<'PY'
+import sys, os
+sys.path.insert(0, sys.argv[1]); import trxlib as t
+d, root = sys.argv[1], open(sys.argv[2], 'rb').read()
 loader, kernel = os.urandom(3000), b'\x5d\x00\x00\x80\x00' + os.urandom(150000)
-open(d + '/v1.trx', 'wb').write(trx([loader, kernel, root], 1, [4, 1024, 65536], marker=True))
-open(d + '/v2.trx', 'wb').write(trx([kernel, root], 2, [4, 65536]))
-open(d + '/std.trx', 'wb').write(trx([kernel, root], 1, [4, 4096], std=True))
-t = trx([loader, kernel, root], 1, [4, 1024, 65536]); board = b'U12H139T00_NETGEAR'
-open(d + '/netgear.chk', 'wb').write(struct.pack('>II8x6I', 0x2A23245E, 40 + len(board), 0, 0, 0, 0, 0, 0) + board + t)
+open(d + '/loader.bin', 'wb').write(loader); open(d + '/kernel.lzma', 'wb').write(kernel)
+open(d + '/v1.trx', 'wb').write(t.trx([loader, kernel, root], 1, [4, 1024, 65536], marker=True))
+open(d + '/v2.trx', 'wb').write(t.trx([kernel, root], 2, [4, 65536]))
+open(d + '/std.trx', 'wb').write(t.trx([kernel, root], 1, [4, 4096], std=True))
+open(d + '/netgear.chk', 'wb').write(t.chk(t.trx([loader, kernel, root], 1, [4, 1024, 65536]), b'U12H139T00_NETGEAR'))
 b = bytearray(open(d + '/v1.trx', 'rb').read()); b[-100] ^= 1; open(d + '/bad.trx', 'wb').write(b)
 PY
   local f
   for f in v1.trx v2.trx std.trx netgear.chk; do cmpdump "TRX: $f" fw/$f tree.ref; done
   $F info fw/netgear.chk 2>/dev/null | grep -q "CRC ok (fwtool), Netgear CHK board 'U12H139T00_NETGEAR'" && ok "TRX: CHK board and CRC" || bad "netgear.chk info: $($F info fw/netgear.chk 2>&1 | grep TRX)"
   $F info fw/bad.trx > /dev/null 2> fw/bad-trx.err; grep -q "CRC-32 of the TRX image does not match" fw/bad-trx.err && ok "TRX: a changed byte is reported by the CRC" || bad "bad.trx: $(cat fw/bad-trx.err)"
-  if $F edit fw/v1.trx fw/v1.trx rm:/etc 2> fw/trx-same.err; then bad "a TRX image was saved over"
-  else grep -q "Save under another name" fw/trx-same.err && ok "TRX: saving over the image is refused" || bad "$(cat fw/trx-same.err)"; fi
+  echo added > fw/added.txt
+  [ -e fw/big.bin ] || head -c 300000 /dev/urandom > fw/big.bin
+  for f in v1.trx v2.trx std.trx netgear.chk; do
+    cp fw/$f fw/w_$f
+    if $F edit fw/w_$f fw/w_$f "add:/:fw/big.bin" > /dev/null 2> fw/w_trx.err && python3 -c "import sys; sys.path.insert(0, 'fw'); import trxlib; sys.exit(0 if trxlib.check('fw/w_$f') else 1)" \
+       && python3 -c "import sys; d=open('fw/w_$f','rb').read(); a=d.index(b'hsqs'); open('fw/w_root.sqfs','wb').write(d[a:])" && rm -rf fw/wu && unsquashfs -n -d fw/wu fw/w_root.sqfs > /dev/null 2>&1 \
+       && cmp -s fw/wu/big.bin fw/big.bin; then ok "TRX $f rebuilt: CRC and CHK checksums right, unsquashfs sees the change"
+    else bad "TRX $f rebuilt: $(grep -v '^warning' fw/w_trx.err | head -2)"; fi
+  done
+  if [ -n "${TRX:-}" ] && [ -x "$TRX" ]; then
+    head -c 64 /dev/urandom > fw/binhdr.bin
+    local name args
+    for name in v1 F v2; do
+      case $name in
+        v1) args=(-f fw/loader.bin -a 1024 -f fw/kernel.lzma -a 0x10000 -f);;
+        F)  args=(-f fw/loader.bin -a 1024 -f fw/kernel.lzma -a 0x10000 -F);;
+        v2) args=(-2 -f fw/loader.bin -a 1024 -f fw/kernel.lzma -a 0x10000 -f);;
+      esac
+      local tail=(); [ $name = v2 ] && tail=(-a 4 -f fw/binhdr.bin)
+      "$TRX" -o fw/t_$name.trx "${args[@]}" img/xz.sqfs "${tail[@]}" 2>/dev/null
+      if $F edit fw/t_$name.trx fw/t_$name.trx "add:/:fw/big.bin" > /dev/null 2> fw/t.err; then
+        python3 -c "import struct; d=open('fw/t_$name.trx','rb').read(); a=d.index(b'hsqs', 4096); u=struct.unpack('<Q', d[a+40:a+48])[0]; open('fw/t_root.sqfs','wb').write(d[a:a+((u+4095)&~4095)])"
+        "$TRX" -o fw/t_ref.trx "${args[@]}" fw/t_root.sqfs "${tail[@]}" 2>/dev/null
+        cmp -s fw/t_$name.trx fw/t_ref.trx && ok "trx ($name): the rebuilt image is byte for byte what trx makes" || bad "trx ($name): the rebuilt image differs from trx"
+      else bad "edit trx ($name): $(grep -v '^warning' fw/t.err | head -2)"; fi
+    done
+  else echo "  --    trx checks skipped: set TRX to the trx of OpenWrt's firmware-utils"; fi
 }
 

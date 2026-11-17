@@ -52,8 +52,8 @@ internal static class Program
         that part replaced, unless the output name or container=0 says otherwise.
 
         Broadcom TRX images (.trx) and Netgear .chk images holding one are opened at their root filesystem
-        (vol=rootfs, kernel, loader); the CRC-32 is checked. They are not rebuilt yet: the filesystem is saved
-        alone, under another name.
+        (vol=rootfs, kernel, loader); the CRC-32 is checked. Saving writes the image again as OpenWrt's trx lays it
+        out (new length, offsets and CRC-32) and remakes the CHK checksums when the old ones could be verified.
 
         U-Boot FIT images (.itb, image.ub) are opened the same way, at the image that holds a filesystem or
         ramdisk (vol=<image node name>, e.g. vol=ramdisk-1); hashes are checked. Saving writes the FIT image

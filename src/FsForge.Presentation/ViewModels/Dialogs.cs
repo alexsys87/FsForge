@@ -925,7 +925,11 @@ public sealed class ImageInfoViewModel : DialogViewModel
             {
                 Add(L.T("Заголовок TRX"), L.F("версия {0}, флаги 0x{1:X4}, длина {2}", trx.Version, trx.Flags, Fmt.SizeWithBytes(trx.Length)));
                 Add(L.T("Контрольная сумма данных"), trx.CrcMatches ? L.T("совпадает") : L.T("не совпадает (образ изменён или повреждён)"));
-                if (trx.ChkBoard is not null) Add(L.T("Плата (Netgear CHK)"), trx.ChkBoard.Length > 0 ? trx.ChkBoard : L.T("не указана"));
+                if (trx.ChkBoard is not null)
+                {
+                    Add(L.T("Плата (Netgear CHK)"), trx.ChkBoard.Length > 0 ? trx.ChkBoard : L.T("не указана"));
+                    Add(L.T("Контрольные суммы CHK"), trx.ChkChecksumsValid == true ? L.T("совпадают, при сохранении пересчитываются") : L.T("не совпадают с расчётом программы — образ только читается"));
+                }
             }
             if (fw.Image is Core.Firmware.FitImage fit)
             {
@@ -948,6 +952,8 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 ? L.F("прошивка целиком: заменяется только корневая файловая система, образ {0} с ядром не меняется", fw.Image.ShortKind)
                 : fw.Image is Core.Firmware.FitImage
                 ? L.T("прошивка целиком: заменяется только открытый образ, его хеши и размер в дереве FIT пересчитываются")
+                : fw.Image is Core.Firmware.TrxImage
+                ? L.T("прошивка целиком: заменяется только открытая часть, длина, смещения и CRC-32 в заголовке TRX (и суммы CHK) пересчитываются")
                 : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
