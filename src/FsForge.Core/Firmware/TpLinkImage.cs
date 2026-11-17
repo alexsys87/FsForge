@@ -24,8 +24,12 @@ public sealed partial class TpLinkImage : FirmwareImage
 {
     private const int ClassicHeaderSize = 0x200;
 
-    /// <summary>The keys mktplinkfw puts in place of the sum when it computes the MD5 (normal images, images with a bootloader).</summary>
+    /// <summary>
+    /// The keys mktplinkfw puts in place of the sum when it computes the MD5 (normal images, images with a bootloader).
+    /// mktplinkfw2 (header versions 2 and 3) has a normal key of its own, two bytes apart from mktplinkfw's.
+    /// </summary>
     private static readonly byte[] SaltNormal = { 0xDC, 0xD7, 0x3A, 0xA5, 0xC3, 0x95, 0x98, 0xFB, 0xDD, 0xF9, 0xE7, 0xF4, 0x0E, 0xAE, 0x47, 0x38 };
+    private static readonly byte[] SaltNormal2 = { 0xDC, 0xD7, 0x3A, 0xA5, 0xC3, 0x95, 0x98, 0xFB, 0xDC, 0xF9, 0xE7, 0xF4, 0x0E, 0xAE, 0x47, 0x37 };
     private static readonly byte[] SaltBoot = { 0x8C, 0xEF, 0x33, 0x5B, 0xD5, 0xC5, 0xCE, 0xFA, 0xA7, 0x9C, 0x28, 0xDA, 0xB2, 0xE9, 0x0F, 0x42 };
 
     /// <summary>The key tplink-safeloader puts in front of the image when it computes the MD5.</summary>
@@ -84,7 +88,17 @@ public sealed partial class TpLinkImage : FirmwareImage
     // ---------------------------------------------------------------- classic
 
     /// <summary>Where the fields of the classic header lie in each version.</summary>
-    private sealed record Classic(uint Version, int HwId, int Md5, int Lengths, string Vendor, string FwVersion);
+    private sealed record Classic(uint Version, int HwId, int Md5, int Lengths, string Vendor, string FwVersion)
+    {
+        /// <summary>
+        /// Where the root filesystem starts: rootfs_ofs, or right behind the kernel for an image made with -a (mktplinkfw
+        /// then pads kernel_len and leaves the layout's rootfs_ofs in the header); 0 for a combined image.
+        /// </summary>
+        public long RootfsAt { get; init; }
+
+        /// <summary>The key of the MD5 of an image without a bootloader.</summary>
+        public byte[] Salt => Version == 1 ? SaltNormal : SaltNormal2;
+    }
 
     /// <summary>Reads and checks the classic header: the fields must fit the file and the root filesystem must be there.</summary>
     private static Classic? ClassicLayout(IBlockSource source)
@@ -108,18 +122,31 @@ public sealed partial class TpLinkImage : FirmwareImage
         long limit = source.Length;
         if (fwLength < ClassicHeaderSize || fwLength < kernelOfs + kernelLen) return null;
         if (kernelLen == 0 || kernelOfs != ClassicHeaderSize || kernelOfs + kernelLen > limit) return null;
-        // A combined image (rootfs_ofs 0) carries the root filesystem inside the kernel blob.
-        if (rootfsOfs != 0 && (rootfsOfs < kernelOfs + kernelLen || rootfsOfs >= limit || rootfsOfs + rootfsLen > limit)) return null;
         if (bootLen > 0 && bootOfs + bootLen > limit) return null;
-        // Many byte strings start with 01 00 00 00: the vendor or a filesystem where the header says must confirm it.
-        bool vendor = layout.Vendor.StartsWith("TP-LINK", StringComparison.OrdinalIgnoreCase) || layout.Vendor.StartsWith("OpenWrt", StringComparison.Ordinal);
-        if (!vendor)
+        bool Readable(long at)
         {
-            if (rootfsOfs == 0) return null;
-            (PartitionContent content, _, _) = Identify(new SubBlockSource(source, rootfsOfs, limit - rootfsOfs, ownsInner: false));
-            if (!new FirmwarePart { Content = content }.IsReadable) return null;
+            using var data = new SubBlockSource(source, at, limit - at, ownsInner: false);
+            return new FirmwarePart { Content = Identify(data).Content }.IsReadable;
         }
-        return layout;
+        // A combined image carries the root filesystem inside the kernel blob: mktplinkfw leaves rootfs_ofs and
+        // rootfs_len 0, mktplinkfw2 leaves them 0xFFFFFFFF.
+        long rootfsAt = 0;
+        if (rootfsOfs != 0 && !(rootfsOfs == uint.MaxValue && rootfsLen == uint.MaxValue))
+        {
+            bool listed = rootfsOfs >= kernelOfs + kernelLen && rootfsOfs < limit && rootfsOfs + rootfsLen <= limit;
+            long behind = kernelOfs + kernelLen;
+            if (listed && (rootfsOfs == behind || Readable(rootfsOfs))) rootfsAt = rootfsOfs;
+            // -a: the root filesystem follows the (padded) kernel whatever rootfs_ofs says.
+            else if (behind + rootfsLen <= limit && rootfsLen > 0 && Readable(behind)) rootfsAt = behind;
+            else if (listed) rootfsAt = rootfsOfs;
+            else return null;
+        }
+        // Many byte strings start with 01 00 00 00: the vendor or a filesystem where the header says must confirm it.
+        // Versions 2 and 3 have no vendor string, but fixed bytes: 0x55AA at 0x8C and 0xA5 at 0x90 (mktplinkfw2's unk4, unk5).
+        bool vendor = layout.Vendor.StartsWith("TP-LINK", StringComparison.OrdinalIgnoreCase) || layout.Vendor.StartsWith("OpenWrt", StringComparison.Ordinal)
+                      || (layout.Version > 1 && h[0x8C] == 0x55 && h[0x8D] == 0xAA && h[0x90] == 0xA5);
+        if (!vendor && (rootfsAt == 0 || !Readable(rootfsAt))) return null;
+        return layout with { RootfsAt = rootfsAt };
     }
 
     private static TpLinkImage ReadClassic(IBlockSource source, Classic layout, CancellationToken ct)
@@ -142,7 +169,7 @@ public sealed partial class TpLinkImage : FirmwareImage
             // The MD5 of the whole file with the key in place of the sum (mktplinkfw: md5salt_boot when the image carries
             // a bootloader, md5salt_normal otherwise).
             byte[] stored = h.AsSpan(layout.Md5, 16).ToArray();
-            image.Md5Matches = Md5Classic(source, source.Length, layout.Md5, bootLen > 0 ? SaltBoot : SaltNormal, ct).AsSpan().SequenceEqual(stored);
+            image.Md5Matches = Md5Classic(source, source.Length, layout.Md5, bootLen > 0 ? SaltBoot : layout.Salt, ct).AsSpan().SequenceEqual(stored);
             if (image.Md5Matches == false)
                 image.Warnings.Add("The MD5 sum in the TP-Link header does not match the way this program computes it: the image was changed or damaged, " +
                                    "or it was made with a key this program does not know.");
@@ -164,12 +191,14 @@ public sealed partial class TpLinkImage : FirmwareImage
         }
         if (bootLen > 0) Add("bootloader", bootOfs, bootLen, "the bootloader the header lists");
         Add("kernel", kernelOfs, kernelLen, "the kernel the header lists");
-        if (rootfsOfs != 0)
+        if (layout.RootfsAt != 0 && layout.RootfsAt == rootfsOfs)
             // The root filesystem runs to the end of the file (OpenWrt's 0xdeadc0de padding may follow it).
             Add("rootfs", rootfsOfs, Math.Max(rootfsLen, limit - rootfsOfs), "the root filesystem the header lists");
-        else if (image.FindTrailing(kernelOfs, ct) is { } inside)
+        else if (layout.RootfsAt != 0)
+            Add("rootfs", layout.RootfsAt, limit - layout.RootfsAt, $"behind the kernel (made with -a; the header says 0x{rootfsOfs:X})");
+        else if (layout.RootfsAt == 0 && image.FindTrailing(kernelOfs, ct) is { } inside)
             // A combined image: the root filesystem behind the kernel inside the kernel blob.
-            Add("rootfs", inside, limit - inside, "inside the combined kernel image (rootfs_ofs 0)");
+            Add("rootfs", inside, limit - inside, "inside the combined kernel image (no rootfs_ofs)");
         image.Parts = parts.OrderBy(p => p.Offset).Select((p, i) => new FirmwarePart
         {
             Index = i, Name = p.Name, Offset = p.Offset, Length = p.Length,
@@ -363,7 +392,7 @@ public sealed partial class TpLinkImage : FirmwareImage
             yield return ("partition names", new MemoryBlockSource(Encoding.ASCII.GetBytes(string.Join(",", _table.Entries.Select(e => e.Name)))));
         }
         foreach (FirmwarePart p in Parts)
-            if (p.Name != open.Name && !(open.Name == "rootfs" && p.Name == "kernel" && Field(5) == 0)) yield return (p.Name, Open(p));
+            if (p.Name != open.Name && !(open.Name == "rootfs" && p.Name == "kernel" && _classic?.RootfsAt == 0)) yield return (p.Name, Open(p));
         foreach ((string name, IBlockSource data) in FwtoolSections()) yield return (name, data);
     }
 
@@ -372,7 +401,7 @@ public sealed partial class TpLinkImage : FirmwareImage
     /// <summary>The end of the content the header describes, and whether mktplinkfw's JFFS2 marker and its padding follow it.</summary>
     private (long End, bool Marker, bool Padded) ClassicTail()
     {
-        long fwLength = Field(2), end = Field(5) == 0 ? ClassicHeaderSize + Field(4) : Field(5) + Field(6);
+        long fwLength = Field(2), end = _classic!.RootfsAt == 0 ? ClassicHeaderSize + Field(4) : _classic.RootfsAt + Field(6);
         long marker = (end + 0xFFFF) & ~0xFFFFL;
         bool hasMarker = marker + 4 <= ContentEnd && BinaryPrimitives.ReadUInt32BigEndian(Source.ReadBytes(marker, 4)) == 0xDEADC0DE;
         return (end, hasMarker, ContentEnd == fwLength);
@@ -409,7 +438,7 @@ public sealed partial class TpLinkImage : FirmwareImage
     private List<IBlockSource> ClassicPieces(FirmwarePart part, IBlockSource data, CancellationToken ct)
     {
         long fwLength = Field(2);
-        bool combined = Field(5) == 0;
+        bool combined = _classic!.RootfsAt == 0;
         (long _, bool marker, bool padded) = ClassicTail();
         var body = new List<IBlockSource> { Slice(ClassicHeaderSize, part.Offset), data };
         long end = part.Offset + data.Length;
@@ -427,7 +456,7 @@ public sealed partial class TpLinkImage : FirmwareImage
         byte[] header = (byte[])_header.Clone();
         if (combined) BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(_classic!.Lengths + 16), (uint)(part.Offset + data.Length - ClassicHeaderSize));
         else BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(_classic!.Lengths + 24), (uint)data.Length);
-        SaltNormal.CopyTo(header, _classic.Md5);
+        _classic.Salt.CopyTo(header, _classic.Md5);
         using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
         md5.AppendData(header);
         byte[] buf = new byte[1 << 20];
