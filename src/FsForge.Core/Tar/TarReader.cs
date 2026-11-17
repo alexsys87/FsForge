@@ -32,7 +32,7 @@ public sealed class TarReader
         compression = ArchiveCompression.None;
         byte[] head = new byte[Block];
         int n = source.Read(0, head);
-        if (ArchiveCodec.DetectCompression(head.AsSpan(0, n)) is { } c)
+        if (ArchiveCodec.DetectStreamCompression(head.AsSpan(0, n)) is { } c)
         {
             compression = c;
             try
@@ -71,9 +71,9 @@ public sealed class TarReader
     public static Result Read(IBlockSource source, string? tempDirectory = null,
         IProgress<ProgressInfo>? progress = null, CancellationToken ct = default)
     {
-        byte[] head = new byte[8];
+        byte[] head = new byte[16];
         int n = source.Read(0, head);
-        ArchiveCompression? detected = ArchiveCodec.DetectCompression(head.AsSpan(0, n));
+        ArchiveCompression? detected = ArchiveCodec.DetectStreamCompression(head.AsSpan(0, n));
         if (detected is null && ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } name)
         {
             byte[] first = new byte[Block];

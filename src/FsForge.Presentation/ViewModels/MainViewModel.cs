@@ -479,6 +479,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 : L.F("{0} · ramdisk {1} · ", android.Image.Kind == FsForge.Core.Android.AndroidImageKind.VendorBoot ? "vendor_boot" : "boot", android.Part.Name)) + info;
         if (_doc.Container is { } disk)
             info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
+        if (_doc.Archive is { } arc)
+            info = L.F("{0} в архиве {1} · ", arc.EntryName, ArchiveCodec.DisplayName(arc.Kind)) + info;
+        else if (_doc.OuterCompression is { } packed)
+            info += L.F(" · файл сжат {0}", ArchiveCodec.DisplayName(packed));
         DocumentInfo = info;
     }
 
@@ -582,7 +586,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool ok = await RunBusyAsync(L.T("Открытие ") + Path.GetFileName(path), (p, ct) =>
             doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
-                chooseAndroidPart: image => AskAndroidPart(path, image)));
+                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive)));
         if (!ok || doc is null) return false;
 
         SetDocument(doc);
@@ -646,6 +650,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 var vm = new PartitionChoiceViewModel(Path.GetFileName(path), image);
                 done.SetResult(_dialogs.ShowDialog(vm) ? vm.AndroidResult : null);
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>Lets the user pick the file of a zip or 7z archive to open; works like <see cref="AskPartition"/>.</summary>
+    private FsForge.Core.Archives.ArchiveEntry? AskArchiveEntry(string path, FsForge.Core.Archives.ImageArchive archive)
+    {
+        var done = new TaskCompletionSource<FsForge.Core.Archives.ArchiveEntry?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() =>
+        {
+            try
+            {
+                var vm = new PartitionChoiceViewModel(Path.GetFileName(path), archive);
+                done.SetResult(_dialogs.ShowDialog(vm) ? vm.EntryResult : null);
             }
             catch (Exception ex)
             {
@@ -734,7 +757,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static string StripExtensions(string fileName)
     {
         // "rootfs.ext4.gz" and "rootfs.tar.gz" both become "rootfs".
-        foreach (string outer in new[] { ".gz", ".xz", ".zst" })
+        foreach (string outer in new[] { ".gz", ".xz", ".zst", ".zstd", ".bz2", ".zip", ".7z" })
             if (fileName.EndsWith(outer, StringComparison.OrdinalIgnoreCase)) fileName = fileName[..^outer.Length];
         string stem = Path.GetFileNameWithoutExtension(fileName);
         return stem.Length > 0 ? stem : fileName;
@@ -1167,7 +1190,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool ok = await RunBusyAsync(L.T("Чтение ") + Path.GetFileName(path), (p, ct) =>
             source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
-                chooseAndroidPart: image => AskAndroidPart(path, image)));
+                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive)));
         if (!ok || source is null) return false;
 
         var clashing = source.Tree.Root.Children.Where(c => target.Find(c.Name) is not null).Select(c => c.Name).ToList();

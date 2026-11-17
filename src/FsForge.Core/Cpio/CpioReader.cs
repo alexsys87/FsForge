@@ -36,10 +36,10 @@ public sealed class CpioReader
     public static bool IsCpio(IBlockSource source, out ArchiveCompression compression)
     {
         compression = ArchiveCompression.None;
-        byte[] head = new byte[8];
+        byte[] head = new byte[16];
         int n = source.Read(0, head);
         if (Detect(head.AsSpan(0, n)) is not null) return true;
-        if (ArchiveCodec.DetectCompression(head.AsSpan(0, n)) is not { } c) return false;
+        if (ArchiveCodec.DetectStreamCompression(head.AsSpan(0, n)) is not { } c) return false;
         try
         {
             using Stream s = ArchiveCodec.OpenDecompressor(new BlockSourceStream(source, 0, source.Length), c);
@@ -70,7 +70,7 @@ public sealed class CpioReader
             long pos = 0;
             while (pos < source.Length)
             {
-                byte[] head = new byte[8];
+                byte[] head = new byte[16];
                 int n = source.Read(pos, head);
                 if (Detect(head.AsSpan(0, n)) is not null)
                 {
@@ -79,7 +79,7 @@ public sealed class CpioReader
                     if (!r.ReadParts(input, progress, ct)) break;
                     pos = input.Offset;
                 }
-                else if (ArchiveCodec.DetectCompression(head.AsSpan(0, n)) is { } c)
+                else if (ArchiveCodec.DetectStreamCompression(head.AsSpan(0, n)) is { } c)
                 {
                     // A compressed archive (possibly several in one stream) runs to the end of the file.
                     compression = c;

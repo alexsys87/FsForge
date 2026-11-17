@@ -37,7 +37,14 @@ internal static class Program
         A disk image with a partition table (SD card images: boot partition + root filesystem) is opened
         at its root filesystem partition; add part=<n> to any command to pick another one. "convert" writes
         the whole disk image again with only that partition replaced, unless the output name says otherwise
-        (.squashfs, .erofs, .cramfs, .romfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz or .zst are compressed.
+        (.squashfs, .erofs, .cramfs, .romfs, .ext4, .tar...) or container=0 is given. Output names ending in .gz, .xz, .zst
+        or .bz2 are compressed; .zip and .7z make an archive holding the image (as FlashTool writes them).
+
+        Images packed with gzip, xz, zstd or bzip2 (also several streams in a row: pigz, pbzip2, pzstd) and images
+        inside zip or 7z archives are unpacked to a temporary file first. An archive with several files is opened
+        at its image; add entry=<name> to pick another file. Saving into the same archive keeps the image's name
+        and carries the other files over. A SHA-256 checksum file next to the saved file (name.sha256,
+        SHA256SUMS) is updated and a block map (name.bmap) rebuilt.
 
         Android images are opened at what they hold: super.img (also sparse) at its largest logical partition,
         boot.img / init_boot.img / vendor_boot.img at the ramdisk (a cpio archive); add vol=<name> to pick another
@@ -62,8 +69,8 @@ internal static class Program
           romfs:    label=<text> align=16..65536
           f2fs:     size=<MiB> free=<MiB> label=<text> uuid=<uuid> xattrs=0|1 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
-          tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
-          cpio:     comp=none|gzip|xz|zstd|lz4 cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
+          tar:      comp=none|gzip|xz|zstd|bzip2|lz4 dialect=pax|gnu prefix=<text> level=<n> root=0|1
+          cpio:     comp=none|gzip|xz|zstd|bzip2|lz4 cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
           ubifs:    comp=lzo|zlib|zstd|none minio=<bytes> leb=<bytes> maxleb=<count> fanout=<n> jrn=<MiB> fixup=0|1 allroot=1
           jffs2:    comp=zlib|lzo|rtime|none endian=little|big erase=<bytes> cleanmarkers=0|1 cmsize=<bytes>
                     pagesize=<bytes> pad=0|1 xattrs=0|1 allroot=1
@@ -78,8 +85,11 @@ internal static class Program
     /// <summary>UBI volume requested with vol=NAME on the command line; null when the image should decide.</summary>
     private static string? _volume;
 
+    /// <summary>File of a zip or 7z archive requested with entry=NAME on the command line; null when the archive should decide.</summary>
+    private static string? _entry;
+
     private static ImageDocument OpenImage(string path, bool searchEmbedded = true) =>
-        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition, volume: _volume);
+        ImageDocument.Open(path, searchEmbedded: searchEmbedded, partition: _partition, volume: _volume, archiveEntry: _entry);
 
     private static int Main(string[] args)
     {
@@ -101,6 +111,12 @@ internal static class Program
                 if (vol.Length == 4) throw new FsException($"Invalid option '{vol}'.");
                 _volume = vol[4..];
                 args = args.Where(x => !ReferenceEquals(x, vol)).ToArray();
+            }
+            if (Array.Find(args, x => x.StartsWith("entry=", StringComparison.OrdinalIgnoreCase)) is { } entry && args[0] != "pack")
+            {
+                if (entry.Length == 6) throw new FsException($"Invalid option '{entry}'.");
+                _entry = entry[6..];
+                args = args.Where(x => !ReferenceEquals(x, entry)).ToArray();
             }
             switch (args[0])
             {
@@ -230,7 +246,10 @@ internal static class Program
             Console.WriteLine($"romfs:       name '{ro.VolumeName}', {ro.Size} bytes, data aligned to {ro.DataAlignment}, checksum {(ro.ChecksumOk ? "ok" : "WRONG")}");
         if (doc.Tar is { } t)
             Console.WriteLine($"Archive:     {t.Entries} entries, compression {t.Compression}, prefix '{t.PathPrefix}'{(t.HasPaxHeaders ? ", pax" : "")}{(t.HasGnuExtensions ? ", gnu" : "")}");
-        if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {outer.ToString().ToLowerInvariant()}");
+        if (doc.Archive is { } arc)
+            Console.WriteLine($"Archive:     {ArchiveCodec.DisplayName(arc.Kind)} ({arc.Methods}), image '{arc.EntryName}'" +
+                              (arc.OtherFiles.Count > 0 ? $", {arc.OtherFiles.Count} other: {string.Join(", ", arc.OtherFiles)}" : ""));
+        else if (doc.OuterCompression is { } outer) Console.WriteLine($"Compressed:  {ArchiveCodec.DisplayName(outer)}");
         if (doc.Container is { } c)
         {
             Console.WriteLine($"Disk image:  {c.DiskLength} bytes, {c.Table.Scheme.ToString().ToUpperInvariant()} partition table");

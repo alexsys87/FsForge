@@ -3,7 +3,7 @@ using FsForge.Core.Compression;
 
 namespace FsForge.Core.Tar;
 
-/// <summary>Outer compression of a tar archive.</summary>
+/// <summary>Outer compression of a tar or cpio archive or of an image file.</summary>
 public enum ArchiveCompression
 {
     None,
@@ -13,6 +13,15 @@ public enum ArchiveCompression
 
     /// <summary>The legacy LZ4 stream ("lz4 -l"): what the kernel unpacks an initramfs from and Android packs ramdisks with.</summary>
     Lz4,
+
+    /// <summary>bzip2, including several streams in a row as pbzip2 writes them.</summary>
+    Bzip2,
+
+    /// <summary>A zip archive holding the image (with possibly other files); only for images, not for tar or cpio.</summary>
+    Zip,
+
+    /// <summary>A 7z archive holding the image (with possibly other files); only for images, not for tar or cpio.</summary>
+    SevenZip,
 }
 
 /// <summary>How names, numbers and attributes that do not fit a classic header are stored.</summary>
@@ -84,6 +93,8 @@ public sealed class TarOptions
 
     public void Validate()
     {
+        if (Compression is ArchiveCompression.Zip or ArchiveCompression.SevenZip)
+            throw new FsException("A tar archive can be compressed with gzip, xz, zstd, bzip2 or lz4, not put into a zip or 7z archive.");
         if (PathPrefix.Contains('\0') || PathPrefix.Contains('\\'))
             throw new FsException("The tar path prefix contains invalid characters.");
         if (PathPrefix.Length > 0 && !PathPrefix.EndsWith('/'))
@@ -103,13 +114,19 @@ public static class ArchiveCodec
         if (head.Length >= 6 && head[..6].SequenceEqual(XzFormat.HeaderMagic)) return ArchiveCompression.Xz;
         if (head.Length >= 4 && head[0] == 0x28 && head[1] == 0xB5 && head[2] == 0x2F && head[3] == 0xFD) return ArchiveCompression.Zstd;
         if (Compression.Lz4Legacy.IsLz4Legacy(head)) return ArchiveCompression.Lz4;
+        if (Bzip2Format.IsBzip2(head)) return ArchiveCompression.Bzip2;
+        if (Archives.SevenZipArchive.IsSevenZip(head)) return ArchiveCompression.SevenZip;
+        if (Archives.ZipImage.IsZip(head)) return ArchiveCompression.Zip;
         return null;
     }
+
+    /// <summary>Like <see cref="DetectCompression"/>, but only stream compressions (no zip or 7z): what a tar or cpio archive can be wrapped in.</summary>
+    public static ArchiveCompression? DetectStreamCompression(ReadOnlySpan<byte> head) =>
+        DetectCompression(head) is { } c && c is not (ArchiveCompression.Zip or ArchiveCompression.SevenZip) ? c : null;
 
     /// <summary>Names a compression we recognise but cannot read, or null.</summary>
     public static string? DetectUnsupported(ReadOnlySpan<byte> head)
     {
-        if (head.Length >= 3 && head[0] == (byte)'B' && head[1] == (byte)'Z' && head[2] == (byte)'h') return "bzip2";
         if (head.Length >= 4 && head[0] == 0x04 && head[1] == 0x22 && head[2] == 0x4D && head[3] == 0x18) return "LZ4 (frame format; only the legacy format of \"lz4 -l\" is read)";
         if (head.Length >= 4 && head[0] == 0x5D && head[1] == 0 && head[2] == 0) return "LZMA";
         if (head.Length >= 2 && head[0] == 0x1F && head[1] == 0x9D) return "compress (.Z)";
@@ -122,6 +139,8 @@ public static class ArchiveCodec
         ArchiveCompression.Xz => new XzInputStream(input),
         ArchiveCompression.Zstd => new ZstdSharp.DecompressionStream(input),
         ArchiveCompression.Lz4 => new Compression.Lz4LegacyInputStream(input),
+        ArchiveCompression.Bzip2 => new Bzip2InputStream(input),
+        ArchiveCompression.Zip or ArchiveCompression.SevenZip => throw new InvalidOperationException("zip and 7z archives are opened through their entries."),
         _ => input,
     };
 
@@ -131,6 +150,8 @@ public static class ArchiveCodec
         ArchiveCompression.Xz => new XzOutputStream(output, o.XzEffort, 1 << 22, o.Threads, leaveOpen: true),
         ArchiveCompression.Zstd => new ZstdSharp.CompressionStream(output, Math.Clamp(o.ZstdLevel, 1, 22), leaveOpen: true),
         ArchiveCompression.Lz4 => new Compression.Lz4LegacyOutputStream(output, o.Lz4Level, o.Threads, leaveOpen: true),
+        ArchiveCompression.Bzip2 => new Bzip2OutputStream(output, 9, o.Threads, leaveOpen: true),
+        ArchiveCompression.Zip or ArchiveCompression.SevenZip => throw new InvalidOperationException("zip and 7z archives are written through their entries."),
         _ => new PassThroughStream(output),
     };
 
@@ -157,6 +178,7 @@ public static class ArchiveCodec
         ArchiveCompression.Xz => ".tar.xz",
         ArchiveCompression.Zstd => ".tar.zst",
         ArchiveCompression.Lz4 => ".tar.lz4",
+        ArchiveCompression.Bzip2 => ".tar.bz2",
         _ => ".tar",
     };
 
@@ -168,13 +190,14 @@ public static class ArchiveCodec
         if (name.EndsWith(".tar.xz") || name.EndsWith(".txz")) return ArchiveCompression.Xz;
         if (name.EndsWith(".tar.zst") || name.EndsWith(".tzst")) return ArchiveCompression.Zstd;
         if (name.EndsWith(".tar.lz4")) return ArchiveCompression.Lz4;
+        if (name.EndsWith(".tar.bz2") || name.EndsWith(".tbz2") || name.EndsWith(".tbz")) return ArchiveCompression.Bzip2;
         if (name.EndsWith(".tar")) return ArchiveCompression.None;
         return null;
     }
 
     /// <summary>
     /// Compression a raw image gets when it is saved under this name: "sdcard.img.gz" is gzip,
-    /// "sdcard.img" is not compressed.
+    /// "backup.7z" is a 7z archive, "sdcard.img" is not compressed.
     /// </summary>
     public static ArchiveCompression ImageCompressionFromFileName(string path)
     {
@@ -182,8 +205,39 @@ public static class ArchiveCodec
         if (name.EndsWith(".gz")) return ArchiveCompression.Gzip;
         if (name.EndsWith(".xz")) return ArchiveCompression.Xz;
         if (name.EndsWith(".zst") || name.EndsWith(".zstd")) return ArchiveCompression.Zstd;
+        if (name.EndsWith(".bz2")) return ArchiveCompression.Bzip2;
+        if (name.EndsWith(".zip")) return ArchiveCompression.Zip;
+        if (name.EndsWith(".7z")) return ArchiveCompression.SevenZip;
         return ArchiveCompression.None;
     }
+
+    /// <summary>The extensions that mark a compressed image file, longest first.</summary>
+    public static readonly string[] ImageCompressionExtensions = { ".zstd", ".zst", ".bz2", ".zip", ".gz", ".xz", ".7z" };
+
+    /// <summary>"core-image.wic.zst" becomes "core-image.wic"; a name without a compression extension stays as it is.</summary>
+    public static string RemoveCompressionExtension(string fileName)
+    {
+        foreach (string ext in ImageCompressionExtensions)
+            if (fileName.Length > ext.Length && fileName.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) return fileName[..^ext.Length];
+        return fileName;
+    }
+
+    /// <summary>
+    /// Name of the image inside a new zip or 7z archive, as FlashTool derives it: "raspios.img.zip" holds
+    /// "raspios.img", "backup.7z" holds "backup.img".
+    /// </summary>
+    public static string InnerImageName(string archivePath)
+    {
+        string name = RemoveCompressionExtension(Path.GetFileName(archivePath));
+        return Path.GetExtension(name).Length > 1 ? name : name + ".img";
+    }
+
+    /// <summary>Short name of a compression for messages and the image information ("7z", "bzip2").</summary>
+    public static string DisplayName(ArchiveCompression c) => c switch
+    {
+        ArchiveCompression.SevenZip => "7z",
+        _ => c.ToString().ToLowerInvariant(),
+    };
 
     private sealed class PassThroughStream(Stream inner) : Stream
     {
