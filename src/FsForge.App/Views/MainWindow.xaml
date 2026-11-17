@@ -732,20 +732,38 @@
                         </ItemsControl.Template>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Button
-                                    Click="OnRecentButtonClick"
-                                    Style="{StaticResource RecentFileButtonStyle}"
-                                    ToolTip="{Binding Path}">
-                                    <StackPanel Orientation="Horizontal">
-                                        <ui:SymbolIcon Margin="0,0,8,0" Symbol="HardDrive20" />
-                                        <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
-                                        <TextBlock
-                                            Margin="10,0,0,0"
-                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
-                                            Text="{Binding Folder}"
-                                            TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
-                                </Button>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button
+                                        Grid.Column="0"
+                                        Click="OnRecentButtonClick"
+                                        Style="{StaticResource RecentFileButtonStyle}"
+                                        ToolTip="{Binding Path}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:SymbolIcon Margin="0,0,8,0" Symbol="HardDrive20" />
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding Name}" />
+                                            <TextBlock
+                                                Margin="10,0,0,0"
+                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                                Text="{Binding Folder}"
+                                                TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Button>
+                                    <!--  Remove from the list only; the file stays on disk  -->
+                                    <Button
+                                        Grid.Column="1"
+                                        Margin="4,0,0,4"
+                                        Padding="8,5"
+                                        HorizontalAlignment="Right"
+                                        Click="OnRecentRemoveClick"
+                                        Style="{StaticResource RecentFileButtonStyle}"
+                                        ToolTip="{l:Tr 'Убрать из списка'}">
+                                        <ui:SymbolIcon FontSize="12" Symbol="Dismiss20" />
+                                    </Button>
+                                </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

@@ -361,6 +361,12 @@ public partial class MainWindow
             _vm.OpenRecentCommand.Execute(item);
     }
 
+    private void OnRecentRemoveClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: RecentItem item })
+            _vm.RemoveRecent(item);
+    }
+
     private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
     {
         while (source is not null)
