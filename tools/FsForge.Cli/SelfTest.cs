@@ -98,6 +98,7 @@ internal static partial class SelfTest
             ArchiveTests(tree, reference);
             AndroidTests();
             FirmwareTests();
+            FitTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally

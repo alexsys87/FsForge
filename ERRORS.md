@@ -303,6 +303,18 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | Предупреждение: `Image <N> of the multi-file uImage reaches beyond the data the header covers.` | Размеры в таблице multi-file образа больше размера данных из заголовка. | Образ, скорее всего, повреждён; результату не доверяйте. |
 | Предупреждение: `The <формат> was opened from '<часть>' of the U-Boot uImage … (offset 0x<…>), but the firmware cannot be rebuilt around it: The firmware file is truncated… Saving writes the filesystem alone to a new file, and the firmware file stays as it is.` | Файл короче, чем указано в заголовке uImage: прошивку не пересобрать. | Сохраните ФС под новым именем; возьмите файл прошивки целиком. |
 
+## 7e. Образы FIT (.itb, image.ub)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The U-Boot FIT image '<описание>' holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | В FIT только ядро и деревья устройств, ramdisk сжат методом, который программа не распаковывает (lzma, lzo), или корневой ФС за FIT нет. | Откройте файл с корневой файловой системой; ramdisk можно извлечь `dumpimage -T flat_dt -p <номер> -o r.img файл.itb`. |
+| `'<узел>' of the U-Boot FIT image … holds kernel and cannot be opened.`, `… holds device tree …` | В `vol=` указан образ без файловой системы. | Выберите узел с ramdisk или файловой системой (список — `fsforge-cli info`). |
+| `The U-Boot FIT image … has no part '<имя>'. It holds: …` | Неверное имя узла в `vol=`. | Возьмите имя из списка (`kernel-1`, `ramdisk-1`, `ramdisk@1`…). |
+| `Corrupt device tree: …` (`its blocks lie outside it`, `the structure block has no end`, `a property lies outside …`, `unknown token …`, `too many or too deeply nested nodes`) | Дерево устройств повреждено или обрезано. | Получите файл заново; `dtc -I dtb -O dts файл.itb` покажет, где оно ломается. |
+| Предупреждение: `The <алгоритм> hash of image '<узел>' of the FIT image does not match its data…` | Данные образа изменены после `mkimage` или файл повреждён. | Образ открыт. Если файл скачан — скачайте заново; U-Boot такой образ загружать откажется. |
+| Предупреждение: `The data of image '<узел>' of the FIT image lies beyond the end of the file: the file is truncated.`, `Image '<узел>' of the FIT image has no data.` | Файл обрезан или внешние данные (`mkimage -E`) не приложены. | Возьмите файл целиком. |
+| Предупреждение: `The <формат> was opened from '<узел>' of the U-Boot FIT image … but the firmware cannot be rebuilt around it: Rebuilding a FIT image is not supported yet…` | Образы FIT пока только читаются. | Сохраните ФС под новым именем и соберите FIT заново (`mkimage -f`). Записать поверх файла FIT нельзя. |
+
 ## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |

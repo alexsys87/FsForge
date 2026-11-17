@@ -10,6 +10,11 @@
 #               take the changed part out of it and the reference tool (unsquashfs, GNU cpio) unpack it with the change,
 #               the kernel must stay byte for byte, and OpenWrt's 0xdeadc0de marker must sit on the first erase block
 #               boundary behind the new SquashFS. The filesystem alone is only written under another name.
+#               FIT images made by mkimage -f from an .its (needs dtc): data in the tree, outside it (-E) and at a fixed
+#               position (-p), with crc32, sha1 and sha256 hashes, a PetaLinux image.ub whose ramdisk is a uImage, and
+#               an OpenWrt .itb with the SquashFS behind it. Each image is opened with vol=<node name> and must read
+#               as the image file it was made from; the hashes mkimage computed must be found right, and a changed
+#               byte must be reported. FIT images are not rebuilt yet: saving over one is refused.
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -66,6 +71,7 @@ PY
   if $F convert fw/sysupgrade.bin fw/sysupgrade.bin format=tar 2> fw/tar.err; then bad "a tar archive was written over the firmware"
   else grep -q "Save under another name" fw/tar.err && ok "uImage: a tar archive is not written over the firmware" || bad "$(cat fw/tar.err)"; fi
 
+  fw_fit
   echo "uImage rebuilt by FsForge"
   head -c 300000 /dev/urandom > fw/big.bin
   cp fw/sysupgrade.bin fw/w_sys.bin
@@ -136,4 +142,57 @@ for a in sys.argv[2:]:
         m = (end + 65535) // 65536 * 65536
         assert d[m:m + 4] == b'\xde\xad\xc0\xde', 'no 0xdeadc0de at 0x%x' % m
 PY
+}
+
+fw_fit() {
+  if ! command -v dtc >/dev/null; then echo "FIT: skipped (dtc, which mkimage -f needs, is not installed)"; return; fi
+  echo "FIT images made by mkimage -f"
+  [ -e fw/initrd.cpio.gz ] || { (cd tree && find . | LC_ALL=C sort | cpio -o -H newc 2>/dev/null) | gzip -9 > fw/initrd.cpio.gz; $F dump fw/initrd.cpio.gz > fw/initrd.ref 2>/dev/null; }
+  gzip -9 -c fw/kernel.bin > fw/kernel.gz
+  echo '/dts-v1/; / { model = "board"; compatible = "vendor,board"; };' | dtc -I dts -O dtb -o fw/board-real.dtb - 2>/dev/null
+  cp img/xz.sqfs fw/root.sqfs
+  mkimage -A arm -O linux -T ramdisk -C gzip -n petalinux-image -d fw/initrd.cpio.gz fw/rootfs.cpio.gz.u-boot > /dev/null
+  fw_its() { # ramdisk-file : an .its with kernel, device tree, ramdisk and root filesystem
+    cat <<ITS
+/dts-v1/;
+/ {
+	description = "FsForge test FIT";
+	#address-cells = <1>;
+	images {
+		kernel-1 { data = /incbin/("kernel.gz"); type = "kernel"; arch = "arm"; os = "linux"; compression = "gzip"; load = <0x80008000>; entry = <0x80008000>;
+			hash-1 { algo = "crc32"; }; hash-2 { algo = "sha1"; }; };
+		fdt-1 { data = /incbin/("board-real.dtb"); type = "flat_dt"; arch = "arm"; compression = "none"; hash-1 { algo = "sha256"; }; };
+		ramdisk-1 { data = /incbin/("$1"); type = "ramdisk"; arch = "arm"; os = "linux"; compression = "none"; hash-1 { algo = "sha256"; }; };
+		rootfs-1 { data = /incbin/("root.sqfs"); type = "filesystem"; arch = "arm"; os = "linux"; compression = "none"; hash-1 { algo = "crc32"; }; };
+	};
+	configurations { default = "config-1"; config-1 { kernel = "kernel-1"; fdt = "fdt-1"; ramdisk = "ramdisk-1"; }; };
+};
+ITS
+  }
+  fw_its initrd.cpio.gz > fw/fit.its; fw_its rootfs.cpio.gz.u-boot > fw/peta.its
+  (cd fw && mkimage -f fit.its fit.itb > /dev/null && mkimage -E -f fit.its fit-ext.itb > /dev/null && mkimage -E -p 0x1000 -f fit.its fit-pos.itb > /dev/null \
+     && mkimage -f peta.its image.ub > /dev/null) || { bad "mkimage -f failed"; return; }
+  local f
+  for f in fit fit-ext fit-pos image; do
+    local file=fw/$f.itb; [ $f = image ] && file=fw/image.ub
+    if $F dump $file vol=rootfs-1 2>/dev/null | cmp -s - tree.ref && $F dump $file vol=ramdisk-1 2>/dev/null | cmp -s - fw/initrd.ref; then
+      ok "FIT $(basename $file): rootfs-1 and ramdisk-1 read as their image files"
+    else bad "FIT $(basename $file): content differs"; fi
+    $F info $file vol=rootfs-1 > fw/$f.info 2>&1
+    grep -q "5 hash(es) checked, 0 wrong" fw/$f.info && ok "FIT $(basename $file): the hashes mkimage made are right" || bad "FIT hashes: $(grep -i hash fw/$f.info | head -2)"
+  done
+  grep -q "inside a uImage 'petalinux-image'" fw/image.info && ok "image.ub: the ramdisk inside its uImage is found" || bad "image.ub ramdisk: $(grep ramdisk fw/image.info)"
+  python3 - fw/fit.itb fw/fit-bad.itb <<'PY'
+import sys
+d = bytearray(open(sys.argv[1], 'rb').read()); at = d.index(b'hsqs') + 2000; d[at] ^= 1
+open(sys.argv[2], 'wb').write(d)
+PY
+  $F info fw/fit-bad.itb vol=rootfs-1 2> fw/fit-bad.err > /dev/null; grep -q "crc32 hash of image 'rootfs-1'.*does not match" fw/fit-bad.err \
+    && ok "FIT: a changed byte of rootfs-1 is reported by its crc32" || bad "FIT changed byte: $(cat fw/fit-bad.err)"
+  (cd fw && printf '/dts-v1/;\n/ { description = "OpenWrt"; images { kernel-1 { data = /incbin/("kernel.gz"); type = "kernel"; compression = "gzip"; hash-1 { algo = "sha1"; }; }; };\n configurations { default = "c"; c { kernel = "kernel-1"; }; }; };\n' > owrt.its \
+     && mkimage -f owrt.its owrt.itb > /dev/null)
+  python3 -c "import sys; k=open('fw/owrt.itb','rb').read(); k+=b'\xff'*(-len(k)%65536); open('fw/owrt-sysupgrade.itb','wb').write(k+open('fw/root.sqfs','rb').read())"
+  cmpdump "FIT: OpenWrt .itb, SquashFS behind it" fw/owrt-sysupgrade.itb tree.ref
+  if $F edit fw/fit.itb fw/fit.itb rm:/etc 2> fw/fit-same.err; then bad "a FIT image was saved over"
+  else grep -q "Save under another name" fw/fit-same.err && ok "FIT: saving over the image is refused" || bad "$(cat fw/fit-same.err)"; fi
 }

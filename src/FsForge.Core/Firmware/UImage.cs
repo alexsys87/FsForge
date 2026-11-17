@@ -22,8 +22,6 @@ public sealed class UImage : FirmwareImage
 
     private const byte TypeMulti = 4;
 
-    /// <summary>How far behind the image a root filesystem is looked for.</summary>
-    private const long TrailingScan = 256L << 20;
 
     /// <summary>Erase blocks larger than this are not assumed when padding is kept aligned.</summary>
     private const long MaxAlignment = 256 << 10;
@@ -80,6 +78,8 @@ public sealed class UImage : FirmwareImage
     public string OsName => Os switch { 5 => "Linux", 17 => "U-Boot", 0 => "none", _ => $"OS {Os}" };
     public string ArchitectureName => ArchText(Architecture);
     public string CompressionName => CompressionText(Compression);
+
+    public override string ShortKind => "uImage";
 
     public override string Kind => Type == TypeMulti ? "U-Boot uImage (multi-file)" : "U-Boot uImage";
 
@@ -530,60 +530,6 @@ public sealed class UImage : FirmwareImage
     /// <summary>The file ends with a block of OpenWrt's fwtool (metadata or signature): the trailer magic "FWx0".</summary>
     private bool HasFwtoolTrailer() =>
         Source.Length >= _end + 16 && Source.ReadBytes(Source.Length - 16, 4).AsSpan().SequenceEqual("FWx0"u8);
-
-    /// <summary>
-    /// The start of a root filesystem behind the image, or null. OpenWrt puts SquashFS (or UBI, JFFS2) there,
-    /// often at the next erase block boundary.
-    /// </summary>
-    private long? FindTrailing(long end, CancellationToken ct)
-    {
-        long start = SkipErased((end + 3) & ~3L, ct);
-        if (start >= Source.Length) return null;
-        long limit = Math.Min(Source.Length - start, TrailingScan);
-        long found = Jffs2OrOtherAt(start) ? start : -1;
-        if (found < 0)
-        {
-            long squash = SquashFs.SquashFsReader.FindEmbedded(Source, start, limit, ct);
-            long ubi = Ubifs.UbiImage.FindEmbedded(Source, start, squash > 0 ? squash - start : limit, ct);
-            found = ubi > 0 ? ubi : squash;
-        }
-        if (found < 0)
-        {
-            // Other filesystems are only looked for at erase block boundaries close behind the kernel.
-            for (long at = (start + 0xFFFF) & ~0xFFFFL; at < start + Math.Min(limit, 4L << 20); at += 0x10000)
-            {
-                ct.ThrowIfCancellationRequested();
-                if (Jffs2OrOtherAt(at)) { found = at; break; }
-            }
-        }
-        return found >= 0 ? found : null;
-    }
-
-    /// <summary>The first word at or after <paramref name="at"/> that is not erased flash (0xFF), as padding to an erase block leaves it.</summary>
-    private long SkipErased(long at, CancellationToken ct)
-    {
-        byte[] buf = new byte[1 << 16];
-        long limit = Math.Min(Source.Length, at + (16L << 20));
-        while (at < limit)
-        {
-            ct.ThrowIfCancellationRequested();
-            int n = Source.Read(at, buf.AsSpan(0, (int)Math.Min(buf.Length, limit - at))) & ~3;
-            if (n <= 0) break;
-            int i = buf.AsSpan(0, n).IndexOfAnyExcept((byte)0xFF);
-            if (i >= 0) return at + (i & ~3);
-            at += n;
-        }
-        return at;
-    }
-
-    /// <summary>True when a readable filesystem other than SquashFS starts here.</summary>
-    private bool Jffs2OrOtherAt(long at)
-    {
-        using var tail = new SubBlockSource(Source, at, Source.Length - at, ownsInner: false);
-        (PartitionContent content, _, _) = Identify(tail);
-        return content is PartitionContent.Ext or PartitionContent.Erofs or PartitionContent.Cramfs or PartitionContent.Romfs
-            or PartitionContent.F2fs or PartitionContent.Ubi or PartitionContent.Ubifs or PartitionContent.Jffs2 or PartitionContent.SquashFs;
-    }
 
     private uint DataCrcOf(long offset, long length, CancellationToken ct)
     {

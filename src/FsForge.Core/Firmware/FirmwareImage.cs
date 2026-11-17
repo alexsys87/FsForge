@@ -60,6 +60,9 @@ public abstract class FirmwareImage
     /// <summary>"U-Boot uImage", "U-Boot uImage (multi-file)".</summary>
     public abstract string Kind { get; }
 
+    /// <summary>A short name of the kind for a status line: "uImage", "FIT".</summary>
+    public abstract string ShortKind { get; }
+
     /// <summary>The kind with the name the image carries: "U-Boot uImage 'OpenWrt Linux-6.6.73'".</summary>
     public abstract string Description { get; }
 
@@ -93,11 +96,70 @@ public abstract class FirmwareImage
     public abstract IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open);
 
     /// <summary>True when the file starts with a firmware header this program understands.</summary>
-    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source);
+    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source);
 
     /// <summary>Reads the firmware header and finds the parts; null when the file has none.</summary>
     public static FirmwareImage? TryRead(IBlockSource source, CancellationToken ct = default) =>
-        UImage.IsUImage(source) ? UImage.Read(source, ct) : null;
+        UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct) : null;
+
+    // ---------------------------------------------- filesystem behind the image
+
+    /// <summary>How far behind the image a root filesystem is looked for.</summary>
+    private const long TrailingScan = 256L << 20;
+
+    /// <summary>
+    /// The start of a root filesystem behind the image, or null. OpenWrt puts SquashFS (or UBI, JFFS2) there,
+    /// often at the next erase block boundary.
+    /// </summary>
+    protected long? FindTrailing(long end, CancellationToken ct)
+    {
+        long start = SkipErased((end + 3) & ~3L, ct);
+        if (start >= Source.Length) return null;
+        long limit = Math.Min(Source.Length - start, TrailingScan);
+        long found = Jffs2OrOtherAt(start) ? start : -1;
+        if (found < 0)
+        {
+            long squash = SquashFs.SquashFsReader.FindEmbedded(Source, start, limit, ct);
+            long ubi = Ubifs.UbiImage.FindEmbedded(Source, start, squash > 0 ? squash - start : limit, ct);
+            found = ubi > 0 ? ubi : squash;
+        }
+        if (found < 0)
+        {
+            // Other filesystems are only looked for at erase block boundaries close behind the kernel.
+            for (long at = (start + 0xFFFF) & ~0xFFFFL; at < start + Math.Min(limit, 4L << 20); at += 0x10000)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (Jffs2OrOtherAt(at)) { found = at; break; }
+            }
+        }
+        return found >= 0 ? found : null;
+    }
+
+    /// <summary>The first word at or after <paramref name="at"/> that is not erased flash (0xFF), as padding to an erase block leaves it.</summary>
+    protected long SkipErased(long at, CancellationToken ct)
+    {
+        byte[] buf = new byte[1 << 16];
+        long limit = Math.Min(Source.Length, at + (16L << 20));
+        while (at < limit)
+        {
+            ct.ThrowIfCancellationRequested();
+            int n = Source.Read(at, buf.AsSpan(0, (int)Math.Min(buf.Length, limit - at))) & ~3;
+            if (n <= 0) break;
+            int i = buf.AsSpan(0, n).IndexOfAnyExcept((byte)0xFF);
+            if (i >= 0) return at + (i & ~3);
+            at += n;
+        }
+        return at;
+    }
+
+    /// <summary>True when a readable filesystem other than SquashFS starts here.</summary>
+    protected bool Jffs2OrOtherAt(long at)
+    {
+        using var tail = new SubBlockSource(Source, at, Source.Length - at, ownsInner: false);
+        (PartitionContent content, _, _) = Identify(tail);
+        return content is PartitionContent.Ext or PartitionContent.Erofs or PartitionContent.Cramfs or PartitionContent.Romfs
+            or PartitionContent.F2fs or PartitionContent.Ubi or PartitionContent.Ubifs or PartitionContent.Jffs2 or PartitionContent.SquashFs;
+    }
 
     // ------------------------------------------------------------ content
 
