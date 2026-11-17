@@ -37,7 +37,7 @@ public sealed class AndroidPart
 
     /// <summary>The part holds a filesystem or archive this program can open.</summary>
     public bool IsReadable => Content is PartitionContent.Ext or PartitionContent.Erofs or PartitionContent.SquashFs
-        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.Fat or PartitionContent.Cpio;
+        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.Fat or PartitionContent.Cpio or PartitionContent.F2fs;
 
     public override string ToString()
     {

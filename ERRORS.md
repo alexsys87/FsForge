@@ -38,7 +38,7 @@
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `The file cannot be opened: <текст системы>` | Файла нет, нет прав на чтение, файл занят другой программой без общего доступа. | Проверьте путь и права; закройте программу, которая держит файл (эмулятор, программа записи карт); скопируйте файл в другую папку. |
-| `The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
+| `The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, F2FS, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive.` | Формат не распознан. | Убедитесь, что это образ файловой системы, а не, например, образ прошивки в собственном формате производителя. Включите Настройки → «Искать SquashFS и UBI внутри прошивок, если файл не образ». |
 | …`It looks like bzip2 / LZ4 / LZMA / compress (.Z) compressed data.` | Файл сжат методом, который программа не распаковывает. | Распакуйте его сторонней программой (7-Zip, `bunzip2`, `lz4 -d`, `unlzma`) и откройте результат. |
 | …`It was unpacked from a <gzip/xz/zstd> file, but the content is not a known image.` | Внешнее сжатие снято, но внутри не образ. | Проверьте, что внутри: возможно, это архив другого типа или прошивка производителя. |
 | `The <gzip/xz/zstd> data is damaged: <подробности>` | Сжатый файл `*.img.gz`, `*.ext4.xz`, `*.zst` повреждён или обрезан. | Скачайте файл заново; проверьте `gzip -t`, `xz -t`, `zstd -t`. |
@@ -54,7 +54,7 @@
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `None of the partitions of this disk image holds SquashFS, EROFS, ext2/3/4 or FAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, exFAT, F2FS, swap и т. п.). | Редактируются разделы SquashFS, EROFS, ext2/3/4 и FAT12/16/32. Раздел NTFS или exFAT можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
+| `None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 or FAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, exFAT, swap и т. п.). | Редактируются разделы SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 и FAT12/16/32. Раздел NTFS или exFAT можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
 | `The disk image has no partition <N>. Its partitions: <список>.` | В `fsforge-cli` указан несуществующий `part=<N>`. | Посмотрите номера разделов: `fsforge-cli info образ.img`. |
 | `Partition <N> holds <формат>, not SquashFS, EROFS, ext2/3/4 or FAT, and cannot be edited.` | Выбран раздел с неподдерживаемой файловой системой. | Выберите другой раздел. |
 | `The selected partition does not hold SquashFS, EROFS, ext2/3/4 or FAT.`; в окне выбора — «В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.» | То же в окне выбора раздела. | Выберите раздел с пометкой SquashFS, EROFS, ext или FAT. |
@@ -253,6 +253,23 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 
 Образ CramFS для другого порядка байтов (big-endian для MIPS и PowerPC) или с блоком больше 4 КБ
 FsForge открывает и сохраняет, но ядро x86 или ARM такой образ не смонтирует — это не ошибка образа.
+
+## 7c. Чтение F2FS
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| Предупреждение: `<N> file(s) are encrypted (file-based encryption, as on the userdata partition of Android): their content cannot be read and is shown empty.`, `<N> director(y/ies) have encrypted names: they are shown as they are stored.` | Файловое шифрование (fscrypt) раздела userdata: ключи хранятся в защищённом хранилище телефона, без них содержимое не расшифровать. | Снимите данные с работающего устройства (`adb pull`, резервная копия) — там файлы уже расшифрованы. При сохранении образа зашифрованные файлы станут пустыми. |
+| Предупреждение: `The F2FS filesystem was not cleanly unmounted: what was written after its last checkpoint (fsync without a checkpoint) is not shown.` | Образ снят с работающего или внезапно выключенного устройства. | Показано состояние на последней контрольной точке — так же образ видит `fsck.f2fs`. Если нужны последние изменения, смонтируйте образ ядром Linux (оно восстановит записи после fsync) и отмонтируйте. |
+| Предупреждение: `The checkpoint of the F2FS image records an error: the filesystem should be checked with fsck.f2fs.` | Ядро обнаружило ошибку и отметило это в контрольной точке. | Проверьте образ: `fsck.f2fs -f <образ>`; либо сохраните его в FsForge заново — будет записан новый образ. |
+| Предупреждение: `The primary superblock of the F2FS image is damaged; the backup copy was used.` | Первая копия суперблока (блок 0) повреждена. | Образ открыт по резервной копии; сохраните его заново. |
+| Предупреждение: `The F2FS image is shorter than its superblock says (<N> bytes): it may be truncated.` | Файл короче файловой системы: образ недокачан или снят не целиком. | Если обрезан только неиспользуемый хвост, файлы читаются; иначе получите образ заново. |
+| `The F2FS image is truncated: block <N> lies outside the file.` | Нужный блок лежит за концом файла. | Получите образ заново целиком (`dd` всего раздела). |
+| Предупреждение: `The F2FS image is made for a zoned device.` | Образ для зонированного накопителя (SMR, ZNS). | Чтение обычно работает; запись делает образ для обычного накопителя. |
+| `The F2FS filesystem spans several devices, which is not supported.` | Файловая система на нескольких устройствах (`mkfs.f2fs -c`). | Распакуйте в Linux, смонтировав все устройства. |
+| `The F2FS file is compressed with LZO-RLE, which is not supported.`, `…with an unknown method (<N>).` | Файл сжат методом, которого нет в программе (ошибка относится к этому файлу). | Распакуйте файл в Linux; остальные файлы читаются. |
+| `Corrupt F2FS image: neither copy of the superblock is valid.`, `Corrupt F2FS image: no valid checkpoint.`, `Corrupt F2FS checkpoint: …` (invalid NAT bitmap size, invalid summary position, invalid NAT journal) | Повреждены обе копии суперблока или обе контрольные точки. | Получите образ заново; попробуйте `fsck.f2fs -f` в Linux. |
+| `Corrupt F2FS image: …` (node <N> is beyond the NAT / has an invalid address / does not belong there, inode <N> has an invalid layout / extra size / compression cluster size, a directory is referenced more than once, a block lies outside the main area, an invalid directory entry…), `Corrupt compressed data in inode <N>.` | Повреждённые узлы, иноды, каталоги или сжатые данные. | Получите образ заново. Повреждение одного файла не мешает открыть образ: файл пропускается с предупреждением `'<путь>' was skipped: …`. |
+| Предупреждение: `The extended attributes of inode <N> cannot be read: …` | Повреждён узел атрибутов. | Атрибуты объекта потеряны; при необходимости задайте их заново. |
 
 ## 7b. Контейнеры Android (super.img, boot.img, vendor_boot.img)
 
@@ -458,6 +475,22 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 EROFS хранит всё, что есть в дереве: владельцев, права, время (с секундной точностью), ссылки,
 устройства, сокеты, жёсткие ссылки, расширенные атрибуты `user.`, `trusted.`, `security.` и POSIX ACL.
 «Разреженность» файлов не сохраняется: нули сжимаются, а без сжатия записываются как есть.
+
+### Запись F2FS
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The content does not fit into an F2FS filesystem of <N> MiB: it needs about <M> MiB of data in <K> segments, the filesystem has room for <L> MiB.`, `The content does not fit into the F2FS filesystem.` | Заданный размер (или раздел образа диска) меньше, чем нужно содержимому вместе с резервом под сборку мусора. | Оставьте размер пустым (наименьший подходящий), увеличьте его или удалите часть файлов. Последний раздел MBR образа диска увеличивается сам. |
+| `An F2FS filesystem of <N> MiB is too small (or too large) to be made.` | Меньше 40 МБ F2FS не бывает: резерв и запас под сборку мусора занимают несколько десятков сегментов по 2 МБ. | Задайте больший размер или выберите ext4 / SquashFS для маленьких разделов. |
+| `'<путь>': the name is longer than 255 bytes, the limit of F2FS.`, `A symbolic link target longer than 4096 bytes cannot be stored in F2FS.` | Ограничения формата. | Переименуйте объект или сократите ссылку. |
+| `The directory '<путь>' holds too many entries for F2FS.`, `The content has more objects than this F2FS filesystem can hold.`, `A file is too large for F2FS.`, `The content is too large for an F2FS image.` | Превышены пределы формата (около 4 млрд объектов, файл до 3,94 ТБ). | Разделите содержимое. |
+| Предупреждение: `The extended attributes of <N> object(s) do not fit into an F2FS xattr node (4 KiB) and were left out.` | Все атрибуты объекта вместе больше места в узле атрибутов. | Атрибуты этих объектов потеряны; если они нужны — ext4 или EROFS. |
+| `The F2FS volume name must not be longer than 512 characters.`, `The F2FS size must not be negative.`; в окне параметров — «Размер образа — целое число мегабайт…», «Запас свободного места — целое неотрицательное число мегабайт.» | Неверные параметры. | Исправьте параметр. |
+| `Only UBIFS and SquashFS can be wrapped into a UBI image.` | F2FS для блочных устройств; в томе UBI он не работает. | Для NAND-флеш выберите UBIFS. |
+
+Файлы, которые ядро хранило встроенными в инод или сжатыми, FsForge записывает обычными блоками —
+ядро читает их одинаково, а сжатие включается снова при следующей записи файла (если раздел смонтирован
+с `compress_extension`). Образ F2FS, сохраняемый на место, сохраняет размер, метку и UUID.
 
 ### Запись tar
 

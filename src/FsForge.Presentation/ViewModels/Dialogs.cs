@@ -772,6 +772,18 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 j.HasSummary ? L.T("сводки блоков (summary)") : null, j.HasXattrs ? L.T("расширенные атрибуты") : null,
             }.Where(x => x is not null).DefaultIfEmpty(L.T("нет"))));
         }
+        if (doc.F2fs is { } f2)
+        {
+            Add(L.T("Версия формата"), f2.Version);
+            Add(L.T("Блоки"), L.F("{0} по {1}", Fmt.Bytes(f2.BlockCount), Fmt.Size(f2.BlockSize)));
+            Add(L.T("Использовано"), L.F("{0} из {1}", Fmt.Size(f2.ValidBlocks * f2.BlockSize), Fmt.Size(f2.UserBlocks * f2.BlockSize)));
+            Add(L.T("Имя тома"), f2.VolumeName.Length > 0 ? f2.VolumeName : L.T("(нет)"));
+            Add("UUID", f2.Uuid.ToString());
+            Add(L.T("Возможности"), f2.FeatureNames.Count > 0 ? string.Join(", ", f2.FeatureNames) : L.T("нет"));
+            if (f2.CompressedFiles > 0) Add(L.T("Сжатых файлов"), Fmt.Bytes(f2.CompressedFiles));
+            if (f2.EncryptedFiles > 0) Add(L.T("Зашифрованных файлов"), L.F("{0} — их содержимое не читается", Fmt.Bytes(f2.EncryptedFiles)));
+            Add(L.T("Состояние"), f2.NotCleanlyUnmounted ? L.T("не отмонтирована штатно") : L.T("отмонтирована штатно"));
+        }
         if (doc.Cramfs is { } cr)
         {
             Add(L.T("Порядок байтов"), cr.BigEndian ? "big-endian" : "little-endian");

@@ -22,7 +22,7 @@ namespace FsForge.Cli;
 internal static class Program
 {
     private const string Usage = """
-        fsforge - SquashFS / EROFS / CramFS / romfs / ext2-3-4 / UBIFS / JFFS2 / FAT / tar / cpio image tool
+        fsforge - SquashFS / EROFS / CramFS / romfs / F2FS / ext2-3-4 / UBIFS / JFFS2 / FAT / tar / cpio image tool
 
           fsforge-cli info    <image>                       format, partitions of a disk image, statistics
           fsforge-cli ls      <image> [path]
@@ -51,7 +51,7 @@ internal static class Program
 
         options (key=value):
           container=0|1                                 write the filesystem alone / the whole disk image
-          format=squashfs|erofs|cramfs|romfs|ext2|ext3|ext4|ubifs|jffs2|fat|tar|cpio
+          format=squashfs|erofs|cramfs|romfs|f2fs|ext2|ext3|ext4|ubifs|jffs2|fat|tar|cpio
                                                         default: by output extension, else the source format
           verify=none|structure|content                 default: structure
           threads=<n>                                   compression threads (SquashFS, EROFS, CramFS, tar.xz); default: one per processor
@@ -60,6 +60,7 @@ internal static class Program
                     inline=0|1 dedup=0 xattrs=0|1 sharexattrs=0|1 allroot=1 label=<text> uuid=<uuid> time=<unix time>
           cramfs:   endian=little|big block=4096..65536 level=1..9 label=<text> edition=<n> pad=0|1 holes=0|1 allroot=1
           romfs:    label=<text> align=16..65536
+          f2fs:     size=<MiB> free=<MiB> label=<text> uuid=<uuid> xattrs=0|1 allroot=1
           ext:      bs=1024|2048|4096 size=<MiB> free=<MiB> isize=128|256 inodes=<n> journal=0|1 label=<text> reserved=<percent>
           tar:      comp=none|gzip|xz|zstd dialect=pax|gnu prefix=<text> level=<n> root=0|1
           cpio:     comp=none|gzip|xz|zstd|lz4 cpioformat=newc|crc prefix=|./ level=<n> effort=0..2 root=0|1 pad=0|1 allroot=1
@@ -218,6 +219,13 @@ internal static class Program
         if (doc.Cramfs is { } cr)
             Console.WriteLine($"CramFS:      {(cr.BigEndian ? "big" : "little")}-endian, block {cr.BlockSize}, {cr.Files} inodes, {cr.Blocks} blocks, name '{cr.VolumeName}', edition {cr.Edition}" +
                               $"{(cr.Padded ? ", 512-byte boot pad" : "")}{(cr.Holes ? ", holes" : "")}{(cr.CrcOk is { } ok ? ok ? ", CRC ok" : ", CRC WRONG" : ", no CRC")}");
+        if (doc.F2fs is { } f2)
+        {
+            Console.WriteLine($"F2FS:        version {f2.Version}, {f2.BlockCount} blocks of {f2.BlockSize}, {f2.MainSegments} main segments ({f2.FreeSegments} free), " +
+                              $"{f2.ValidBlocks} of {f2.UserBlocks} user blocks used, {f2.ValidInodes} inodes");
+            Console.WriteLine($"Label/UUID:  '{f2.VolumeName}' {f2.Uuid}, checkpoint {f2.CheckpointVersion}{(f2.NotCleanlyUnmounted ? ", not cleanly unmounted" : "")}");
+            Console.WriteLine($"Features:    {string.Join(' ', f2.FeatureNames)}{(f2.CompressedFiles > 0 ? $"; {f2.CompressedFiles} compressed files" : "")}{(f2.EncryptedFiles > 0 ? $"; {f2.EncryptedFiles} encrypted files" : "")}");
+        }
         if (doc.Romfs is { } ro)
             Console.WriteLine($"romfs:       name '{ro.VolumeName}', {ro.Size} bytes, data aligned to {ro.DataAlignment}, checksum {(ro.ChecksumOk ? "ok" : "WRONG")}");
         if (doc.Tar is { } t)
@@ -292,6 +300,9 @@ internal static class Program
         if (doc.Cramfs is { } cri)
             Console.Error.WriteLine($"cramfs endian={(cri.BigEndian ? "big" : "little")} block={cri.BlockSize} files={cri.Files} blocks={cri.Blocks} name='{cri.VolumeName}' " +
                                     $"edition={cri.Edition} pad={cri.Padded} holes={cri.Holes} flags=0x{cri.Flags:X} crc={cri.CrcOk?.ToString() ?? "none"}");
+        if (doc.F2fs is { } f2i)
+            Console.Error.WriteLine($"f2fs bs={f2i.BlockSize} blocks={f2i.BlockCount} main={f2i.MainSegments} features={string.Join(',', f2i.FeatureNames)} " +
+                                    $"compressed={f2i.CompressedFiles} encrypted={f2i.EncryptedFiles} cp={f2i.CheckpointVersion} label='{f2i.VolumeName}'");
         if (doc.Romfs is { } roi)
             Console.Error.WriteLine($"romfs name='{roi.VolumeName}' size={roi.Size} align={roi.DataAlignment} checksum={roi.ChecksumOk}");
         if (doc.Tar is { } t)
@@ -319,6 +330,7 @@ internal static class Program
                 else if (name.EndsWith(".erofs")) f = "erofs";
                 else if (name.EndsWith(".cramfs") || name.EndsWith(".cramfs.img")) f = "cramfs";
                 else if (name.EndsWith(".romfs")) f = "romfs";
+                else if (name.EndsWith(".f2fs")) f = "f2fs";
                 else if (name.EndsWith(".ext4") || name.EndsWith(".ext3") || name.EndsWith(".ext2")) f = name[^4..];
                 else if (name.EndsWith(".ubifs")) f = "ubifs";
                 else if (name.EndsWith(".jffs2")) f = "jffs2";
@@ -336,6 +348,7 @@ internal static class Program
             case "erofs": format = ImageFormat.Erofs; break;
             case "cramfs": format = ImageFormat.Cramfs; break;
             case "romfs": format = ImageFormat.Romfs; break;
+            case "f2fs": format = ImageFormat.F2fs; break;
             case "tar": format = ImageFormat.Tar; break;
             case "cpio": format = ImageFormat.Cpio; break;
             case "ext2": format = ImageFormat.Ext; kind = ExtKind.Ext2; break;
@@ -402,11 +415,11 @@ internal static class Program
                 case "pcluster": s.Erofs.PclusterSize = int.Parse(value); break;
                 case "inline": s.Erofs.InlineData = value != "0"; break;
                 case "sharexattrs": s.Erofs.ShareXattrs = value != "0"; break;
-                case "uuid": s.Erofs.Uuid = Guid.Parse(value); break;
+                case "uuid": s.Erofs.Uuid = Guid.Parse(value); s.F2fs.Uuid = Guid.Parse(value); break;
                 case "time": s.Erofs.BuildTime = long.Parse(value); break;
                 case "nofrag": s.SquashFs.NoFragments = value != "0"; break;
                 case "dedup": s.SquashFs.Deduplicate = s.Erofs.Deduplicate = value != "0"; break;
-                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = s.Cpio.AllRoot = s.Cramfs.AllRoot = value != "0"; break;
+                case "allroot": s.SquashFs.AllRoot = s.Ext.AllRoot = s.Tar.AllRoot = s.Ubifs.AllRoot = s.Jffs2.AllRoot = s.Erofs.AllRoot = s.Cpio.AllRoot = s.Cramfs.AllRoot = s.F2fs.AllRoot = value != "0"; break;
                 case "endian": s.Jffs2.BigEndian = s.Cramfs.BigEndian = value.ToLowerInvariant() switch
                 {
                     "big" or "be" => true,
@@ -422,7 +435,7 @@ internal static class Program
                 case "holes": s.Cramfs.Holes = value != "0"; break;
                 case "edition": s.Cramfs.Edition = uint.Parse(value); break;
                 case "align": s.Romfs.DataAlignment = int.Parse(value); break;
-                case "xattrs": s.Jffs2.StoreXattrs = s.Erofs.StoreXattrs = value != "0"; break;
+                case "xattrs": s.Jffs2.StoreXattrs = s.Erofs.StoreXattrs = s.F2fs.StoreXattrs = value != "0"; break;
                 case "minio": s.Ubifs.MinIoSize = s.Ubi.MinIoSize = int.Parse(value); break;
                 case "leb": s.Ubifs.LebSize = int.Parse(value); break;
                 case "maxleb": s.Ubifs.MaxLebCount = int.Parse(value); break;
@@ -436,15 +449,15 @@ internal static class Program
                 case "volsize": s.Ubi.VolumeBytes = long.Parse(value) << 20; break;
                 case "autoresize": s.Ubi.AutoResize = value != "0"; break;
                 case "bs": s.Ext.BlockSize = int.Parse(value); break;
-                case "size": s.Ext.SizeBytes = s.Fat.SizeBytes = long.Parse(value) << 20; break;
-                case "free": s.Ext.ExtraFreeBytes = s.Fat.ExtraFreeBytes = long.Parse(value) << 20; break;
+                case "size": s.Ext.SizeBytes = s.Fat.SizeBytes = s.F2fs.SizeBytes = long.Parse(value) << 20; break;
+                case "free": s.Ext.ExtraFreeBytes = s.Fat.ExtraFreeBytes = s.F2fs.ExtraFreeBytes = long.Parse(value) << 20; break;
                 case "isize": s.Ext.InodeSize = int.Parse(value); break;
                 case "inodes": s.Ext.InodeCount = uint.Parse(value); break;
                 case "journal": s.Ext.Journal = value != "0"; break;
                 case "label":
                     s.Ext.Label = s.Fat.Label = value;
                     if (s.Format == ImageFormat.Erofs) s.Erofs.VolumeName = value;
-                    s.Cramfs.VolumeName = s.Romfs.VolumeName = value;
+                    s.Cramfs.VolumeName = s.Romfs.VolumeName = s.F2fs.VolumeName = value;
                     break;
                 case "fattype": s.Fat.Type = value switch
                 {
