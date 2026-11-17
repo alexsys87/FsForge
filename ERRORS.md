@@ -254,6 +254,22 @@ EROFS читается из отдельного образа (`*.erofs`, `syste
 Образ CramFS для другого порядка байтов (big-endian для MIPS и PowerPC) или с блоком больше 4 КБ
 FsForge открывает и сохраняет, но ядро x86 или ARM такой образ не смонтирует — это не ошибка образа.
 
+## 7b. Контейнеры Android (super.img, boot.img, vendor_boot.img)
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `Corrupt super image: neither copy of the geometry is valid.`, `… no copy of the partition metadata is valid.`, `… invalid geometry.`, `… a metadata table lies outside the metadata.`, `… the metadata lists no block device.`, `… a partition refers to extents or a group that do not exist.` | Метаданные LP повреждены во всех копиях. | Возьмите super.img из прошивки заново. |
+| Предупреждение: `The primary geometry of the super image is damaged; the backup copy was used.`, `The first copy of the super metadata is damaged; another copy was used.` | Повреждена основная копия, резервная цела. | Образ открыт; при сохранении все копии записываются заново. |
+| Предупреждение: `The metadata of slot <N> differs from slot 0 (the device was updated)…` | На A/B-устройстве после обновления слоты различаются (super снят с устройства). | Показаны разделы слота 0; после сохранения во всех слотах будут они. Для прошивки обычно так и нужно. |
+| Предупреждение: `The super metadata has version 10.<N>, newer than this program knows (10.2).` | Метаданные новее известных. | Образ открыт; проверьте результат `lpdump` перед прошивкой. |
+| `'<раздел>' holds nothing and cannot be opened.`, `… holds an unknown format…` | Пустой раздел (например, `system_b`) или раздел без поддерживаемой файловой системы. | Выберите другой раздел (`vol=`). |
+| `The partition '<раздел>' lies on another block device than this super image.` | Retrofit-устройство: часть раздела на другом разделе GPT. | Не поддерживается. |
+| `The … image has no partition '<имя>'. It holds: …`, `The file is neither a UBI image nor an Android image, so there is no volume or partition '<имя>' to open.` | Неверное имя в `vol=`. | Возьмите имя из списка (`fsforge-cli info`). |
+| `The boot image has no ramdisk this program can read…` | Ramdisk пуст (boot.img с GKI-ядром без ramdisk: ramdisk в init_boot.img), сжат неподдерживаемым методом или имеет заголовок MediaTek. | Откройте init_boot.img или vendor_boot.img. |
+| `Corrupt boot image: invalid header size.`, `… invalid page size.`, `Corrupt vendor boot image: invalid header.`, `… invalid vendor ramdisk table.`, `… a vendor ramdisk lies outside its section.`, `The vendor boot image has header version <N>; versions 3 and 4 are known.` | Повреждённый или незнакомый заголовок. | Получите образ заново. |
+| `The boot image is truncated: its header describes <N> bytes, the file has <M>.` | Файл короче, чем указано в заголовке. | Снимите образ раздела целиком. |
+| `Not a legacy LZ4 stream.`, `The LZ4 data is truncated.`, `Corrupt LZ4 data…` (в составе `The cpio archive is corrupt: …`) | Повреждённый ramdisk в lz4. | Получите образ заново; `lz4 -t` проверит данные. |
+
 ## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |
@@ -478,6 +494,20 @@ EROFS хранит всё, что есть в дереве: владельцев
 | Предупреждение: `romfs stores no owners: …`, `romfs stores only whether a file is executable: the permissions of <N> object(s)… were not kept.` | romfs не хранит владельцев и права. | Если они важны (setuid, закрытые файлы), выберите CramFS, SquashFS или EROFS. |
 | Предупреждение: `<N> object(s) have extended attributes…, which CramFS/romfs does not store: they were left out.` | Форматы без расширенных атрибутов. | Метки SELinux и capabilities задайте иначе или выберите SquashFS / EROFS. |
 | `The CramFS block size must be a power of two from 4096 to 65536 bytes.`, `The CramFS compression level must be from 1 to 9.`, `The CramFS volume name must not be longer than 16 bytes.`, `The romfs data alignment must be a power of two from 16 to 65536 bytes.`, `The romfs volume name must not be longer than 127 bytes.` | Неверные параметры. | Исправьте параметр в окне сохранения или в командной строке. |
+
+### Запись контейнеров Android
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The new content of '<раздел>' (<размер>) does not fit into the super image: <N> is free for it.` | В super не хватает места. | Уменьшите содержимое (сжатие EROFS lz4hc/lzma вместо ext4) или удалите лишнее из других разделов. Размер super задан разметкой устройства. |
+| `The partitions of group '<группа>' would take <N>, more than its maximum of <M>.` | Группа динамических разделов ограничена (обычно половиной super на A/B-устройствах). | Уменьшите содержимое разделов группы. |
+| `The partition metadata does not fit into the room the super image has for it.` | Слишком много экстентов. | Сохраните ещё раз: раздел получит экстенты заново; или уменьшите его. |
+| Предупреждение: `The partition '<раздел>' no longer fits where it was: it was given <N> extents in the free space…` | Раздел вырос и разбит на части. | Обычно безопасно: так же поступает Android при обновлении. |
+| `The new image is <N>, but the boot partition has room for <M> before its AVB signature data…` | Образ подписан AVB и имеет фиксированный размер раздела; новый ramdisk не помещается. | Выберите более сильное сжатие (lz4 → gzip уровня 9 или xz) или уменьшите ramdisk. |
+| Предупреждение: `The boot image is signed with Android Verified Boot: the signature no longer matches…` | Образ изменён, подпись — нет. | На заблокированном загрузчике образ не загрузится; переподпишите своим ключом (`avbtool add_hash_footer`) или используйте разблокированный загрузчик. |
+| Предупреждение: `The boot signature of the image (GKI) no longer matches the changed ramdisk.` | Подпись boot v4 (GKI) не совпадает. | Обычно не мешает на разблокированном загрузчике. |
+| Предупреждение: `The boot image grew from <N> to <M>: the partition must have room for it.` | Образ стал больше исходного файла. | Сравните с размером раздела boot на устройстве перед прошивкой. |
+| `The ramdisk is too large for a boot image.`, `The image is too large for the Android sparse format.` | Ограничения форматов (4 ГБ, 2³² блоков). | Уменьшите содержимое. |
 
 ### Исходные файлы изменились
 

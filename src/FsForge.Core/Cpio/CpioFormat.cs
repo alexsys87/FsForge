@@ -53,6 +53,9 @@ public sealed class CpioOptions
     /// <summary>0 = fast, 1 = normal, 2 = maximum.</summary>
     public int XzEffort { get; set; } = 1;
 
+    /// <summary>LZ4 level 1 .. 12 (as lz4hc); Android uses the highest.</summary>
+    public int Lz4Level { get; set; } = 9;
+
     /// <summary>Text put in front of every member name: "" (as the kernel's gen_init_cpio and most initramfs tools) or "./".</summary>
     public string PathPrefix { get; set; } = "";
 
@@ -83,14 +86,14 @@ public sealed class CpioOptions
     {
         if (Header == CpioHeader.Odc) throw new FsException("Writing odc cpio archives is not supported; choose newc.");
         if (PathPrefix is not ("" or "./")) throw new FsException("The cpio path prefix must be empty or \"./\".");
-        if (GzipLevel is < 1 or > 9 || ZstdLevel is < 1 or > 22 || XzEffort is < 0 or > 2)
+        if (GzipLevel is < 1 or > 9 || ZstdLevel is < 1 or > 22 || XzEffort is < 0 or > 2 || Lz4Level is < 1 or > 12)
             throw new FsException("Invalid compression level for the cpio archive.");
     }
 
     /// <summary>The compressor settings in the form the shared archive code takes.</summary>
     internal TarOptions CompressorOptions() => new()
     {
-        Compression = Compression, GzipLevel = GzipLevel, ZstdLevel = ZstdLevel, XzEffort = XzEffort, Threads = Threads,
+        Compression = Compression, GzipLevel = GzipLevel, ZstdLevel = ZstdLevel, XzEffort = XzEffort, Lz4Level = Lz4Level, Threads = Threads,
     };
 }
 
@@ -164,6 +167,7 @@ public static class CpioFormat
         ArchiveCompression.Gzip => ".cpio.gz",
         ArchiveCompression.Xz => ".cpio.xz",
         ArchiveCompression.Zstd => ".cpio.zst",
+        ArchiveCompression.Lz4 => ".cpio.lz4",
         _ => ".cpio",
     };
 
@@ -174,6 +178,7 @@ public static class CpioFormat
         if (name.EndsWith(".cpio.gz") || name.EndsWith(".cpgz")) return ArchiveCompression.Gzip;
         if (name.EndsWith(".cpio.xz")) return ArchiveCompression.Xz;
         if (name.EndsWith(".cpio.zst") || name.EndsWith(".cpio.zstd")) return ArchiveCompression.Zstd;
+        if (name.EndsWith(".cpio.lz4")) return ArchiveCompression.Lz4;
         if (name.EndsWith(".cpio")) return ArchiveCompression.None;
         return null;
     }

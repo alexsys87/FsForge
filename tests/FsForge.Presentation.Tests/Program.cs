@@ -81,6 +81,84 @@ internal static class Program
         }
     }
 
+    /// <summary>A super image with one extent per partition at the given sector (liblp layout, 2 slots).</summary>
+    private static byte[] BuildSuper(long device, (string Name, long Sector, byte[] Data)[] parts)
+    {
+        const uint metaMax = 65536, slots = 2;
+        byte[] img = new byte[device];
+        byte[] g = new byte[52];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(g, 0x616C4467);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(g.AsSpan(4), 52);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(g.AsSpan(40), metaMax);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(g.AsSpan(44), slots);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(g.AsSpan(48), 4096);
+        System.Security.Cryptography.SHA256.HashData(g).CopyTo(g, 8);
+        g.CopyTo(img, 4096);
+        g.CopyTo(img, 8192);
+        var t = new List<byte>();
+        int extents = 0;
+        foreach ((string name, _, byte[] data) in parts)
+        {
+            byte[] e = new byte[52];
+            Encoding.ASCII.GetBytes(name).CopyTo(e, 0);
+            e[36] = 1;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e.AsSpan(40), (uint)extents);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e.AsSpan(44), data.Length > 0 ? 1u : 0u);
+            t.AddRange(e);
+            if (data.Length > 0) extents++;
+        }
+        int ptSize = t.Count;
+        foreach ((_, long sector, byte[] data) in parts)
+        {
+            if (data.Length == 0) continue;
+            byte[] x = new byte[24];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(x, (ulong)data.Length / 512);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(x.AsSpan(12), (ulong)sector);
+            t.AddRange(x);
+            data.CopyTo(img, sector * 512);
+        }
+        byte[] grp = new byte[48];
+        Encoding.ASCII.GetBytes("default").CopyTo(grp, 0);
+        t.AddRange(grp);
+        byte[] bd = new byte[64];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bd, (4096 + (4096 + metaMax * slots) * 2) / 512);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(bd.AsSpan(8), 1 << 20);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(bd.AsSpan(16), (ulong)device);
+        Encoding.ASCII.GetBytes("super").CopyTo(bd, 24);
+        t.AddRange(bd);
+        byte[] tables = t.ToArray();
+        byte[] h = new byte[128];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(h, 0x414C5030);
+        h[4] = 10;
+        h[8] = 128;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(44), (uint)tables.Length);
+        System.Security.Cryptography.SHA256.HashData(tables).CopyTo(h, 48);
+        int[] desc = { 0, parts.Length, 52, ptSize, extents, 24, ptSize + extents * 24, 1, 48, ptSize + extents * 24 + 48, 1, 64 };
+        for (int i = 0; i < desc.Length; i++) System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(h.AsSpan(80 + i * 4), (uint)desc[i]);
+        System.Security.Cryptography.SHA256.HashData(h).CopyTo(h, 12);
+        for (int s = 0; s < 2 * slots; s++)
+        {
+            h.CopyTo(img, 12288 + s * metaMax);
+            tables.CopyTo(img, 12288 + s * metaMax + 128);
+        }
+        return img;
+    }
+
+    /// <summary>A boot image with header version 3 (page 4096).</summary>
+    private static byte[] BuildBootV3(byte[] kernel, byte[] ramdisk)
+    {
+        static int Pages(int n) => (n + 4095) / 4096 * 4096;
+        byte[] img = new byte[4096 + Pages(kernel.Length) + Pages(ramdisk.Length)];
+        Encoding.ASCII.GetBytes("ANDROID!").CopyTo(img, 0);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(img.AsSpan(8), (uint)kernel.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(img.AsSpan(12), (uint)ramdisk.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(img.AsSpan(20), 1580);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(img.AsSpan(40), 3);
+        kernel.CopyTo(img, 4096);
+        ramdisk.CopyTo(img, 4096 + Pages(kernel.Length));
+        return img;
+    }
+
     private static string MakeImage(string name)
     {
         using var t = new FsTree(0x1ED, 1700000000);
@@ -1150,6 +1228,110 @@ internal static class Program
                                                                     && i.Rows.Any(r => r.Label == "Контрольная сумма" && r.Value == "верна");
             vm.ImageInfoCommand.Execute(null);
             Check(infoShown, "image information of a romfs image");
+            vm.Dispose();
+        });
+
+        await Test("Android: super.img with two partitions, a boot image with an lz4 ramdisk", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            // super.img of 32 MiB as liblp lays it out: system_a (ext4) at 1 MiB, vendor_a (SquashFS) at 16 MiB, an empty system_b.
+            byte[] system, vendor;
+            using (ImageDocument source = ImageDocument.Open(MakeImage("an.sqfs"), _dir))
+            {
+                var ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.Ext, Ext = new FsForge.Core.Ext.ExtOptions { SizeBytes = 4 << 20, Journal = false } });
+                system = ms.ToArray();
+                ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.SquashFs });
+                vendor = ms.ToArray();
+                Array.Resize(ref vendor, (vendor.Length + 4095) / 4096 * 4096);
+            }
+            string super = Path.Combine(_dir, "super.img");
+            File.WriteAllBytes(super, BuildSuper(32 << 20, new[] { ("system_a", 2048L, system), ("vendor_a", 16L << 11, vendor), ("system_b", 0L, Array.Empty<byte>()) }));
+
+            int asked = 0;
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                asked++;
+                Check(c.Title == "Выбор раздела" && c.Summary.Contains("super.img с логическими разделами (разделов: 3)") && c.Rows.Count == 3, "dialog: " + c.Summary);
+                Check(c.Selected is { Name: "system_a", Content: "ext4", IsEditable: true } && c.Rows[2] is { Name: "system_b", Content: "пусто", IsEditable: false },
+                    "rows: " + string.Join("; ", c.Rows.Select(r => r.Name + " " + r.Content)));
+                c.Selected = c.Rows[2];
+                Check(!c.Accept() && c.Error!.Contains("нет файловой системы"), "an empty partition was accepted");
+                c.Selected = c.Rows[1];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(super), "open failed: " + string.Join("; ", d.Messages));
+            Check(asked == 1 && vm.Document is { Format: ImageFormat.SquashFs, Android.Part.Name: "vendor_a" } && vm.DocumentInfo.StartsWith("super.img · vendor_a из 3 · SquashFS"),
+                "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Образ Android" && r.Value.StartsWith("super.img"))
+                                                                    && i.Rows.Any(r => r.Label == "▸ vendor_a (открыт)" && r.Value.StartsWith("SquashFS"))
+                                                                    && i.Rows.Any(r => r.Label == "system_a" && r.Value.StartsWith("ext4"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a super image");
+
+            // "Save as": the whole super.img by default, under its own name.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.HasContainer && s.IsAndroidContainer && s.WritesDisk && s.ContainerTitle == "Образ Android" && s.ContainerNote.Contains("super.img записывается заново")
+                      && s.ContainerSummary.Contains("Открыт раздел vendor_a") && s.Extension == ".img" && !s.ShowNewUbi, "save dialog: " + s.ContainerNote);
+                s.Format = SaveFormat.Ubifs;
+                Check(!s.WritesDisk && s.ContainerNote.Contains("отдельным файлом"), "UBIFS into a logical partition: " + s.ContainerNote);
+                s.Format = SaveFormat.SquashFs;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(super);
+            Check(await vm.SaveAsAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(d.LastSuggestedName == "super.img" && d.LastSaveWasDisk, "suggested name: " + d.LastSuggestedName);
+            Check(vm.Document is { Android.Part.Name: "vendor_a" } && vm.Document.Tree.Resolve("/etc/Banner") is null && !vm.IsModified, "saved super image");
+            using (ImageDocument sys = ImageDocument.Open(super, _dir, volume: "system_a"))
+                Check(sys.Tree.Resolve("/etc/Banner") is not null, "system_a changed");
+
+            // The partition alone, for fastboot.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.KeepContainer = false;
+                Check(!s.WritesDisk && s.ContainerNote.Contains("fastboot") && s.Extension == ".squashfs", "the partition alone: " + s.ContainerNote);
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "vendor_a.squashfs"));
+            Check(await vm.SaveAsAsync(), "save alone failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Android: null, Format: ImageFormat.SquashFs }, "the partition saved alone");
+
+            // boot.img v3 with an lz4 ramdisk: no choice to make; Ctrl+S writes the boot image again.
+            byte[] ramdisk;
+            using (ImageDocument source = ImageDocument.Open(MakeImage("an2.sqfs"), _dir))
+            {
+                var ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.Lz4 } });
+                ramdisk = ms.ToArray();
+            }
+            string boot = Path.Combine(_dir, "boot.img");
+            File.WriteAllBytes(boot, BuildBootV3(new byte[12345], ramdisk));
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(boot), "open boot failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Cpio, Cpio.Compression: ArchiveCompression.Lz4, Android.Part.Name: "ramdisk" } && vm.DocumentInfo.StartsWith("boot · ramdisk ramdisk · cpio.lz4"),
+                "boot status line: " + vm.DocumentInfo);
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsCpio && s.CpioCompression == ArchiveCompression.Lz4 && s.WritesDisk && s.ContainerNote.Contains("Загрузочный образ записывается заново"), "boot dialog: " + s.ContainerNote);
+                s.Format = SaveFormat.SquashFs;
+                Check(!s.WritesDisk && s.ContainerNote.Contains("архив cpio"), "another format: " + s.ContainerNote);
+                s.Format = SaveFormat.Cpio;
+                return s.Accept();
+            };
+            vm.Document!.Tree.CreateFile(vm.Document.Tree.Root, "init.rc", new MemoryFileData(Encoding.ASCII.GetBytes("on boot\n")));
+            d.SavePicks.Enqueue(boot);
+            Check(await vm.SaveAsAsync(), "save boot failed: " + string.Join("; ", d.Messages));
+            byte[] written = File.ReadAllBytes(boot);
+            Check(Encoding.ASCII.GetString(written, 0, 8) == "ANDROID!" && vm.Document is { Android.Part.Name: "ramdisk" } && vm.Document.Tree.Resolve("/init.rc") is not null,
+                "the boot image was not written again");
             vm.Dispose();
         });
 
