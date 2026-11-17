@@ -136,6 +136,7 @@ internal static class EnglishStrings
         ["Пустой образ"] = "Empty image",
         ["Перетащите в окно файл образа или архив, чтобы открыть его, либо папку, чтобы собрать из неё новый образ. В открытый образ файлы и папки добавляются тем же перетаскиванием."] = "Drop an image or archive onto the window to open it, or a folder to build a new image from it. Files and folders are added to an open image the same way.",
         ["Недавние"] = "Recent",
+        ["Убрать из списка"] = "Remove from list",
         ["Путь не найден"] = "Path not found",
         ["Чтение структуры"] = "Reading the structure",
         ["Запись данных"] = "Writing data",

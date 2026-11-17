@@ -1656,6 +1656,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void SaveSettings() => _store.Save(_settings);
 
+    /// <summary>Removes one entry from the recent files list (the file itself is not touched).</summary>
+    public void RemoveRecent(RecentItem item)
+    {
+        if (_settings.RecentFiles.RemoveAll(p => string.Equals(p, item.Path, StringComparison.OrdinalIgnoreCase)) == 0) return;
+        RefreshRecent();
+        SaveSettings();
+    }
+
     private void RefreshRecent()
     {
         RecentFiles.Clear();
