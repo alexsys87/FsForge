@@ -9,6 +9,7 @@ using FsForge.Core.F2fs;
 using FsForge.Core.Romfs;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
+using FsForge.Core.ExFat;
 using FsForge.Core.Fat;
 using FsForge.Core.Firmware;
 using FsForge.Core.Jffs2;
@@ -30,6 +31,7 @@ public enum ImageFormat
 
     /// <summary>FAT12/16/32 with long names: boot partitions of SD cards, EFI system partitions, USB sticks.</summary>
     Fat,
+    ExFat,
 
     /// <summary>EROFS, the read-only filesystem with fixed-size compressed clusters (Android, container images, live systems).</summary>
     Erofs,
@@ -73,6 +75,7 @@ public sealed class SaveOptions
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
     public FatOptions Fat { get; set; } = new();
+    public ExFatOptions ExFat { get; set; } = new();
     public ErofsOptions Erofs { get; set; } = new();
 
     /// <summary>Geometry and volume of the UBI image that <see cref="NewUbi"/> asks for.</summary>
@@ -113,6 +116,7 @@ public sealed class SaveOptions
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
         Fat = Fat.Clone(),
+        ExFat = ExFat.Clone(),
         Erofs = Erofs.Clone(),
         Ubi = Ubi.Clone(),
         NewUbi = NewUbi,
@@ -164,6 +168,7 @@ public sealed class ImageDocument : IDisposable
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
     public FatInfo? Fat { get; private init; }
+    public ExFatInfo? ExFat { get; private init; }
     public ErofsInfo? Erofs { get; private init; }
 
     /// <summary>
@@ -242,6 +247,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ubifs => "UBIFS",
         ImageFormat.Jffs2 => "JFFS2",
         ImageFormat.Fat => Fat?.TypeName ?? "FAT",
+        ImageFormat.ExFat => "exFAT",
         ImageFormat.Erofs => "EROFS",
         ImageFormat.Cramfs => "CramFS",
         ImageFormat.Romfs => "romfs",
@@ -333,6 +339,7 @@ public sealed class ImageDocument : IDisposable
         : F2fsReader.IsF2fs(src) ? ImageFormat.F2fs
         : ExtReader.IsExt(src) ? ImageFormat.Ext
         : FatReader.IsFat(src) ? ImageFormat.Fat
+        : ExFatReader.IsExFat(src) ? ImageFormat.ExFat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
 
     private static ImageFormat? FormatOf(PartitionContent content) => content switch
@@ -343,6 +350,7 @@ public sealed class ImageDocument : IDisposable
         PartitionContent.Romfs => ImageFormat.Romfs,
         PartitionContent.F2fs => ImageFormat.F2fs,
         PartitionContent.Fat => ImageFormat.Fat,
+        PartitionContent.ExFat => ImageFormat.ExFat,
         PartitionContent.Ext => ImageFormat.Ext,
         PartitionContent.Cpio => ImageFormat.Cpio,
         _ => null,
@@ -367,6 +375,7 @@ public sealed class ImageDocument : IDisposable
         PartitionContent.Romfs => ImageFormat.Romfs,
         PartitionContent.F2fs => ImageFormat.F2fs,
         PartitionContent.Fat => ImageFormat.Fat,
+        PartitionContent.ExFat => ImageFormat.ExFat,
         _ => ImageFormat.Ext,
     };
 
@@ -690,6 +699,18 @@ public sealed class ImageDocument : IDisposable
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
+            else if (!ExtReader.IsExt(fs) && ExFatReader.IsExFat(fs))
+            {
+                ExFatReader r = ExFatReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.ExFat, path)
+                {
+                    ExFat = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Archive = archive, Container = container, Ubi = ubi, Android = android, Firmware = firmware,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
             else if (!ExtReader.IsExt(fs) && Jffs2Reader.IsJffs2(fs))
             {
                 Jffs2Reader r = Jffs2Reader.Open(fs, ownsSource: true, progress, ct);
@@ -905,7 +926,7 @@ public sealed class ImageDocument : IDisposable
     private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
     {
         if (table is not null)
-            return "None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
+            return "None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4, FAT or exFAT. Its partitions: " + ListPartitions(table) + ".";
         byte[] head = new byte[8];
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
@@ -1094,6 +1115,7 @@ public sealed class ImageDocument : IDisposable
         if (Ubifs is not null) o.Ubifs = UbifsOptions.FromInfo(Ubifs);
         if (Jffs2 is not null) o.Jffs2 = Jffs2Options.FromInfo(Jffs2);
         if (Fat is not null) o.Fat = FatOptions.FromInfo(Fat);
+        if (ExFat is not null) o.ExFat = ExFatOptions.FromInfo(ExFat);
         if (Erofs is not null)
         {
             // The method, the cluster size and the identity of the image are kept; the effort stays as configured.
@@ -1140,7 +1162,7 @@ public sealed class ImageDocument : IDisposable
         options.KeepContainer && (
             FirmwareTakes(options)
             || (Container is not null || Ubi is not null) && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
-            && !(Ubi is not null && options.Format is ImageFormat.Fat or ImageFormat.F2fs)
+            && !(Ubi is not null && options.Format is ImageFormat.Fat or ImageFormat.ExFat or ImageFormat.F2fs)
             // A logical partition holds a filesystem image; a boot image holds a cpio ramdisk.
             || Android is not null && (Android.Image.Kind == AndroidImageKind.Super
                 ? options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Ubifs)
@@ -1173,6 +1195,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Ubifs => UbifsWriter.Write(tree, output, options.Ubifs, progress, ct),
         ImageFormat.Jffs2 => Jffs2Writer.Write(tree, output, options.Jffs2, progress, ct),
         ImageFormat.Fat => FatWriter.Write(tree, output, options.Fat, progress, ct),
+        ImageFormat.ExFat => ExFatWriter.Write(tree, output, options.ExFat, progress, ct),
         ImageFormat.Erofs => ErofsWriter.Write(tree, output, options.Erofs, progress, ct, options.TempDirectory),
         ImageFormat.Cpio => CpioWriter.Write(tree, output, options.Cpio, null, progress, ct),
         ImageFormat.Cramfs => CramfsWriter.Write(tree, output, options.Cramfs, progress, ct, options.TempDirectory),
@@ -1220,7 +1243,7 @@ public sealed class ImageDocument : IDisposable
         FirmwareContainer? firmwareOut = WritesFirmware(options) ? Firmware : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
-        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs
+        if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.ExFat or ImageFormat.Erofs
             or ImageFormat.Cramfs or ImageFormat.Romfs)
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
@@ -1614,6 +1637,16 @@ public sealed class ImageDocument : IDisposable
                                       $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
             o.Fat.HiddenSectors = (uint)Math.Min(uint.MaxValue, part.Offset / o.Fat.SectorSize);
         }
+        else if (options.Format == ImageFormat.ExFat)
+        {
+            o = options.Clone();
+            // exFAT fills its partition and records where the partition starts (PartitionOffset).
+            if (o.ExFat.SizeBytes == 0) o.ExFat.SizeBytes = slot / o.ExFat.SectorSize * o.ExFat.SectorSize;
+            else if (o.ExFat.SizeBytes > slot && !canGrow)
+                throw new FsException($"The requested filesystem size of {DiskText.Size(o.ExFat.SizeBytes)} exceeds {partName} " +
+                                      $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
+            o.ExFat.PartitionOffset = part.Offset / o.ExFat.SectorSize;
+        }
         else if (options.Format == ImageFormat.F2fs)
         {
             o = options.Clone();
@@ -1642,6 +1675,14 @@ public sealed class ImageDocument : IDisposable
         {
             o.Fat.SizeBytes = 0;
             o.Fat.ExtraFreeBytes = Math.Max(o.Fat.ExtraFreeBytes, slot / 10);
+            fs.SetLength(part.Offset);
+            fs.Position = part.Offset;
+            warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
+        }
+        catch (FsNoSpaceException) when (options.Format == ImageFormat.ExFat && canGrow)
+        {
+            o.ExFat.SizeBytes = 0;
+            o.ExFat.ExtraFreeBytes = Math.Max(o.ExFat.ExtraFreeBytes, slot / 10);
             fs.SetLength(part.Offset);
             fs.Position = part.Offset;
             warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
@@ -2021,6 +2062,17 @@ public static class TreeComparer
             TimeStep = 2,
             MinTime = FatFormat.MinTime,
             MaxTime = FatFormat.MaxTime,
+        },
+        ImageFormat.ExFat => new Rules
+        {
+            // Only files and directories, without owners, permissions or attributes; times to the second.
+            IgnoreOwners = true,
+            IgnoreModes = true,
+            IgnoreXattrs = true,
+            IgnoreRootAttributes = true,
+            FilesAndDirectoriesOnly = true,
+            MinTime = ExFatFormat.MinTime,
+            MaxTime = ExFatFormat.MaxTime,
         },
         ImageFormat.Jffs2 => new Rules
         {

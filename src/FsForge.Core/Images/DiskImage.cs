@@ -85,7 +85,7 @@ public sealed class PartitionInfo
 
     /// <summary>The partition holds a filesystem this program can edit.</summary>
     public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat or PartitionContent.Erofs
-        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.F2fs;
+        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.F2fs or PartitionContent.ExFat;
 
     public override string ToString()
     {
@@ -288,7 +288,7 @@ public sealed class PartitionTable
             data.Length >= position + text.Length && data.AsSpan(position, text.Length).SequenceEqual(text);
 
         if (At(head, 3, "NTFS    "u8)) return (PartitionContent.Ntfs, "NTFS", "");
-        if (At(head, 3, "EXFAT   "u8)) return (PartitionContent.ExFat, "exFAT", "");
+        if (At(head, 3, "EXFAT   "u8)) return (PartitionContent.ExFat, "exFAT", ExFatLabel(part));
         if (LooksLikeFat(head, out string fatKind, out string fatLabel)) return (PartitionContent.Fat, fatKind, fatLabel);
         if (SquashFsReader.IsSquashFs(part)) return (PartitionContent.SquashFs, "SquashFS", "");
         if (ErofsReader.IsErofs(part)) return (PartitionContent.Erofs, "EROFS", CleanLabel(part.ReadBytes(ErofsFormat.SuperOffset + 64, 16)));
@@ -331,6 +331,21 @@ public sealed class PartitionTable
         label = CleanLabel(s.AsSpan(labelAt, 11));
         if (label == "NO NAME") label = "";
         return true;
+    }
+
+    /// <summary>The volume label of an exFAT filesystem (kept in its root directory); empty when it cannot be read.</summary>
+    private static string ExFatLabel(IBlockSource part)
+    {
+        try
+        {
+            if (!ExFat.ExFatReader.IsExFat(part)) return "";
+            using ExFat.ExFatReader r = ExFat.ExFatReader.Open(part, ownsSource: false);
+            return r.Info.Label;
+        }
+        catch (FsException)
+        {
+            return "";
+        }
     }
 
     /// <summary>The volume name of an F2FS superblock (UTF-16).</summary>
