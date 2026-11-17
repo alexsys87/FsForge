@@ -799,6 +799,16 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Устройство"), L.F("сектор {0} байт, копий FAT: {1}, скрытых секторов: {2}, OEM «{3}»", fat.SectorSize, fat.Fats, Fmt.Bytes(fat.HiddenSectors), fat.OemName));
             Add(L.T("Состояние"), fat.Dirty ? L.T("не была корректно размонтирована") : L.T("чистая"));
         }
+        if (doc.ExFat is { } x)
+        {
+            Add(L.T("Размер ФС"), L.F("{0} ({1} кластеров по {2})", Fmt.Size(x.SizeBytes), Fmt.Bytes(x.Clusters), Fmt.Size(x.ClusterSize)));
+            Add(L.T("Свободно"), L.F("{0} ({1} кластеров)", Fmt.Size(x.FreeClusters * x.ClusterSize), Fmt.Bytes(x.FreeClusters)));
+            Add(L.T("Метка"), x.Label.Length > 0 ? x.Label : L.T("(нет)"));
+            Add(L.T("Серийный номер"), $"{x.VolumeSerial >> 16:X4}-{x.VolumeSerial & 0xFFFF:X4}");
+            Add(L.T("Устройство"), L.F("сектор {0} байт, ревизия {1}, копий FAT: {2}, смещение раздела: {3} секторов", x.SectorSize, x.Revision, x.Fats, Fmt.Bytes(x.PartitionOffset)));
+            Add(L.T("Состояние"), (x.Dirty ? L.T("не была корректно размонтирована") : L.T("чистая")) +
+                                 (x.UsedBackupBootRegion ? L.T("; основная загрузочная область повреждена, прочитана резервная") : ""));
+        }
         if (doc.Jffs2 is { } j)
         {
             Add(L.T("Порядок байтов"), j.BigEndian ? "big-endian" : "little-endian");

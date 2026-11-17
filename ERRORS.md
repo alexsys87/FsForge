@@ -54,7 +54,7 @@
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 or FAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, exFAT, swap и т. п.). | Редактируются разделы SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 и FAT12/16/32. Раздел NTFS или exFAT можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
+| `None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4, FAT or exFAT. Its partitions: <список>.` | На диске нет раздела, который программа умеет редактировать (только NTFS, swap и т. п.). | Редактируются разделы SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4, FAT12/16/32 и exFAT. Раздел NTFS можно править в Windows, подключив образ (например, в «Управлении дисками» для `.vhd` или сторонней программой). |
 | `The disk image has no partition <N>. Its partitions: <список>.` | В `fsforge-cli` указан несуществующий `part=<N>`. | Посмотрите номера разделов: `fsforge-cli info образ.img`. |
 | `Partition <N> holds <формат>, not SquashFS, EROFS, ext2/3/4 or FAT, and cannot be edited.` | Выбран раздел с неподдерживаемой файловой системой. | Выберите другой раздел. |
 | `The selected partition does not hold SquashFS, EROFS, ext2/3/4 or FAT.`; в окне выбора — «В этом разделе нет SquashFS, EROFS, ext2/3/4 или FAT — его нельзя открыть для редактирования.» | То же в окне выбора раздела. | Выберите раздел с пометкой SquashFS, EROFS, ext или FAT. |
@@ -191,11 +191,11 @@ JFFS2 — журнал узлов: каждое изменение на устр
 FAT12/16/32 читается из отдельного образа (`*.vfat`, `*.fat`, образ флешки без таблицы разделов) или
 из раздела образа диска. Файл считается FAT, только если его загрузочный сектор проходит все проверки
 (размер сектора, кластера, число FAT, байт носителя, размеры областей): случайное совпадение не
-принимается за FAT. exFAT и NTFS не читаются.
+принимается за FAT. exFAT читается отдельно (раздел 6a), NTFS не читается.
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `The file is too small to be a FAT filesystem.`, `Not a FAT filesystem (invalid boot sector).` | Загрузочный сектор повреждён или это не FAT (например, exFAT). | Проверьте файл `fsck.fat -n образ.vfat` в Linux; exFAT не поддерживается. |
+| `The file is too small to be a FAT filesystem.`, `Not a FAT filesystem (invalid boot sector).` | Загрузочный сектор повреждён или это не FAT. | Проверьте файл `fsck.fat -n образ.vfat` в Linux. |
 | `Corrupt FAT filesystem: the FAT is too small for the number of clusters.` | Поля загрузочного сектора противоречат друг другу. | Файл повреждён: `fsck.fat -a образ.vfat` в Linux или `chkdsk` в Windows, затем откройте снова. |
 | `The FAT filesystem is truncated: its FAT cannot be read.` | Файл обрезан до конца таблицы FAT. | Получите файл заново. |
 | Предупреждение: `The file is shorter than the FAT filesystem it holds; the missing part reads as zeros.` | Файл короче, чем указано в загрузочном секторе (часто — образ, обрезанный после последнего занятого кластера). | Если файлы читаются целиком, это безопасно. При сохранении FsForge запишет образ полного размера. |
@@ -208,6 +208,29 @@ FAT12/16/32 читается из отдельного образа (`*.vfat`, `
 
 Длинные имена, у которых не сошлась контрольная сумма с коротким именем (остатки после программы,
 не знающей VFAT), не показываются: файл виден под коротким именем, как и в Windows.
+
+## 6a. Чтение exFAT
+
+exFAT читается из отдельного образа (`*.exfat`, образ флешки или карты без таблицы разделов) или из раздела
+образа диска (тип MBR 7 или раздел GPT «Basic data»). Файл считается exFAT по сигнатуре `EXFAT` и
+согласованным полям загрузочного сектора; если основной сектор повреждён, ищется резервный.
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The file is too small to be an exFAT filesystem.`, `Not an exFAT filesystem (invalid boot sector).` | Повреждены и основная, и резервная загрузочные области, или это не exFAT. | Проверьте образ `fsck.exfat -n образ` в Linux или `chkdsk` в Windows. |
+| Предупреждение: `The checksum of the main exFAT boot region does not match; the backup boot region was used.`, `The main exFAT boot sector is damaged; the backup boot region was used.` | Основная загрузочная область повреждена; в «Сведениях» — «основная загрузочная область повреждена, прочитана резервная». | Данные читаются по резервной копии. Сохраните образ — FsForge запишет обе области заново; или `fsck.exfat -y`. |
+| Предупреждение: `The checksum of the exFAT boot region does not match (and the backup does not help); the boot sector was used as it is.` | Повреждены обе области, но параметры загрузочного сектора правдоподобны. | Проверьте содержимое; сохраните образ заново или исправьте `fsck.exfat`. |
+| Предупреждение: `The exFAT volume was not cleanly unmounted (its VolumeDirty flag is set). …` | Карту извлекли без безопасного отключения или пропало питание во время записи. | Обычно данные целы. `fsck.exfat -y` (Linux) или `chkdsk /f` (Windows). При сохранении флаг снимается. |
+| Предупреждение: `The exFAT volume reports media failures (its MediaFailure flag is set).` | Драйвер отметил ошибки носителя. | Скопируйте данные; носитель, возможно, неисправен. |
+| Предупреждение: `The exFAT revision is <N>; it is read as revision 1.00.` | Образ более новой ревизии формата. | Обычно читается правильно; проверьте содержимое. |
+| Предупреждение: `The file is shorter than the exFAT filesystem it holds; the missing part reads as zeros.` | Образ обрезан (часто — снят только до последнего занятого кластера). | Если файлы читаются целиком, это безопасно; при сохранении образ будет полного размера. |
+| `The exFAT filesystem is truncated: its FAT cannot be read.`, `Corrupt exFAT filesystem: <что> claims <N> bytes.` | Файл обрезан до конца FAT или повреждены размеры. | Получите образ заново. |
+| `The exFAT filesystem has more clusters than this program reads (268 million).` | Огромный том с маленьким кластером (например, 1 ТБ с кластером 4 КБ). | Работайте с таким носителем средствами ОС; образы карт и флешек обычного размера читаются. |
+| Предупреждение: `The exFAT root directory has no allocation bitmap; the free space is unknown.` | В корне нет битовой карты (повреждение). | Файлы читаются; свободное место в «Сведениях» неизвестно. Сохранение запишет карту заново. |
+| Предупреждение: `The directory entry of '<путь>' has a wrong checksum; it was skipped.`, `'<папка>' holds a damaged file entry; it was skipped.`, `…a file entry without its stream extension…` | Повреждён набор записей файла. | Файл не показан; исправьте образ `fsck.exfat` и откройте снова. |
+| Предупреждение: `'<папка>' holds a directory entry of an unknown kind (0x<…>); it was skipped.` | Критическая запись, которой нет в спецификации 1.00. | Обычно безопасно; проверьте содержимое папки. |
+| Предупреждение: `'<путь>': its clusters lie outside the filesystem; it was cut.`, `'<путь>': its cluster chain points outside the filesystem and was cut.`, `…loops and was cut.`, `…ends in a free or bad cluster and was cut.`, `…is shorter than the data; the rest was cut.`, `'<путь>' is <N> bytes long but its clusters hold only <M>; the rest was cut.` | Цепочка или участок кластеров файла повреждены. | Файл обрезан; `fsck.exfat` исправит структуру. |
+| Предупреждение: `'<путь>' shares its clusters with '<другой путь>' (cross-linked) and was skipped.`, `Directory '<путь>' has no valid cluster and was skipped.`, `Invalid or duplicate directory entry '<имя>' in '<папка>' was skipped.` | Повреждения, как у FAT. | Пропущенное отсутствует в открытом образе; исправьте его `fsck.exfat`. |
 
 ## 7. Чтение EROFS
 
@@ -530,6 +553,23 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 точнее 2 секунд — об этом не предупреждается, это свойство формата. Проверка после записи сравнивает
 только то, что FAT хранит. В окне «Сохранить как» для раздела образа диска размер FAT не задаётся:
 он равен размеру раздела (подсказка «В образе диска FAT занимает раздел целиком»).
+
+### Запись exFAT
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `'<путь>' cannot be stored in exFAT: it contains '<символ>'. Rename it first.`, `…it is longer than 255 characters…`, `…it is reserved…` | Имя недопустимо в exFAT: символы `" * / : < > ? \ \|` и управляющие, больше 255 символов UTF-16, `.` и `..`. Точка и пробел в конце, в отличие от FAT, допустимы. | Переименуйте объект (F2) и сохраните снова. |
+| `'<путь>' and '<путь>' differ only in case, which exFAT does not distinguish. Rename one of them first.` | В одной папке, например, `README` и `readme` (или `Ёлка` и `ёлка`): exFAT сравнивает имена без учёта регистра. | Переименуйте или удалите один из них. |
+| `The content does not fit into a <размер> exFAT filesystem: it needs <N> clusters of <K> bytes, there are <M>.`, `The content does not fit into the exFAT filesystem (…).` | Файлы не помещаются в заданный размер или в раздел образа диска. | Увеличьте размер (`size=`), уменьшите кластер (на множестве мелких файлов кластер 128 КБ расходует много места) или удалите лишнее. Последний раздел MBR увеличивается сам. |
+| `An exFAT filesystem of <размер> cannot be made [with <K>-byte clusters].`, `No exFAT layout can hold the content.` | Размер слишком мал для служебных областей или кластеров больше 4 миллиардов. | Задайте больший размер или больший кластер. |
+| `The exFAT sector size must be 512, 1024, 2048 or 4096 bytes.`, `The exFAT cluster size must be a power of two between the sector size and 32 MiB.`, `The exFAT size cannot be negative.` | Неверные параметры (обычно из `fsforge-cli`). | Уберите эти параметры: значения по умолчанию совпадают с Windows. |
+| `Invalid exFAT volume label: it has more than 11 characters.`, `…it contains '<символ>'.` | Метка длиннее 11 символов или с недопустимыми символами. | Сократите метку (кириллица допустима). |
+| Предупреждение: `<N> object(s) cannot be stored in exFAT (symbolic links, devices, FIFOs, sockets) and were left out: <список>.`, `exFAT has no hard links: <N> additional name(s) of hard-linked files were stored as separate copies.` | exFAT хранит только файлы и папки. | Ожидаемо для карты памяти. Если ссылки нужны, выберите ext4 или F2FS. |
+| `Only UBIFS and SquashFS can be wrapped into a UBI image.`; в окне параметров — «exFAT сохраняется отдельным файлом: в том UBI он не записывается.» | exFAT не работает поверх UBI. | Сохраните его отдельным файлом. |
+
+При записи exFAT теряются владельцы, права (кроме «только чтение»), расширенные атрибуты и атрибуты
+«скрытый»/«системный» — это свойство формата, об этом не предупреждается. В окне «Сохранить как» для
+раздела образа диска размер exFAT не задаётся: он равен размеру раздела.
 
 ### Запись EROFS
 

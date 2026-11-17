@@ -14,7 +14,8 @@
 # fsck.f2fs; with F2FS_MODULES=<folder with f2fs.ko, lz4_compress.ko and lz4hc_compress.ko> or a kernel with
 # F2FS built in, CPIO_KERNEL also mounts, changes and compresses F2FS images in QEMU), 7zip, zip/unzip, pigz,
 # pbzip2, lbzip2, zstd/pzstd and bmap-tools for compressed images and archives (FLASHTOOL_SRC=<checkout of FlashTool>
-# adds the checks with FlashTool's own container code; needs the .NET SDK).
+# adds the checks with FlashTool's own container code; needs the .NET SDK), exfatprogs for exFAT (with
+# EXFAT_MODULES=<folder with exfat.ko>, CPIO_KERNEL also mounts, fills and changes exFAT images in QEMU).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -398,6 +399,13 @@ crr_qemu
 . "$HERE/verify-f2fs.sh"
 f2_run
 f2_qemu
+
+# -------------------------------------------------------------------- exFAT
+# See tests/verify-exfat.sh: FsForge images checked by fsck.exfat, exfatlabel and tune.exfat; an SD card with an
+# exFAT partition edited in place; optionally the kernel in QEMU mounts, fills and changes exFAT images.
+. "$HERE/verify-exfat.sh"
+exf_run
+exf_qemu
 
 # ------------------------------------------------- compressed images, zip and 7z
 # See tests/verify-archives.sh: images packed by gzip, pigz, xz, zstd, pzstd, bzip2, pbzip2, lbzip2, zip and 7-Zip read

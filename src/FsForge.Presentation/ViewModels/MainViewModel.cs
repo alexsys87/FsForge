@@ -468,6 +468,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_doc.Romfs is { } ro && ro.VolumeName.Length > 0) info += $" · {ro.VolumeName}";
         if (_doc.Fat is { } fat)
             info += L.F(" · кластер {0} · свободно {1}", Fmt.Size(fat.ClusterSize), Fmt.Size(fat.FreeClusters * fat.ClusterSize));
+        if (_doc.ExFat is { } exfat)
+            info += L.F(" · {0} · кластер {1} · свободно {2}", Fmt.Size(exfat.SizeBytes), Fmt.Size(exfat.ClusterSize), Fmt.Size(exfat.FreeClusters * exfat.ClusterSize));
         if (_doc.Jffs2 is { } j)
             info += L.F(" · {0} · {1} · блок стирания {2}", j.BigEndian ? "big-endian" : "little-endian", j.MainCompression.ToString().ToLowerInvariant(), Fmt.Size(j.EraseBlockSize));
         if (_doc.FilePath is not null && _doc.Ext is null) info += $" · {Fmt.Size(_doc.FileSize)}";
