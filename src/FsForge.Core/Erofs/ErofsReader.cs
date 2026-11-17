@@ -870,7 +870,7 @@ public sealed class ErofsReader : IDisposable
                     throw new FsException($"Corrupt EROFS image: a file uses the compression method {AlgorithmName(algorithm)}, which the superblock does not announce.");
                 list.Add(new Extent(start, length, ExtentKind.Encoded, pa, len, (byte)algorithm, partial));
             }
-            else if (interlaced && ((pa | len) & (_blkSize - 1)) == 0)
+            else if (interlaced && ((pa | (uint)len) & (_blkSize - 1)) == 0)
             {
                 list.Add(new Extent(start, length, ExtentKind.Encoded, pa, len, AlgInterlaced));
             }
