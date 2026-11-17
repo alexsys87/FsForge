@@ -744,5 +744,17 @@ internal static class EnglishStrings
         ["раздел {0}"] = "partition {0}",
         ["ramdisk «{0}»"] = "ramdisk “{0}”",
         ["Образы Android (super, boot, vendor_boot)"] = "Android images (super, boot, vendor_boot)",
+        ["Блоки"] = "Blocks",
+        ["{0} по {1}"] = "{0} of {1}",
+        ["Использовано"] = "Used",
+        ["Сжатых файлов"] = "Compressed files",
+        ["Зашифрованных файлов"] = "Encrypted files",
+        ["{0} — их содержимое не читается"] = "{0} — their content cannot be read",
+        ["не отмонтирована штатно"] = "not cleanly unmounted",
+        ["отмонтирована штатно"] = "cleanly unmounted",
+        ["F2FS (userdata Android, флеш-накопители)"] = "F2FS (Android userdata, flash storage)",
+        ["Файловая система для флеш-памяти: раздел userdata Android, карты памяти, некоторые роутеры и одноплатники. Монтируется на чтение и запись (Linux 3.8 и новее); хранит права, владельцев, время, ссылки, устройства и расширенные атрибуты. Часть места резервируется под сборку мусора, поэтому образ не бывает меньше нескольких десятков мегабайт."] = "The filesystem for flash memory: the Android userdata partition, memory cards, some routers and single-board computers. Mounted read-write (Linux 3.8 and later); keeps permissions, owners, times, links, devices and extended attributes. Part of the space is reserved for garbage collection, so an image is never smaller than a few tens of megabytes.",
+        ["В образе диска F2FS занимает раздел целиком ({0})."] = "In a disk image F2FS takes the whole partition ({0}).",
+        ["Пусто — наименьший размер, в который помещаются содержимое и запас свободного места."] = "Empty — the smallest size that holds the content and the free space.",
     };
 }

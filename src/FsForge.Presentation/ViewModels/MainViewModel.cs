@@ -461,6 +461,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             info += er.Compression == FsForge.Core.Erofs.ErofsCompression.None
                 ? L.T(" · без сжатия")
                 : L.F(" · {0} · кластер {1}", er.Compression.ToString().ToLowerInvariant(), Fmt.Size(er.PclusterSize));
+        if (_doc.F2fs is { } f2)
+            info += L.F(" · {0} · свободно {1}", Fmt.Size(f2.BlockCount * f2.BlockSize), Fmt.Size(Math.Max(0, f2.UserBlocks - f2.ValidBlocks) * f2.BlockSize));
         if (_doc.Cramfs is { } cr)
             info += L.F(" · {0} · блок {1}", cr.BigEndian ? "big-endian" : "little-endian", Fmt.Size(cr.BlockSize));
         if (_doc.Romfs is { } ro && ro.VolumeName.Length > 0) info += $" · {ro.VolumeName}";

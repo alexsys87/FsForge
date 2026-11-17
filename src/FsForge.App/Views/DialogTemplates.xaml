@@ -897,6 +897,31 @@
                 </Border>
             </StackPanel>
 
+            <!--  F2FS  -->
+            <StackPanel Visibility="{Binding IsF2fs, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Style="{StaticResource Section}" Text="F2FS" />
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <HeaderedContentControl
+                            Header="{l:Tr 'Размер, МиБ'}"
+                            IsEnabled="{Binding F2fsSizeEditable}"
+                            Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding F2fsSizeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <TextBlock
+                            Margin="0,0,0,8"
+                            Style="{StaticResource Hint}"
+                            Text="{Binding F2fsSizeNote}" />
+                        <HeaderedContentControl Header="{l:Tr 'Запас свободного места, МиБ'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="140" Text="{Binding F2fsFreeMiB, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                        <HeaderedContentControl Header="{l:Tr 'Имя тома'}" Style="{StaticResource Row}">
+                            <ui:TextBox Width="180" Text="{Binding F2fsVolumeName, UpdateSourceTrigger=PropertyChanged}" />
+                        </HeaderedContentControl>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!--  CramFS  -->
             <StackPanel Visibility="{Binding IsCramfs, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock Style="{StaticResource Section}" Text="CramFS" />

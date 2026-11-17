@@ -4,6 +4,7 @@ using FsForge.Core.Cpio;
 using FsForge.Core.Cramfs;
 using FsForge.Core.Erofs;
 using FsForge.Core.Ext;
+using FsForge.Core.F2fs;
 using FsForge.Core.Romfs;
 using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
@@ -39,6 +40,9 @@ public enum ImageFormat
 
     /// <summary>romfs: the minimal read-only filesystem of uClinux and boot loaders (no compression, no owners).</summary>
     Romfs,
+
+    /// <summary>F2FS, the Flash-Friendly File System (Android userdata, some routers and single-board computers).</summary>
+    F2fs,
 }
 
 /// <summary>How thoroughly a freshly written image is checked before it replaces the old file.</summary>
@@ -63,6 +67,7 @@ public sealed class SaveOptions
     public CpioOptions Cpio { get; set; } = new();
     public CramfsOptions Cramfs { get; set; } = new();
     public RomfsOptions Romfs { get; set; } = new();
+    public F2fsOptions F2fs { get; set; } = new();
     public UbifsOptions Ubifs { get; set; } = new();
     public Jffs2Options Jffs2 { get; set; } = new();
     public FatOptions Fat { get; set; } = new();
@@ -102,6 +107,7 @@ public sealed class SaveOptions
         Cpio = Cpio.Clone(),
         Cramfs = Cramfs.Clone(),
         Romfs = Romfs.Clone(),
+        F2fs = F2fs.Clone(),
         Ubifs = Ubifs.Clone(),
         Jffs2 = Jffs2.Clone(),
         Fat = Fat.Clone(),
@@ -149,6 +155,7 @@ public sealed class ImageDocument : IDisposable
     public CpioInfo? Cpio { get; private init; }
     public CramfsInfo? Cramfs { get; private init; }
     public RomfsInfo? Romfs { get; private init; }
+    public F2fsInfo? F2fs { get; private init; }
     public UbifsInfo? Ubifs { get; private init; }
     public Jffs2Info? Jffs2 { get; private init; }
     public FatInfo? Fat { get; private init; }
@@ -223,6 +230,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Erofs => "EROFS",
         ImageFormat.Cramfs => "CramFS",
         ImageFormat.Romfs => "romfs",
+        ImageFormat.F2fs => "F2FS",
         ImageFormat.Cpio => Cpio is null ? "cpio" : "cpio" + CpioFormat.DefaultExtension(Cpio.Compression)[5..],
         _ => Tar is null ? "tar" : "tar" + ArchiveCodec.DefaultExtension(Tar.Compression)[4..],
     };
@@ -290,6 +298,7 @@ public sealed class ImageDocument : IDisposable
         : ErofsReader.IsErofs(src) ? ImageFormat.Erofs
         : CramfsReader.IsCramfs(src) ? ImageFormat.Cramfs
         : RomfsReader.IsRomfs(src) ? ImageFormat.Romfs
+        : F2fsReader.IsF2fs(src) ? ImageFormat.F2fs
         : ExtReader.IsExt(src) ? ImageFormat.Ext
         : FatReader.IsFat(src) ? ImageFormat.Fat
         : Jffs2Reader.IsJffs2(src) ? ImageFormat.Jffs2 : null;
@@ -300,6 +309,7 @@ public sealed class ImageDocument : IDisposable
         PartitionContent.Erofs => ImageFormat.Erofs,
         PartitionContent.Cramfs => ImageFormat.Cramfs,
         PartitionContent.Romfs => ImageFormat.Romfs,
+        PartitionContent.F2fs => ImageFormat.F2fs,
         PartitionContent.Fat => ImageFormat.Fat,
         PartitionContent.Ext => ImageFormat.Ext,
         PartitionContent.Cpio => ImageFormat.Cpio,
@@ -312,6 +322,7 @@ public sealed class ImageDocument : IDisposable
         PartitionContent.Erofs => ImageFormat.Erofs,
         PartitionContent.Cramfs => ImageFormat.Cramfs,
         PartitionContent.Romfs => ImageFormat.Romfs,
+        PartitionContent.F2fs => ImageFormat.F2fs,
         PartitionContent.Ext => ImageFormat.Ext,
         _ => ImageFormat.Ubifs,
     };
@@ -322,6 +333,7 @@ public sealed class ImageDocument : IDisposable
         PartitionContent.Erofs => ImageFormat.Erofs,
         PartitionContent.Cramfs => ImageFormat.Cramfs,
         PartitionContent.Romfs => ImageFormat.Romfs,
+        PartitionContent.F2fs => ImageFormat.F2fs,
         PartitionContent.Fat => ImageFormat.Fat,
         _ => ImageFormat.Ext,
     };
@@ -551,6 +563,18 @@ public sealed class ImageDocument : IDisposable
                 };
                 doc._warnings.AddRange(r.Warnings);
             }
+            else if (F2fsReader.IsF2fs(fs))
+            {
+                F2fsReader r = F2fsReader.Open(fs);
+                FsTree tree = r.ReadTree(progress, ct);
+                tree.AttachResource(r);
+                doc = new ImageDocument(tree, ImageFormat.F2fs, path)
+                {
+                    F2fs = r.Info, EmbeddedOffset = offset, AndroidSparse = sparse, FileSize = file.Length,
+                    OuterCompression = outer, Container = container, Ubi = ubi, Android = android,
+                };
+                doc._warnings.AddRange(r.Warnings);
+            }
             else if (RomfsReader.IsRomfs(fs))
             {
                 RomfsReader r = RomfsReader.Open(fs);
@@ -726,13 +750,13 @@ public sealed class ImageDocument : IDisposable
     private static string DescribeUnknown(IBlockSource src, ArchiveCompression? outer, PartitionTable? table)
     {
         if (table is not null)
-            return "None of the partitions of this disk image holds SquashFS, EROFS, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
+            return "None of the partitions of this disk image holds SquashFS, EROFS, F2FS, CramFS, romfs, ext2/3/4 or FAT. Its partitions: " + ListPartitions(table) + ".";
         byte[] head = new byte[8];
         int n = src.Read(0, head);
         string hint = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } c ? $" It looks like {c} compressed data." : "";
         if (CpioFormat.IsBinary(head.AsSpan(0, n))) hint = " It looks like a cpio archive in the old binary format, which is not supported (only newc, crc and odc).";
         if (outer is not null) hint = $" It was unpacked from a {outer.ToString()!.ToLowerInvariant()} file, but the content is not a known image.";
-        return "The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
+        return "The file is not a SquashFS, EROFS, CramFS, romfs, ext2/3/4, F2FS, FAT, UBIFS or JFFS2 image, UBI image, disk image with such a partition, tar or cpio archive." + hint;
     }
 
     /// <summary>Decompresses a whole file into a temporary one that is deleted when the source is disposed.</summary>
@@ -834,6 +858,13 @@ public sealed class ImageDocument : IDisposable
             o.Cramfs = c;
         }
         if (Romfs is not null) o.Romfs = RomfsOptions.FromInfo(Romfs);
+        if (F2fs is not null)
+        {
+            // The size and the identity of the source; the free space stays as configured.
+            F2fsOptions f = F2fsOptions.FromInfo(F2fs);
+            (f.ExtraFreeBytes, f.StoreXattrs) = (o.F2fs.ExtraFreeBytes, o.F2fs.StoreXattrs);
+            o.F2fs = f;
+        }
         if (Cpio is not null)
         {
             // The layout of the source; the compression levels stay as configured.
@@ -848,7 +879,7 @@ public sealed class ImageDocument : IDisposable
     public bool WritesContainer(SaveOptions options) =>
         options.KeepContainer && (
             (Container is not null || Ubi is not null) && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
-            && !(Ubi is not null && options.Format == ImageFormat.Fat)
+            && !(Ubi is not null && options.Format is ImageFormat.Fat or ImageFormat.F2fs)
             // A logical partition holds a filesystem image; a boot image holds a cpio ramdisk.
             || Android is not null && (Android.Image.Kind == AndroidImageKind.Super
                 ? options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Ubifs)
@@ -872,6 +903,7 @@ public sealed class ImageDocument : IDisposable
         ImageFormat.Cpio => CpioWriter.Write(tree, output, options.Cpio, null, progress, ct),
         ImageFormat.Cramfs => CramfsWriter.Write(tree, output, options.Cramfs, progress, ct, options.TempDirectory),
         ImageFormat.Romfs => RomfsWriter.Write(tree, output, options.Romfs, progress, ct),
+        ImageFormat.F2fs => F2fsWriter.Write(tree, output, options.F2fs, progress, ct),
         _ => TarWriter.Write(tree, output, options.Tar, null, progress, ct),
     };
 
@@ -1214,6 +1246,15 @@ public sealed class ImageDocument : IDisposable
                                       $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
             o.Fat.HiddenSectors = (uint)Math.Min(uint.MaxValue, part.Offset / o.Fat.SectorSize);
         }
+        else if (options.Format == ImageFormat.F2fs)
+        {
+            o = options.Clone();
+            // Like ext, F2FS fills its partition unless a size was asked for.
+            if (o.F2fs.SizeBytes == 0) o.F2fs.SizeBytes = slot / 4096 * 4096;
+            else if (o.F2fs.SizeBytes > slot && !canGrow)
+                throw new FsException($"The requested filesystem size of {DiskText.Size(o.F2fs.SizeBytes)} exceeds {partName} " +
+                                      $"({DiskText.Size(slot)}), which cannot be enlarged{WhyNoGrow(c)}.");
+        }
         else if (!packed)
         {
             o = options.Clone();
@@ -1243,6 +1284,8 @@ public sealed class ImageDocument : IDisposable
             o.Ext.SizeBytes = 0;
             o.Ext.InodeCount = 0;
             o.Ext.ExtraFreeBytes = Math.Max(o.Ext.ExtraFreeBytes, slot / 10);
+            o.F2fs.SizeBytes = 0;
+            o.F2fs.ExtraFreeBytes = Math.Max(o.F2fs.ExtraFreeBytes, slot / 10);
             fs.SetLength(part.Offset);
             fs.Position = part.Offset;
             warnings.AddRange(WriteTo(Tree, fs, o, progress, ct));
@@ -1588,6 +1631,11 @@ public static class TreeComparer
             UidMask = 0xFFFF,
             GidMask = 0xFF,
             DevMask = 0xFF,
+        },
+        ImageFormat.F2fs => new Rules
+        {
+            IgnoreOwners = o.F2fs.AllRoot,
+            IgnoreXattrs = true,                    // only the user/trusted/security/lustre namespaces and ACLs exist in F2FS
         },
         ImageFormat.Romfs => new Rules
         {

@@ -94,6 +94,7 @@ internal static partial class SelfTest
             ErofsTests(tree, reference);
             CpioTests(tree, reference);
             CramfsRomfsTests();
+            F2fsTests(tree, reference);
             AndroidTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
@@ -258,6 +259,7 @@ internal static partial class SelfTest
             if (o.Format == ImageFormat.Tar && o.Tar.Dialect == TarDialect.Gnu) f[8] = "-";
             if (o.Format == ImageFormat.Cpio) f[8] = "-";                // cpio has no extended attributes
             if (o.Format is ImageFormat.Cramfs or ImageFormat.Romfs) NormalizeCramfsRomfs(f, o);
+            if (o.Format == ImageFormat.F2fs && !o.F2fs.StoreXattrs) f[8] = "-";
             if (o.Format == ImageFormat.Jffs2 && !o.Jffs2.StoreXattrs) f[8] = "-";
             if (o.Format == ImageFormat.Fat)
             {
@@ -638,6 +640,7 @@ internal static partial class SelfTest
             ("cramfs", new SaveOptions { Format = ImageFormat.Cramfs }),
             ("cramfs big-endian holes 16k", new SaveOptions { Format = ImageFormat.Cramfs, Cramfs = new FsForge.Core.Cramfs.CramfsOptions { BigEndian = true, Holes = true, BlockSize = 16384, Pad = true } }),
             ("romfs", new SaveOptions { Format = ImageFormat.Romfs }),
+            ("f2fs", new SaveOptions { Format = ImageFormat.F2fs }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 

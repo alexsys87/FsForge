@@ -82,7 +82,7 @@ public sealed class PartitionInfo
 
     /// <summary>The partition holds a filesystem this program can edit.</summary>
     public bool IsEditable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Fat or PartitionContent.Erofs
-        or PartitionContent.Cramfs or PartitionContent.Romfs;
+        or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.F2fs;
 
     public override string ToString()
     {
@@ -299,7 +299,7 @@ public sealed class PartitionTable
             string kind = (incompat & 0x2C0) != 0 || (roCompat & 0x478) != 0 ? "ext4" : (compat & 4) != 0 ? "ext3" : "ext2";
             return (PartitionContent.Ext, kind, CleanLabel(sb.AsSpan(0x78, 16)));
         }
-        if (head.Length >= 1028 && Le.U32(head, 1024) == 0xF2F52010) return (PartitionContent.F2fs, "F2FS", "");
+        if (F2fs.F2fsReader.IsF2fs(part)) return (PartitionContent.F2fs, "F2FS", F2fsLabel(part));
         if (At(head, 4086, "SWAPSPACE2"u8)) return (PartitionContent.Swap, "Linux swap", "");
         if (At(head, 0, "XFSB"u8)) return (PartitionContent.Xfs, "XFS", "");
         if (At(head, 0, [0x4C, 0x55, 0x4B, 0x53, 0xBA, 0xBE])) return (PartitionContent.Luks, "LUKS", "");
@@ -328,6 +328,13 @@ public sealed class PartitionTable
         label = CleanLabel(s.AsSpan(labelAt, 11));
         if (label == "NO NAME") label = "";
         return true;
+    }
+
+    /// <summary>The volume name of an F2FS superblock (UTF-16).</summary>
+    private static string F2fsLabel(IBlockSource part)
+    {
+        byte[] sb = part.ReadBytes(1024 + 124, 64);
+        return F2fs.F2fsFormat.VolumeNameOf(sb).Trim();
     }
 
     private static string CleanLabel(ReadOnlySpan<byte> raw)

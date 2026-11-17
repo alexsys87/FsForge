@@ -1231,6 +1231,74 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("F2FS: open a labelled image, keep its size and name, save in place, convert", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string f2fs = Path.Combine(_dir, "userdata.f2fs");
+            using (ImageDocument source = ImageDocument.Open(MakeImage("f2.sqfs"), _dir))
+            using (var fs = new FileStream(f2fs, FileMode.Create))
+                ImageDocument.WriteTo(source.Tree, fs, new SaveOptions
+                {
+                    Format = ImageFormat.F2fs,
+                    F2fs = new FsForge.Core.F2fs.F2fsOptions { SizeBytes = 128L << 20, VolumeName = "data" },
+                });
+            Check(await vm.OpenPathAsync(f2fs), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.F2fs, F2fs: { VolumeName: "data", BlockSize: 4096 } } && vm.DocumentInfo.StartsWith("F2FS · 128 МБ · свободно"),
+                "status line: " + vm.DocumentInfo);
+            Check(!vm.IsInfoOpen, "an F2FS image must open without warnings: " + vm.InfoMessage);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Имя тома" && r.Value == "data")
+                                                                    && i.Rows.Any(r => r.Label == "Состояние" && r.Value == "отмонтирована штатно")
+                                                                    && i.Rows.Any(r => r.Label == "Версия формата" && r.Value.Contains("."));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of an F2FS image");
+
+            // "Save as" starts with the size and the name of the source.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsF2fs && s.F2fsSizeMiB == "128" && s.F2fsVolumeName == "data" && s.F2fsSizeEditable && s.Extension == ".f2fs"
+                      && s.ShowCommonXattrs && s.ShowAllRoot && !s.ShowNewUbi, "the dialog does not start with the settings of the source");
+                s.F2fsSizeMiB = "many";
+                Check(!s.Accept() && s.Error is not null, "a size that is not a number was accepted");
+                s.F2fsSizeMiB = "";
+                s.F2fsFreeMiB = "-1";
+                Check(!s.Accept() && s.Error is not null, "a negative reserve was accepted");
+                s.F2fsFreeMiB = "4";
+                s.F2fsVolumeName = new string('x', 513);
+                Check(!s.Accept() && s.Error is not null, "a name that is too long was accepted");
+                s.F2fsVolumeName = "userdata";
+                return s.Accept();
+            };
+            string again = Path.Combine(_dir, "userdata-auto.f2fs");
+            d.SavePicks.Enqueue(again);
+            Check(await vm.SaveAsAsync(), "save as F2FS failed: " + string.Join("; ", d.Messages));
+            long size = vm.Document!.F2fs!.BlockCount * 4096;
+            Check(vm.Document is { Format: ImageFormat.F2fs, F2fs.VolumeName: "userdata" } && size < 128L << 20 && new FileInfo(again).Length == size,
+                "saved image: " + vm.DocumentInfo);
+            Check(vm.Document.Tree.Resolve("/etc/passwd") is not null && vm.Document.Tree.Resolve("/dev/null")!.Inode.DevMinor == 3, "content of the saved image");
+
+            // An edit and Ctrl+S: the same file, the same size and name.
+            vm.Document.Tree.Remove(vm.Document.Tree.Resolve("/etc/passwd")!);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.F2fs, FilePath: var path, F2fs.VolumeName: "userdata" } && path == again
+                  && vm.Document.F2fs.BlockCount * 4096 == size && vm.Document.Tree.Resolve("/etc/passwd") is null && !vm.IsModified,
+                "saved in place: " + vm.DocumentInfo);
+
+            // Converting to ext4.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                s.Format = SaveFormat.Ext4;
+                Check(s.IsExt && !s.IsF2fs && s.Extension == ".ext4", "ext4 after F2FS");
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "from-f2fs.ext4"));
+            Check(await vm.SaveAsAsync(), "save as ext4 failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document!.Format == ImageFormat.Ext && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
         await Test("Android: super.img with two partitions, a boot image with an lz4 ramdisk", async () =>
         {
             var (vm, d, _, _) = NewVm();

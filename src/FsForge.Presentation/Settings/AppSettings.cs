@@ -118,6 +118,9 @@ public sealed class AppSettings
     /// <summary>Defaults of a new CramFS image: byte order, block size, level.</summary>
     public FsForge.Core.Cramfs.CramfsOptions Cramfs { get; set; } = new();
 
+    /// <summary>Defaults of a new F2FS image: free space, label.</summary>
+    public FsForge.Core.F2fs.F2fsOptions F2fs { get; set; } = new();
+
     /// <summary>Defaults of a new romfs image: volume name, data alignment.</summary>
     public FsForge.Core.Romfs.RomfsOptions Romfs { get; set; } = new();
 
@@ -196,6 +199,7 @@ public sealed class AppSettings
             Cpio = Cpio.Clone(),
             Cramfs = Cramfs.Clone(),
             Romfs = Romfs.Clone(),
+            F2fs = F2fs.Clone(),
             Ubi = Ubi.Clone(),
         };
         defaults.Ext.ExtraFreeBytes = (long)ExtExtraFreeMiB << 20;
@@ -325,6 +329,11 @@ public sealed class SettingsStore
         try { s.Cpio.Validate(); } catch (FsForge.Core.FsException) { s.Cpio = new(); }
         s.Cramfs ??= new();
         try { s.Cramfs.Validate(); } catch (FsForge.Core.FsException) { s.Cramfs = new(); }
+        s.F2fs ??= new();
+        try { s.F2fs.Validate(); } catch (FsForge.Core.FsException) { s.F2fs = new(); }
+        // Defaults never carry the size or identity of a particular image.
+        s.F2fs.SizeBytes = 0;
+        s.F2fs.Uuid = null;
         s.Romfs ??= new();
         try { s.Romfs.Validate(); } catch (FsForge.Core.FsException) { s.Romfs = new(); }
         s.Erofs ??= new();

@@ -10,7 +10,9 @@
 # busybox> the kernel also boots the archives FsForge writes as its initramfs), mkfs.cramfs and fsck.cramfs
 # (util-linux), genromfs (with CRR_MODULES=<folder with mtd.ko, cramfs.ko and romfs.ko> as well, the kernel
 # mounts CramFS and romfs images), lz4, mkbootimg (boot images), android-sdk-libsparse-utils (simg2img) and
-# lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img).
+# lpmake/lpunpack built from AOSP (ANDROID_LP=<folder>, for super.img), f2fs-tools (mkfs.f2fs, sload.f2fs,
+# fsck.f2fs; with F2FS_MODULES=<folder with f2fs.ko, lz4_compress.ko and lz4hc_compress.ko> or a kernel with
+# F2FS built in, CPIO_KERNEL also mounts, changes and compresses F2FS images in QEMU).
 #
 #   sudo tests/verify-linux.sh [work-dir]
 #
@@ -387,6 +389,13 @@ cpio_qemu
 . "$HERE/verify-cramfs-romfs.sh"
 crr_run
 crr_qemu
+
+# -------------------------------------------------------------------- F2FS
+# See tests/verify-f2fs.sh: mkfs.f2fs + sload.f2fs images read by FsForge; FsForge images checked by fsck.f2fs
+# (and the running kernel, if it has F2FS); optionally mounted, changed and compressed by the kernel in QEMU.
+. "$HERE/verify-f2fs.sh"
+f2_run
+f2_qemu
 
 # ---------------------------------------------------------- Android images
 # See tests/verify-android.sh: super.img from lpmake (ANDROID_LP=<folder with lpmake and lpunpack>) read, changed

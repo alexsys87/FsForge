@@ -25,6 +25,7 @@ public enum SaveFormat
     Cpio,
     Cramfs,
     Romfs,
+    F2fs,
 }
 
 /// <summary>How the size of an ext image is chosen.</summary>
@@ -55,6 +56,7 @@ public static class OptionLists
         new Choice<SaveFormat>(SaveFormat.Fat, L.T("FAT (загрузочные разделы, флешки)")),
         new Choice<SaveFormat>(SaveFormat.Tar, L.T("Архив tar (rootfs.tar.gz)")),
         new Choice<SaveFormat>(SaveFormat.Cpio, L.T("Архив cpio (initramfs)")),
+        new Choice<SaveFormat>(SaveFormat.F2fs, L.T("F2FS (userdata Android, флеш-накопители)")),
         new Choice<SaveFormat>(SaveFormat.Cramfs, L.T("CramFS (старые роутеры и встраиваемые системы)")),
         new Choice<SaveFormat>(SaveFormat.Romfs, L.T("romfs (uClinux, загрузчики)")),
     };
@@ -247,6 +249,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ImageFormat.Cpio => SaveFormat.Cpio,
             ImageFormat.Cramfs => SaveFormat.Cramfs,
             ImageFormat.Romfs => SaveFormat.Romfs,
+            ImageFormat.F2fs => SaveFormat.F2fs,
             _ => _o.Ext.Kind switch { ExtKind.Ext2 => SaveFormat.Ext2, ExtKind.Ext3 => SaveFormat.Ext3, _ => SaveFormat.Ext4 },
         };
         CanKeepSize = doc.Ext is not null && _o.Ext.SizeBytes > 0;
@@ -283,6 +286,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         _erofsName = _o.Erofs.VolumeName;
 
         _fatSize = _o.Fat.SizeBytes > 0 ? (_o.Fat.SizeBytes >> 20).ToString() : "";
+        _f2fsSize = _o.F2fs.SizeBytes > 0 ? (_o.F2fs.SizeBytes >> 20).ToString() : "";
+        _f2fsFree = (_o.F2fs.ExtraFreeBytes >> 20).ToString();
         _fatLabel = _o.Fat.Label;
 
         _ubifsLeb = _o.Ubifs.LebSize.ToString();
@@ -351,7 +356,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
     public bool WritesDisk => HasContainer && _o.KeepContainer && (IsAndroidContainer
         ? IsSuperContainer ? !IsTar && !IsCpio && !IsJffs2 && !IsUbifs : IsCpio
-        : !IsTar && !IsCpio && !IsJffs2 && !(IsFat && IsUbiContainer));
+        : !IsTar && !IsCpio && !IsJffs2 && !((IsFat || IsF2fs) && IsUbiContainer));
 
     public string ContainerNote
     {
@@ -413,7 +418,8 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         foreach (string p in new[] { nameof(WritesDisk), nameof(ContainerNote), nameof(ExtSizeNote), nameof(HasExtSizeNote), nameof(WritesUbi), nameof(ShowNewUbi),
                      nameof(ShowUbiOptions), nameof(CanEditUbifsGeometry), nameof(UbifsGeometryNote), nameof(Extension),
-                     nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote) }) OnPropertyChanged(p);
+                     nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote),
+                     nameof(F2fsSizeEditable), nameof(F2fsSizeNote) }) OnPropertyChanged(p);
     }
 
     public bool FormatLocked { get; }
@@ -448,7 +454,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         {
             if (!SetProperty(ref _format, value)) return;
             Error = null;
-            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsCramfs), nameof(IsRomfs), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
+            foreach (string p in new[] { nameof(IsSquash), nameof(IsErofs), nameof(IsExt), nameof(IsTar), nameof(IsCpio), nameof(IsCramfs), nameof(IsRomfs), nameof(IsF2fs), nameof(IsUbifs), nameof(IsJffs2), nameof(IsFat), nameof(ShowCommonXattrs), nameof(ShowAllRoot), nameof(FatSizeEditable), nameof(FatSizeNote), nameof(HasFatSizeNote), nameof(HasJournalOption), nameof(FormatNote) }) OnPropertyChanged(p);
             RaiseCompression();
             RaiseContainer();
         }
@@ -461,6 +467,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool IsCpio => _format == SaveFormat.Cpio;
     public bool IsCramfs => _format == SaveFormat.Cramfs;
     public bool IsRomfs => _format == SaveFormat.Romfs;
+    public bool IsF2fs => _format == SaveFormat.F2fs;
     public bool IsUbifs => _format == SaveFormat.Ubifs;
     public bool IsJffs2 => _format == SaveFormat.Jffs2;
     public bool IsFat => _format == SaveFormat.Fat;
@@ -469,6 +476,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string FormatNote => _format switch
     {
         SaveFormat.SquashFs => L.T("Сжатая файловая система только для чтения (версия 4.0)."),
+        SaveFormat.F2fs => L.T("Файловая система для флеш-памяти: раздел userdata Android, карты памяти, некоторые роутеры и одноплатники. Монтируется на чтение и запись (Linux 3.8 и новее); хранит права, владельцев, время, ссылки, устройства и расширенные атрибуты. Часть места резервируется под сборку мусора, поэтому образ не бывает меньше нескольких десятков мегабайт."),
         SaveFormat.Cramfs => L.T("Сжатая файловая система только для чтения из старых прошивок роутеров и встраиваемых систем: zlib, блоки размером со страницу памяти. Хранит права, владельца (16 бит) и группу (8 бит); не хранит время, жёсткие ссылки (одинаковые данные хранятся один раз) и расширенные атрибуты. Файл — до 16 МБ, образ — до 256 МБ."),
         SaveFormat.Romfs => L.T("Простейшая файловая система только для чтения (uClinux, загрузчики, прошивки без MMU): без сжатия, данные можно выполнять на месте. Хранит только тип, признак исполняемого файла, ссылки и устройства; владельцы, права и время не хранятся."),
         SaveFormat.Cpio => L.T("Архив cpio в формате newc — так устроен initramfs ядра Linux. Хранит права, владельцев, время, ссылки и устройства; расширенные атрибуты (метки SELinux, capabilities) не хранит."),
@@ -748,6 +756,19 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public string CramfsNote => L.F("Ядро читает только образ своего порядка байтов ({0}) с блоком, равным размеру страницы памяти ({1}).",
         _o.Cramfs.BigEndian ? "big-endian" : "little-endian", Fmt.Size(_o.Cramfs.BlockSize));
 
+    // ---- F2FS
+    private string _f2fsSize, _f2fsFree;
+    public string F2fsSizeMiB { get => _f2fsSize; set { if (SetProperty(ref _f2fsSize, value)) Error = null; } }
+    public string F2fsFreeMiB { get => _f2fsFree; set { if (SetProperty(ref _f2fsFree, value)) Error = null; } }
+    public string F2fsVolumeName { get => _o.F2fs.VolumeName; set { _o.F2fs.VolumeName = value ?? ""; OnPropertyChanged(); Error = null; } }
+
+    /// <summary>In a disk image the filesystem fills its partition.</summary>
+    public bool F2fsSizeEditable => !WritesDisk;
+
+    public string F2fsSizeNote => WritesDisk && _doc.Container is { } f2disk
+        ? L.F("В образе диска F2FS занимает раздел целиком ({0}).", Fmt.Size(f2disk.Partition.Length))
+        : L.T("Пусто — наименьший размер, в который помещаются содержимое и запас свободного места.");
+
     // ---- romfs
     public IReadOnlyList<Choice<int>> RomfsAlignments => OptionLists.RomfsAlignments;
     public string RomfsVolumeName { get => _o.Romfs.VolumeName; set { _o.Romfs.VolumeName = value ?? ""; OnPropertyChanged(); Error = null; } }
@@ -799,13 +820,13 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     public bool StoreXattrs
     {
         get => _o.SquashFs.StoreXattrs;
-        set { _o.SquashFs.StoreXattrs = _o.Ext.StoreXattrs = _o.Tar.StoreXattrs = _o.Ubifs.StoreXattrs = _o.Erofs.StoreXattrs = value; OnPropertyChanged(); }
+        set { _o.SquashFs.StoreXattrs = _o.Ext.StoreXattrs = _o.Tar.StoreXattrs = _o.Ubifs.StoreXattrs = _o.Erofs.StoreXattrs = _o.F2fs.StoreXattrs = value; OnPropertyChanged(); }
     }
 
     public bool AllRoot
     {
         get => _o.SquashFs.AllRoot;
-        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = _o.Cpio.AllRoot = _o.Cramfs.AllRoot = value; OnPropertyChanged(); }
+        set { _o.SquashFs.AllRoot = _o.Ext.AllRoot = _o.Tar.AllRoot = _o.Ubifs.AllRoot = _o.Jffs2.AllRoot = _o.Erofs.AllRoot = _o.Cpio.AllRoot = _o.Cramfs.AllRoot = _o.F2fs.AllRoot = value; OnPropertyChanged(); }
     }
 
     public VerifyLevel Verify { get => _o.Verify; set { _o.Verify = value; OnPropertyChanged(); } }
@@ -828,6 +849,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
         SaveFormat.Cpio => CpioFormat.DefaultExtension(_o.Cpio.Compression),
         SaveFormat.Cramfs => ".cramfs",
         SaveFormat.Romfs => ".romfs",
+        SaveFormat.F2fs => ".f2fs",
         _ => ArchiveCodec.DefaultExtension(_o.Tar.Compression),
     };
 
@@ -858,6 +880,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             SaveFormat.Cpio => ImageFormat.Cpio,
             SaveFormat.Cramfs => ImageFormat.Cramfs,
             SaveFormat.Romfs => ImageFormat.Romfs,
+            SaveFormat.F2fs => ImageFormat.F2fs,
             _ => ImageFormat.Ext,
         };
         o.NewUbi = ShowUbiOptions;
@@ -904,6 +927,18 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
             else o.Fat.SizeBytes = mib << 20;
             o.Fat.Label = _fatLabel.Trim();
+        }
+
+        if (IsF2fs)
+        {
+            if (WritesDisk) o.F2fs.SizeBytes = 0;          // the partition decides
+            else if (_f2fsSize.Trim().Length == 0) o.F2fs.SizeBytes = 0;
+            else if (!long.TryParse(_f2fsSize.Trim(), out long mib) || mib < 1 || mib > 16L << 20)
+                return Fail(L.T("Размер образа — целое число мегабайт (МиБ), не меньше 1."));
+            else o.F2fs.SizeBytes = mib << 20;
+            if (!long.TryParse(_f2fsFree.Trim(), out long free) || free < 0)
+                return Fail(L.T("Запас свободного места — целое неотрицательное число мегабайт."));
+            o.F2fs.ExtraFreeBytes = free << 20;
         }
 
         if (IsErofs)
@@ -968,6 +1003,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
                 case ImageFormat.Cpio: o.Cpio.Validate(); break;
                 case ImageFormat.Cramfs: o.Cramfs.Validate(); break;
                 case ImageFormat.Romfs: o.Romfs.Validate(); break;
+                case ImageFormat.F2fs: o.F2fs.Validate(); break;
                 default: o.Tar.Validate(); break;
             }
         }
