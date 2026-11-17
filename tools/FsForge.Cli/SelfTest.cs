@@ -68,7 +68,7 @@ internal static partial class SelfTest
                 ExpectFs(() => ImageDocument.WriteTo(tree, ms, o));
             });
 
-            foreach (ArchiveCompression c in Enum.GetValues<ArchiveCompression>())
+            foreach (ArchiveCompression c in Enum.GetValues<ArchiveCompression>().Where(c => c is not (ArchiveCompression.Zip or ArchiveCompression.SevenZip)))
                 foreach (TarDialect d in Enum.GetValues<TarDialect>())
                     Test($"tar {c} {d}", () => RoundTrip(tree, reference, $"t_{c}_{d}{ArchiveCodec.DefaultExtension(c)}", new SaveOptions
                     {
@@ -85,7 +85,7 @@ internal static partial class SelfTest
             Test("save over the opened file with backup and content check", () => SaveInPlace(tree, reference));
             Test("extract to a folder and pack it again", () => HostRoundTrip(tree, reference));
             Test("edited folder is packed with the edits", () => HostEdits(tree));
-            Test("images wrapped in gzip, xz and zstd open transparently", () => CompressedImages(tree, reference));
+            Test("images wrapped in gzip, xz, zstd and bzip2 open transparently", () => CompressedImages(tree, reference));
             DiskTests(tree, reference);
             JournalTests();
             UbifsTests(tree, reference);
@@ -95,6 +95,7 @@ internal static partial class SelfTest
             CpioTests(tree, reference);
             CramfsRomfsTests();
             F2fsTests(tree, reference);
+            ArchiveTests(tree, reference);
             AndroidTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
@@ -373,7 +374,7 @@ internal static partial class SelfTest
         byte[] image = ms.ToArray();
         int before = Directory.GetFiles(_dir, "fsforge-*.img").Length;
 
-        foreach (ArchiveCompression c in new[] { ArchiveCompression.Gzip, ArchiveCompression.Xz, ArchiveCompression.Zstd })
+        foreach (ArchiveCompression c in new[] { ArchiveCompression.Gzip, ArchiveCompression.Xz, ArchiveCompression.Zstd, ArchiveCompression.Bzip2 })
         {
             string path = Path.Combine(_dir, "wrapped.img" + ArchiveCodec.DefaultExtension(c)[4..]);
             using (var fs = new FileStream(path, FileMode.Create))
@@ -641,6 +642,10 @@ internal static partial class SelfTest
             ("cramfs big-endian holes 16k", new SaveOptions { Format = ImageFormat.Cramfs, Cramfs = new FsForge.Core.Cramfs.CramfsOptions { BigEndian = true, Holes = true, BlockSize = 16384, Pad = true } }),
             ("romfs", new SaveOptions { Format = ImageFormat.Romfs }),
             ("f2fs", new SaveOptions { Format = ImageFormat.F2fs }),
+            ("tar.bz2", new SaveOptions { Format = ImageFormat.Tar, Tar = new TarOptions { Compression = ArchiveCompression.Bzip2 } }),
+            ("squashfs in bzip2", new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Lz4 } }),
+            ("squashfs in 7z", new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Lz4 } }),
+            ("squashfs in zip", new SaveOptions { Format = ImageFormat.SquashFs, SquashFs = new SquashFsOptions { Compression = SquashCompression.Lz4 } }),
             ("jffs2 big-endian lzo", new SaveOptions { Format = ImageFormat.Jffs2, Jffs2 = new Jffs2Options { BigEndian = true, Compression = Jffs2Compression.Lzo, Cleanmarkers = false } }),
         };
 
@@ -651,6 +656,9 @@ internal static partial class SelfTest
             var ms = new MemoryStream();
             ImageDocument.WriteTo(small, ms, o);
             byte[] good = ms.ToArray();
+            if (name.EndsWith(" in bzip2")) good = Bz2(good);
+            else if (name.EndsWith(" in 7z")) good = Pack7z(good);
+            else if (name.EndsWith(" in zip")) good = PackZip(good);
             // Metadata lives at the start (and for SquashFS at the end): aim most of the damage there.
             int metaEnd = o.Format == ImageFormat.Ext ? Math.Min(good.Length, 200 * 1024) : good.Length;
             int crashes = 0;

@@ -441,6 +441,7 @@ internal static class EnglishStrings
         [" · файл сжат {0}"] = " · file compressed with {0}",
         ["Сейчас: {0} — свободно {1}."] = "Now: {0}, {1} free.",
         ["Сейчас: {0}."] = "Now: {0}.",
+        [" · обновлены файлы рядом с ним: {0}"] = " · files next to it updated: {0}",
         ["Выбор файла в архиве"] = "Choose a file in the archive",
         ["«{0}» — архив {1} с несколькими файлами. "] = "“{0}” is a {1} archive with several files. ",
         ["Какой из них открыть? Остальные файлы при сохранении в тот же архив переносятся без изменений."] = "Which one should be opened? When saving into the same archive, the other files are carried over unchanged.",

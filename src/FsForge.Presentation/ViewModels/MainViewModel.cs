@@ -786,6 +786,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshRecent();
         SaveSettings();
         string done = $"{Path.GetFileName(path)} — {Fmt.Size(result.BytesWritten)}";
+        if (result.UpdatedFiles is { Count: > 0 } updated)
+            done += L.F(" · обновлены файлы рядом с ним: {0}", string.Join(", ", updated));
         if (result.Warnings.Count > 0)
             ShowInfo(L.F("Образ сохранён с предупреждениями: {0}", result.Warnings.Count), result.Warnings[0], MessageKind.Warning, result.Warnings, L.T("Предупреждения при сохранении"));
         else

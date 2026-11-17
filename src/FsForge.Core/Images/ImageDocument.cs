@@ -841,8 +841,9 @@ public sealed class ImageDocument : IDisposable
         {
             throw new FsException($"The {what} archive holds no files.");
         }
-        else if (files.Count > 1 && ask is not null)
+        else if (files.Count > 1 && files.Count(e => ImageArchive.LooksLikeImage(e.Name)) != 1 && ask is not null)
         {
+            // Several images, or several files none of which is named like one: the user decides.
             entry = ask(archive) ?? throw new OperationCanceledException();
         }
         else
@@ -1039,7 +1040,8 @@ public sealed class ImageDocument : IDisposable
     };
 
     /// <summary>Outcome of <see cref="Save"/>.</summary>
-    public sealed record SaveResult(ImageDocument Document, IReadOnlyList<string> Warnings, long BytesWritten);
+    /// <param name="UpdatedFiles">Files next to the image that were brought up to date: checksum files, block maps.</param>
+    public sealed record SaveResult(ImageDocument Document, IReadOnlyList<string> Warnings, long BytesWritten, IReadOnlyList<string>? UpdatedFiles = null);
 
     /// <summary>
     /// Writes the image to <paramref name="path"/> and reopens it. The data goes to a temporary file
@@ -1168,11 +1170,12 @@ public sealed class ImageDocument : IDisposable
         }
 
         // Files next to the image that describe its old contents: checksums are recomputed, a block map rebuilt.
-        warnings.AddRange(Sidecars.Update(path, bmap));
+        var updated = new List<string>();
+        warnings.AddRange(Sidecars.Update(path, bmap, updated));
 
         ImageDocument reopened = Open(path, options.TempDirectory, searchEmbedded: false, null, CancellationToken.None, partition, volume: volume,
             archiveEntry: outer is ArchiveCompression.Zip or ArchiveCompression.SevenZip ? Archive?.EntryName ?? ArchiveCodec.InnerImageName(path) : null);
-        return new SaveResult(reopened, warnings, written);
+        return new SaveResult(reopened, warnings, written, updated);
     }
 
     // ------------------------------------------------------ Android image

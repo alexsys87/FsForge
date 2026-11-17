@@ -71,6 +71,11 @@ public sealed class ImageArchive : IDisposable
         {
             return new ImageArchive(fs, kind);
         }
+        catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or ArgumentException or IOException and not FileNotFoundException)
+        {
+            fs.Dispose();
+            throw new FsException($"Corrupt {ArchiveCodec.DisplayName(kind)} archive: {ex.Message}", ex);
+        }
         catch
         {
             fs.Dispose();

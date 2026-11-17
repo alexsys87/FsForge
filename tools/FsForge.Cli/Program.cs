@@ -517,6 +517,7 @@ internal static class Program
             ImageDocument.SaveResult r = doc.Save(a[2], s);
             doc = r.Document;
             foreach (string w in r.Warnings) Console.Error.WriteLine("warning: " + w);
+            foreach (string u in r.UpdatedFiles ?? Array.Empty<string>()) Console.Error.WriteLine("updated: " + u);
             Console.Error.WriteLine($"written {r.BytesWritten} bytes in {sw.ElapsedMilliseconds} ms");
         }
         finally
@@ -569,6 +570,7 @@ internal static class Program
             ImageDocument.SaveResult r = doc.Save(a[2], s);
             doc = r.Document;
             foreach (string w in r.Warnings) Console.Error.WriteLine("warning: " + w);
+            foreach (string u in r.UpdatedFiles ?? Array.Empty<string>()) Console.Error.WriteLine("updated: " + u);
             Console.Error.WriteLine($"{changes.Length} changes; written {r.BytesWritten} bytes in {sw.ElapsedMilliseconds} ms");
         }
         finally
@@ -603,6 +605,7 @@ internal static class Program
             ImageDocument.SaveResult r = doc.Save(a[2], s);
             doc = r.Document;
             foreach (string w in r.Warnings) Console.Error.WriteLine("warning: " + w);
+            foreach (string u in r.UpdatedFiles ?? Array.Empty<string>()) Console.Error.WriteLine("updated: " + u);
             Console.Error.WriteLine($"packed {ir.Files} files, {ir.Directories} directories; written {r.BytesWritten} bytes in {sw.ElapsedMilliseconds} ms");
         }
         finally

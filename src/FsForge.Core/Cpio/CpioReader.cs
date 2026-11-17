@@ -96,7 +96,7 @@ public sealed class CpioReader
                         if (IsBinary(head.AsSpan(0, n)))
                             throw new FsException("The archive uses the old binary cpio format, which is not supported. Only newc, crc and odc archives are read.");
                         if (ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } name)
-                            throw new FsException($"The cpio archive is compressed with {name}, which is not supported. Use gzip, xz or zstd.");
+                            throw new FsException($"The cpio archive is compressed with {name}, which is not supported. Use gzip, xz, zstd or bzip2.");
                         throw new FsException("Not a cpio archive (no newc, crc or odc header).");
                     }
                     string what = ArchiveCodec.DetectUnsupported(head.AsSpan(0, n)) is { } other ? $"data compressed with {other}" : "data that is not a cpio archive";

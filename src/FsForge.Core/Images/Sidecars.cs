@@ -106,10 +106,11 @@ internal static class Sidecars
     }
 
     /// <summary>
-    /// Brings the files next to a just saved image up to date. Returns a note for each file that was changed;
-    /// a file that cannot be written is reported as well, it is never a reason to fail the save.
+    /// Brings the files next to a just saved image up to date. <paramref name="updated"/> receives the names of
+    /// the files that were changed; the result lists files that could not be written, which is never a reason
+    /// to fail the save.
     /// </summary>
-    public static List<string> Update(string imagePath, byte[]? bmap)
+    public static List<string> Update(string imagePath, byte[]? bmap, List<string> updated)
     {
         var notes = new List<string>();
         string dir = Path.GetDirectoryName(imagePath) ?? "";
@@ -120,7 +121,7 @@ internal static class Sidecars
             try
             {
                 File.WriteAllBytes(bmapPath, bmap);
-                notes.Add($"The block map '{Path.GetFileName(bmapPath)}' was rebuilt for the new image.");
+                updated.Add(Path.GetFileName(bmapPath));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -143,10 +144,10 @@ internal static class Sidecars
                 if (new FileInfo(path).Length > MaxTextSize) continue;
                 string text = File.ReadAllText(path);
                 hash ??= Convert.ToHexString(Sha256Of(imagePath)).ToLowerInvariant();
-                if (Replace(text, name, hash, own) is not { } updated) continue;
-                if (updated == text) continue;
-                File.WriteAllText(path, updated, new UTF8Encoding(false));
-                notes.Add($"The SHA-256 checksum of '{name}' in '{Path.GetFileName(path)}' was updated for the new file.");
+                if (Replace(text, name, hash, own) is not { } text2) continue;
+                if (text2 == text) continue;
+                File.WriteAllText(path, text2, new UTF8Encoding(false));
+                updated.Add(Path.GetFileName(path));
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

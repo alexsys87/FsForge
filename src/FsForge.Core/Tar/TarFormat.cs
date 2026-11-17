@@ -113,6 +113,8 @@ public static class ArchiveCodec
         if (head.Length >= 3 && head[0] == 0x1F && head[1] == 0x8B && head[2] == 8) return ArchiveCompression.Gzip;
         if (head.Length >= 6 && head[..6].SequenceEqual(XzFormat.HeaderMagic)) return ArchiveCompression.Xz;
         if (head.Length >= 4 && head[0] == 0x28 && head[1] == 0xB5 && head[2] == 0x2F && head[3] == 0xFD) return ArchiveCompression.Zstd;
+        // pzstd and the seekable format start with a skippable frame (magic 0x184D2A50..5F) before the data frames.
+        if (head.Length >= 4 && (head[0] & 0xF0) == 0x50 && head[1] == 0x2A && head[2] == 0x4D && head[3] == 0x18) return ArchiveCompression.Zstd;
         if (Compression.Lz4Legacy.IsLz4Legacy(head)) return ArchiveCompression.Lz4;
         if (Bzip2Format.IsBzip2(head)) return ArchiveCompression.Bzip2;
         if (Archives.SevenZipArchive.IsSevenZip(head)) return ArchiveCompression.SevenZip;

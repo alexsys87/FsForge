@@ -78,7 +78,7 @@ public sealed class TarReader
         {
             byte[] first = new byte[Block];
             if (source.Read(0, first) < Block || !ArchiveCodec.IsTarHeader(first))
-                throw new FsException($"The archive is compressed with {name}, which is not supported. Use gzip, xz or zstd.");
+                throw new FsException($"The archive is compressed with {name}, which is not supported. Use gzip, xz, zstd or bzip2.");
         }
 
         Input input;
