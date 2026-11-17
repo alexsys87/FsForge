@@ -478,7 +478,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 ? L.F("super.img · {0} из {1} · ", android.Part.Name, android.Image.Parts.Count)
                 : L.F("{0} · ramdisk {1} · ", android.Image.Kind == FsForge.Core.Android.AndroidImageKind.VendorBoot ? "vendor_boot" : "boot", android.Part.Name)) + info;
         if (_doc.Firmware is { } fw)
-            info = L.F("uImage · {0} из {1} · ", fw.Part.Name, fw.Image.Parts.Count) + info;
+            info = L.F("{0} · {1} из {2} · ", fw.Image.ShortKind, fw.Part.Name, fw.Image.Parts.Count) + info;
         if (_doc.Container is { } disk)
             info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
         if (_doc.Archive is { } arc)

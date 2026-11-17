@@ -239,6 +239,44 @@ internal static class Program
 
     private static byte[] BigEndian(uint v) => new[] { (byte)(v >> 24), (byte)(v >> 16), (byte)(v >> 8), (byte)v };
 
+    /// <summary>A FIT image as mkimage makes it: a device tree (version 17) with the images in /images, each with a sha256 hash.</summary>
+    private static byte[] BuildFit(params (string Name, string Type, byte[] Data)[] images)
+    {
+        var st = new MemoryStream();
+        var strings = new MemoryStream();
+        var names = new Dictionary<string, int>();
+        void Word(uint v) => st.Write(BigEndian(v));
+        void Pad() { while (st.Length % 4 != 0) st.WriteByte(0); }
+        void Begin(string name) { Word(1); st.Write(Encoding.ASCII.GetBytes(name + "\0")); Pad(); }
+        void Prop(string name, byte[] value)
+        {
+            if (!names.TryGetValue(name, out int off)) { off = (int)strings.Length; names[name] = off; strings.Write(Encoding.ASCII.GetBytes(name + "\0")); }
+            Word(3); Word((uint)value.Length); Word((uint)off); st.Write(value); Pad();
+        }
+        byte[] Str(string v) => Encoding.ASCII.GetBytes(v + "\0");
+        Begin("");
+        Prop("description", Str("board FIT"));
+        Begin("images");
+        foreach ((string name, string type, byte[] data) in images)
+        {
+            Begin(name);
+            Prop("type", Str(type)); Prop("compression", Str("none")); Prop("data", data);
+            Begin("hash-1"); Prop("algo", Str("sha256")); Prop("value", System.Security.Cryptography.SHA256.HashData(data)); Word(2);
+            Word(2);
+        }
+        Word(2);
+        Begin("configurations"); Prop("default", Str("conf-1")); Begin("conf-1"); Prop("description", Str("board")); Word(2); Word(2);
+        Word(2);
+        Word(9);
+        int offStruct = 56, offStrings = offStruct + (int)st.Length, total = offStrings + (int)strings.Length;
+        byte[] dtb = new byte[total];
+        uint[] header = { 0xD00DFEED, (uint)total, (uint)offStruct, (uint)offStrings, 40, 17, 16, 0, (uint)strings.Length, (uint)st.Length };
+        for (int i = 0; i < header.Length; i++) BigEndian(header[i]).CopyTo(dtb, 4 * i);
+        st.ToArray().CopyTo(dtb, offStruct);
+        strings.ToArray().CopyTo(dtb, offStrings);
+        return dtb;
+    }
+
     private static NodeItem Item(MainViewModel vm, string name) => vm.Items.FirstOrDefault(i => i.Name == name) ?? throw new InvalidOperationException($"'{name}' is not in the list: {string.Join(", ", vm.Items.Select(i => i.Name))}");
 
     private static void Select(MainViewModel vm, params string[] names) => vm.SetSelection(names.Select(n => Item(vm, n)));
@@ -1543,6 +1581,62 @@ internal static class Program
             Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
             Check(!d.LastSaveWasDisk && File.ReadAllBytes(fw).AsSpan().SequenceEqual(rebuilt), "the firmware file was changed by saving the filesystem alone");
             Check(vm.Document is { Firmware: null, Format: ImageFormat.SquashFs } && vm.Document.Tree.Resolve("/etc/passwd") is not null, "the filesystem saved alone");
+            vm.Dispose();
+        });
+
+        await Test("FIT image: choice of image, information, rebuilt on save, filesystem saved alone", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] squash = File.ReadAllBytes(MakeImage("fit.sqfs")), cpio;
+            using (ImageDocument source = ImageDocument.Open(MakeImage("fit-src.sqfs"), _dir))
+            {
+                var ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.Cpio, Cpio = new FsForge.Core.Cpio.CpioOptions { Compression = ArchiveCompression.Gzip } });
+                cpio = ms.ToArray();
+            }
+            string fit = Path.Combine(_dir, "board.itb");
+            File.WriteAllBytes(fit, BuildFit(("ramdisk-1", "ramdisk", cpio), ("rootfs-1", "filesystem", squash)));
+            byte[] original = File.ReadAllBytes(fit);
+
+            d.OnDialog = o =>
+            {
+                var c = (PartitionChoiceViewModel)o;
+                Check(c.Title == "Выбор части прошивки" && c.Summary.Contains("U-Boot FIT image «board FIT»") && c.Rows.Count == 2
+                      && c.Rows[1] is { Name: "rootfs-1", Content: "SquashFS", IsEditable: true }, "dialog: " + c.Summary);
+                c.Selected = c.Rows[1];
+                return c.Accept();
+            };
+            Check(await vm.OpenPathAsync(fit), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs-1", SavesFilesystemOnly: false }
+                  && vm.DocumentInfo.StartsWith("FIT · rootfs-1 из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Прошивка" && r.Value.Contains("FIT image «board FIT»"))
+                                                                    && i.Rows.Any(r => r.Label == "Конфигурация по умолчанию" && r.Value.StartsWith("conf-1"))
+                                                                    && i.Rows.Any(r => r.Label == "Хеши образов" && r.Value == "проверено 2, все совпадают")
+                                                                    && i.Rows.Any(r => r.Label == "▸ rootfs-1 (открыт)" && r.Value.StartsWith("SquashFS"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a FIT image");
+
+            // Ctrl+S writes the FIT image again: the other image stays, the hashes are right.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] rebuilt = File.ReadAllBytes(fit);
+            Check(!rebuilt.AsSpan().SequenceEqual(original) && rebuilt.AsSpan().IndexOf(cpio) > 0, "the FIT image was not rebuilt, or the ramdisk changed");
+            Check(vm.Document is { Firmware: { Part.Name: "rootfs-1", Image: FsForge.Core.Firmware.FitImage { HashesWrong: 0, HashesChecked: 2 } } } && vm.Document.Tree.Resolve("/etc/Banner") is null,
+                "the rebuilt FIT image reopened");
+
+            // "Save as" can still write the filesystem alone, and then the FIT image stays as it is.
+            d.OnDialog = o =>
+            {
+                var s = (SaveOptionsViewModel)o;
+                Check(s.IsFirmwareContainer && s.WritesDisk && s.ContainerNote.Contains("дереве FIT пересчитываются"), "save dialog of a FIT image: " + s.ContainerNote);
+                s.KeepContainer = false;
+                return s.Accept();
+            };
+            d.SavePicks.Enqueue(Path.Combine(_dir, "board-rootfs.squashfs"));
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(fit).AsSpan().SequenceEqual(rebuilt) && vm.Document is { Firmware: null }, "the filesystem saved alone, the FIT image unchanged");
             vm.Dispose();
         });
 

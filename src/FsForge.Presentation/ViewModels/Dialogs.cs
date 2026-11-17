@@ -921,6 +921,16 @@ public sealed class ImageInfoViewModel : DialogViewModel
                     Add(L.T("Метаданные OpenWrt (fwtool)"), (fwOk ? L.T("контрольные суммы верны, при сохранении пересчитываются") : L.T("контрольные суммы неверны, переносятся без изменений")) +
                                                             (ui.FwtoolSigned ? L.T("; есть подпись — после изменения она не совпадёт") : ""));
             }
+            if (fw.Image is Core.Firmware.FitImage fit)
+            {
+                if (fit.DefaultConfiguration.Length > 0)
+                    Add(L.T("Конфигурация по умолчанию"), fit.DefaultConfiguration + (fit.DefaultConfigurationText.Length > 0 ? $" ({fit.DefaultConfigurationText})" : ""));
+                Add(L.T("Хеши образов"), fit.HashesChecked == 0 ? L.T("нет") : fit.HashesWrong == 0
+                    ? L.F("проверено {0}, все совпадают", fit.HashesChecked)
+                    : L.F("проверено {0}, не совпадают {1} (образ изменён или повреждён)", fit.HashesChecked, fit.HashesWrong));
+                Add(L.T("Данные образов"), fit.ExternalData ? L.T("вне дерева устройств (mkimage -E)") : L.T("внутри дерева устройств"));
+                if (fit.Signed) Add(L.T("Подпись"), L.T("есть (проверенная загрузка U-Boot)"));
+            }
             foreach (Core.Firmware.FirmwarePart p in fw.Image.Parts)
             {
                 string text = L.F("{0}, {1}, смещение 0x{2:X}", Fmt.FirmwarePartContent(p), Fmt.Size(p.Length), p.Offset);
@@ -929,7 +939,9 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Сохранение"), doc.SavesFilesystemOnly
                 ? L.T("только сама файловая система, в новый файл: эту прошивку пересобрать нельзя, файл прошивки не меняется")
                 : fw.Part.BehindImage
-                ? L.T("прошивка целиком: заменяется только корневая файловая система, заголовок uImage и ядро не меняются")
+                ? L.F("прошивка целиком: заменяется только корневая файловая система, образ {0} с ядром не меняется", fw.Image.ShortKind)
+                : fw.Image is Core.Firmware.FitImage
+                ? L.T("прошивка целиком: заменяется только открытый образ, его хеши и размер в дереве FIT пересчитываются")
                 : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");

@@ -51,6 +51,11 @@ internal static class Program
         partition (system_a, vendor_a...) or vendor ramdisk. "convert" writes the whole Android image again with only
         that part replaced, unless the output name or container=0 says otherwise.
 
+        U-Boot FIT images (.itb, image.ub) are opened the same way, at the image that holds a filesystem or
+        ramdisk (vol=<image node name>, e.g. vol=ramdisk-1); hashes are checked. Saving writes the FIT image
+        again with that image replaced: its hashes, size and the offsets of external data are recalculated.
+        Signed FIT images are only read: their filesystem is saved alone, under another name.
+
         U-Boot uImage files (uImage, uInitrd, OpenWrt sysupgrade images with the root filesystem behind the
         kernel) are opened at the filesystem or ramdisk they hold; add vol=<name or number> to pick another part
         (rootfs, ramdisk, filesystem, or the number of the image as mkimage -l counts them; rootfs:<volume> for a
@@ -288,6 +293,9 @@ internal static class Program
                                   $"{ui.DataSize} bytes of data, data CRC {(ui.DataCrcMatches ? "ok" : "wrong")}");
             if (fw.Image is FsForge.Core.Firmware.UImage { FwtoolChecksumsValid: { } fwOk } signed)
                 Console.WriteLine($"             OpenWrt metadata (fwtool): checksums {(fwOk ? "ok" : "wrong")}{(signed.FwtoolSigned ? ", signed" : "")}");
+            if (fw.Image is FsForge.Core.Firmware.FitImage fit)
+                Console.WriteLine($"             default configuration '{fit.DefaultConfiguration}', {fit.HashesChecked} hash(es) checked, {fit.HashesWrong} wrong" +
+                                  $"{(fit.ExternalData ? ", external data" : "")}{(fit.Signed ? ", signed" : "")}");
             foreach (FsForge.Core.Firmware.FirmwarePart p in fw.Image.Parts)
                 Console.WriteLine($"  {(ReferenceEquals(p, fw.Part) ? '*' : ' ')} {p}");
         }

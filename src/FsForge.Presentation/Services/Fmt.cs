@@ -84,6 +84,7 @@ public static class Fmt
     public static string FirmwareKind(Core.Firmware.FirmwareImage image) => image switch
     {
         Core.Firmware.UImage { Name.Length: > 0 } u => L.F("прошивка {0} «{1}»", u.Kind, u.Name),
+        Core.Firmware.FitImage { Name.Length: > 0 } f => L.F("прошивка {0} «{1}»", f.Kind, f.Name),
         _ => L.F("прошивка {0}", image.Kind),
     };
 
