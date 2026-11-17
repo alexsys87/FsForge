@@ -26,6 +26,11 @@
 #               unsquashfs unpacks the new root filesystem. With TRX=<trx of OpenWrt's firmware-utils> the images are
 #               also made by trx (version 1, -F, version 2 with a bin-header), and after the change each must be byte
 #               for byte what trx makes from the same parts and the new filesystem.
+#               TP-Link images (the classic header of mktplinkfw: cut with -s, padded to the flash layout, with the
+#               JFFS2 markers, combined; safeloader factory images with their partition table) made by a Python script
+#               after OpenWrt's mktplinkfw.c and tplink-safeloader.c, and with MKTPLINKFW=<mktplinkfw> and
+#               TPLINK_SAFELOADER=<tplink-safeloader> by those tools themselves, must read as the SquashFS of
+#               mksquashfs, with their MD5 found right; a changed byte must be reported.
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -84,6 +89,7 @@ PY
 
   fw_fit
   fw_trx
+  fw_tplink
   echo "uImage rebuilt by FsForge"
   head -c 300000 /dev/urandom > fw/big.bin
   cp fw/sysupgrade.bin fw/w_sys.bin
@@ -349,5 +355,71 @@ PY
       else bad "edit trx ($name): $(grep -v '^warning' fw/t.err | head -2)"; fi
     done
   else echo "  --    trx checks skipped: set TRX to the trx of OpenWrt's firmware-utils"; fi
+}
+
+fw_tplink() {
+  echo "TP-Link"
+  python3 - fw img/xz.sqfs <<'PY'
+# After OpenWrt's mktplinkfw.c (build_fw, fill_header) and tplink-safeloader.c (generate_factory_image, put_partitions).
+import sys, struct, hashlib, os
+d, root = sys.argv[1], open(sys.argv[2], 'rb').read()
+SN = bytes.fromhex('dcd73aa5c39598fbddf9e7f40eae4738'); SS = bytes.fromhex('7a2b15ed9b98596de504ab44ac2a9f4e')
+kernel = b'\x27\x05\x19\x56' + os.urandom(300000)
+def classic(rootfs, strip=True, layout=0x7c0000, rootfs_ofs=0x100000, jffs2=False, combined=False):
+    buf = bytearray(b'\xff' * layout); buf[:0x200] = bytes(0x200)
+    k = kernel + (root if combined else b''); buf[0x200:0x200 + len(k)] = k; n = 0x200 + len(k)
+    if not combined:
+        buf[rootfs_ofs:rootfs_ofs + len(rootfs)] = rootfs; n = rootfs_ofs + len(rootfs)
+        if jffs2:
+            n = (n + 0xffff) & ~0xffff; buf[n:n + 4] = b'\xde\xad\xc0\xde'; n += 4
+    img = buf[:n] if strip else buf
+    struct.pack_into('>I', img, 0, 0x01000000); img[4:24] = b'TP-LINK Technologies'; img[28:36] = b'ver. 1.0'
+    struct.pack_into('>II', img, 64, 0x07500001, 1)
+    struct.pack_into('>9I', img, 116, 0x80060000, 0x80060000, layout, 0x200, len(k), 0 if combined else rootfs_ofs, 0 if combined else len(rootfs), 0, 0)
+    img[76:92] = SN; img[76:92] = hashlib.md5(img).digest(); return bytes(img)
+def meta(b): return struct.pack('>II', len(b), 0) + b
+def safeloader(rootfs):
+    flash = (b'\0\x04\0\0partition fs-uboot base 0x00000 size 0x20000\npartition firmware base 0x20000 size 0x7a0000\n\0').ljust(0x800, b'\xff')
+    parts = [(b'partition-table', flash), (b'soft-version', meta(b'soft_ver:7.0.0\n\0')),
+             (b'support-list', meta(b'SupportList:\r\n{product_name:Archer C7,product_ver:5.0.0,special_id:00000000}\r\n')),
+             (b'os-image', kernel), (b'file-system', rootfs), (b'extra-para', meta(b'\x01\x00'))]
+    table = b''; data = b''; base = 0x800
+    for name, blob in parts:
+        table += b'fwup-ptn %s base 0x%05x size 0x%05x\t\r\n' % (name, base, len(blob)); data += blob; base += len(blob)
+    vendor = b'vendor_name:TP-Link\nvendor_id:0\n'
+    img = bytearray(0x14) + (struct.pack('>I', len(vendor)) + vendor).ljust(0x1000, b'\xff') + (table + b'\0').ljust(0x800, b'\xff') + data
+    struct.pack_into('>I', img, 0, len(img)); img[4:20] = hashlib.md5(SS + bytes(img[0x14:])).digest(); return bytes(img)
+open(d + '/tp-strip.bin', 'wb').write(classic(root))
+open(d + '/tp-full.bin', 'wb').write(classic(root, strip=False))
+open(d + '/tp-jffs2.bin', 'wb').write(classic(root, jffs2=True))
+open(d + '/tp-combined.bin', 'wb').write(classic(root, combined=True))
+open(d + '/tp-factory.bin', 'wb').write(safeloader(root))
+b = bytearray(open(d + '/tp-strip.bin', 'rb').read()); b[-200] ^= 1; open(d + '/tp-bad.bin', 'wb').write(b)
+open(d + '/tp-kernel.bin', 'wb').write(kernel)
+PY
+  local f
+  for f in tp-strip tp-full tp-jffs2 tp-combined tp-factory; do
+    cmpdump "TP-Link: $f.bin" fw/$f.bin tree.ref
+    $F info fw/$f.bin 2>/dev/null | grep -q "MD5 ok" && ok "TP-Link: $f.bin MD5 found right" || bad "TP-Link $f.bin MD5: $($F info fw/$f.bin 2>&1 | grep -i md5)"
+  done
+  $F info fw/tp-bad.bin > /dev/null 2> fw/tp-bad.err; grep -q "MD5 sum in the TP-Link header does not match" fw/tp-bad.err && ok "TP-Link: a changed byte is reported by the MD5" || bad "tp-bad.bin: $(cat fw/tp-bad.err)"
+  if [ -n "${MKTPLINKFW:-}" ] && [ -x "$MKTPLINKFW" ]; then
+    "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -N "TP-LINK Technologies" -V "ver. 1.0" -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-strip.bin -s > /dev/null 2>&1
+    "$MKTPLINKFW" -H 0x07500001 -W 1 -F 4Mlzma -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-full.bin > /dev/null 2>&1
+    "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/m-jffs2.bin -s -j > /dev/null 2>&1
+    cat fw/tp-kernel.bin img/xz.sqfs > fw/m-k+r.bin; "$MKTPLINKFW" -H 0x07500001 -W 1 -F 8Mlzma -c -k fw/m-k+r.bin -o fw/m-combined.bin -s > /dev/null 2>&1
+    for f in m-strip m-full m-jffs2 m-combined; do
+      if $F dump fw/$f.bin 2>/dev/null | cmp -s - tree.ref && $F info fw/$f.bin 2>/dev/null | grep -q "MD5 ok"; then ok "mktplinkfw ($f): read, MD5 right"; else bad "mktplinkfw ($f)"; fi
+    done
+  else echo "  --    mktplinkfw checks skipped: set MKTPLINKFW to the mktplinkfw of OpenWrt's firmware-utils"; fi
+  if [ -n "${TPLINK_SAFELOADER:-}" ] && [ -x "$TPLINK_SAFELOADER" ]; then
+    "$TPLINK_SAFELOADER" -B ARCHER-C7-V5 -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/s-factory.bin > /dev/null 2>&1
+    "$TPLINK_SAFELOADER" -B ARCHER-C7-V5 -k fw/tp-kernel.bin -r img/xz.sqfs -o fw/s-factory-j.bin -j > /dev/null 2>&1
+    for f in s-factory s-factory-j; do
+      if $F dump fw/$f.bin 2>/dev/null | cmp -s - tree.ref && $F info fw/$f.bin 2>/dev/null | grep -q "safeloader, MD5 ok"; then ok "tplink-safeloader ($f): read, MD5 right"; else bad "tplink-safeloader ($f)"; fi
+    done
+  else echo "  --    tplink-safeloader checks skipped: set TPLINK_SAFELOADER to the tplink-safeloader of OpenWrt's firmware-utils"; fi
+  if $F edit fw/tp-strip.bin fw/tp-strip.bin rm:/etc 2> fw/tp-same.err; then bad "a TP-Link image was saved over"
+  else grep -q "Save under another name" fw/tp-same.err && ok "TP-Link: saving over the image is refused" || bad "$(cat fw/tp-same.err)"; fi
 }
 

@@ -98,12 +98,12 @@ public abstract class FirmwareImage
     public abstract IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open);
 
     /// <summary>True when the file starts with a firmware header this program understands.</summary>
-    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source) || TrxImage.IsTrx(source);
+    public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source) || FitImage.IsFit(source) || TrxImage.IsTrx(source) || TpLinkImage.IsTpLink(source);
 
     /// <summary>Reads the firmware header and finds the parts; null when the file has none.</summary>
     public static FirmwareImage? TryRead(IBlockSource source, CancellationToken ct = default) =>
         UImage.IsUImage(source) ? UImage.Read(source, ct) : FitImage.IsFit(source) ? FitImage.Read(source, ct)
-        : TrxImage.IsTrx(source) ? TrxImage.Read(source, ct) : null;
+        : TrxImage.IsTrx(source) ? TrxImage.Read(source, ct) : TpLinkImage.IsTpLink(source) ? TpLinkImage.Read(source, ct) : null;
 
     // ------------------------------------------- shared by the rebuilding images
 

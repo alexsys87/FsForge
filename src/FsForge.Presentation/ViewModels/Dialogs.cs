@@ -931,6 +931,15 @@ public sealed class ImageInfoViewModel : DialogViewModel
                     Add(L.T("Контрольные суммы CHK"), trx.ChkChecksumsValid == true ? L.T("совпадают, при сохранении пересчитываются") : L.T("не совпадают с расчётом программы — образ только читается"));
                 }
             }
+            if (fw.Image is Core.Firmware.TpLinkImage tp)
+            {
+                Add(L.T("Заголовок TP-Link"), tp.Safeloader ? L.T("safeloader (таблица разделов fwup-ptn)") : L.F("версия {0}, оборудование 0x{1:X8}, ревизия {2}", tp.HeaderVersion, tp.HardwareId, tp.HardwareRevision));
+                if (tp.Vendor.Length > 0) Add(L.T("Производитель"), tp.Vendor);
+                if (tp.FirmwareVersion.Length > 0) Add(L.T("Версия прошивки"), tp.FirmwareVersion);
+                if (tp.Md5Matches is { } md5)
+                    Add(L.T("Контрольная сумма MD5"), md5 ? L.T("совпадает") : L.T("не совпадает с расчётом программы (образ изменён или посчитан другим ключом)"));
+                if (tp.SupportList.Length > 0) Add(L.T("Поддерживаемые устройства"), string.Join("; ", tp.SupportList.Split('\n').Where(l => l.Length > 0).Take(8)));
+            }
             if (fw.Image is Core.Firmware.FitImage fit)
             {
                 if (fit.DefaultConfiguration.Length > 0)

@@ -331,6 +331,15 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | `The new image is too large for a TRX image (4 GiB at most).`, `The new image is too large for a Netgear CHK image.` | Длины в заголовках 32-битные. | Уменьшите содержимое. |
 | `The checksums of the written Broadcom TRX image do not match its data.`, `The content of '<часть>' differs from the source firmware.` | Проверка после записи нашла расхождение; новый файл отброшен, исходный не изменён. | Сообщите об ошибке, приложив образ. |
 
+## 7g. Образы TP-Link
+
+| Сообщение | Причина | Что делать |
+|---|---|---|
+| `The TP-Link firmware image … holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | В образе только ядро, или корневая ФС в формате, который программа не читает. | Проверьте файл (`fsforge-cli info`). |
+| `'<часть>' of the TP-Link … holds … and cannot be opened.` | В `vol=` указана часть без файловой системы (`kernel`, `os-image`, `support-list`…). | Выберите `rootfs` или `file-system`. |
+| Предупреждение: `The MD5 sum in the TP-Link header does not match the way this program computes it…`, `The MD5 sum of the TP-Link safeloader image does not match…` | Образ изменён после сборки или повреждён, либо производитель использует другой ключ. | Если файл скачан с сайта TP-Link или OpenWrt — скачайте заново; образ открыт. |
+| Предупреждение: `… cannot be rebuilt around it: Rebuilding a TP-Link firmware image is not supported yet.` | Образы TP-Link пока только читаются. | Сохраните ФС под новым именем и соберите прошивку средствами сборки (OpenWrt ImageBuilder, `mktplinkfw`, `tplink-safeloader`). Записать поверх файла прошивки нельзя. |
+
 ## 8. Чтение архивов tar
 
 | Сообщение | Причина | Что делать |
