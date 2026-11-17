@@ -577,7 +577,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
 {
     /// <summary>A partition of a disk image, or a volume of a UBI image (then <see cref="Partition"/> is null).</summary>
     public sealed record Row(PartitionInfo? Partition, string Name, string Content, string Details, bool IsEditable, UbiVolumeInfo? Volume = null,
-        Core.Android.AndroidPart? AndroidPart = null, Core.Archives.ArchiveEntry? Entry = null);
+        Core.Android.AndroidPart? AndroidPart = null, Core.Archives.ArchiveEntry? Entry = null, Core.Firmware.FirmwarePart? FirmwarePart = null);
 
     private Row? _selected;
 
@@ -629,6 +629,21 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.AndroidPart, preferred));
     }
 
+    /// <summary>Lists the parts of a firmware file (U-Boot uImage): kernel, ramdisk, root filesystem.</summary>
+    public PartitionChoiceViewModel(string fileName, Core.Firmware.FirmwareImage image)
+    {
+        _firmware = true;
+        Title = L.T("Выбор части прошивки");
+        AcceptText = L.T("Открыть");
+        Summary = L.F("«{0}» — {1}. ", fileName, Fmt.FirmwareKind(image)) +
+                  L.T("Файловые системы или архивы есть в нескольких частях прошивки. Какую из них открыть?");
+        foreach (Core.Firmware.FirmwarePart p in image.Parts)
+            Rows.Add(new Row(null, p.Name, Fmt.FirmwarePartContent(p), L.F("{0} · смещение 0x{1:X}", Fmt.Size(p.Length), p.Offset), p.IsReadable,
+                FirmwarePart: p));
+        Core.Firmware.FirmwarePart? preferred = image.PickDefault();
+        _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.FirmwarePart, preferred));
+    }
+
     /// <summary>Lists the files of a zip or 7z archive.</summary>
     public PartitionChoiceViewModel(string fileName, Core.Archives.ImageArchive archive)
     {
@@ -646,7 +661,10 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Entry, preferred));
     }
 
-    private readonly bool _volumes, _android, _entries;
+    private readonly bool _volumes, _android, _entries, _firmware;
+
+    /// <summary>The part of a firmware file to open; set by <see cref="Accept"/> when the dialog lists them.</summary>
+    public Core.Firmware.FirmwarePart? FirmwareResult { get; private set; }
 
     /// <summary>The file of an archive to open; set by <see cref="Accept"/> when the dialog lists them.</summary>
     public Core.Archives.ArchiveEntry? EntryResult { get; private set; }
@@ -676,14 +694,14 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
     {
         if (_selected is null)
         {
-            Error = _volumes ? L.T("Выберите том.") : _android || _entries ? L.T("Выберите, что открыть.") : L.T("Выберите раздел.");
+            Error = _volumes ? L.T("Выберите том.") : _android || _entries || _firmware ? L.T("Выберите, что открыть.") : L.T("Выберите раздел.");
             return false;
         }
         if (!_selected.IsEditable)
         {
             Error = _entries
                 ? L.T("Этот файл пуст — открыть его нельзя.")
-                : _android
+                : _android || _firmware
                 ? L.T("Здесь нет файловой системы или архива cpio, которые можно открыть.")
                 : _volumes
                 ? L.T("В этом томе нет UBIFS, SquashFS или EROFS — его нельзя открыть.")
@@ -694,6 +712,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         VolumeResult = _selected.Volume;
         AndroidResult = _selected.AndroidPart;
         EntryResult = _selected.Entry;
+        FirmwareResult = _selected.FirmwarePart;
         return true;
     }
 }
@@ -889,6 +908,29 @@ public sealed class ImageInfoViewModel : DialogViewModel
             Add(L.T("Сохранение"), android.Image.Kind == Core.Android.AndroidImageKind.Super
                 ? L.T("super.img целиком: заменяется только открытый раздел, остальные остаются на своих местах")
                 : L.T("загрузочный образ целиком: заменяется только открытый ramdisk"));
+        }
+        else if (doc.Firmware is { } fw)
+        {
+            Add(L.T("Прошивка"), Fmt.FirmwareKind(fw.Image));
+            if (fw.Image is Core.Firmware.UImage ui)
+            {
+                Add(L.T("Заголовок uImage"), L.F("{0} {1}, тип {2}, сжатие {3}, адрес загрузки 0x{4:X8}, точка входа 0x{5:X8}",
+                    ui.OsName, ui.ArchitectureName, ui.TypeName, ui.CompressionName, ui.LoadAddress, ui.EntryPoint));
+                Add(L.T("Контрольная сумма данных"), ui.DataCrcMatches ? L.T("совпадает") : L.T("не совпадает (образ изменён или повреждён)"));
+                if (ui.FwtoolChecksumsValid is { } fwOk)
+                    Add(L.T("Метаданные OpenWrt (fwtool)"), (fwOk ? L.T("контрольные суммы верны, при сохранении пересчитываются") : L.T("контрольные суммы неверны, переносятся без изменений")) +
+                                                            (ui.FwtoolSigned ? L.T("; есть подпись — после изменения она не совпадёт") : ""));
+            }
+            foreach (Core.Firmware.FirmwarePart p in fw.Image.Parts)
+            {
+                string text = L.F("{0}, {1}, смещение 0x{2:X}", Fmt.FirmwarePartContent(p), Fmt.Size(p.Length), p.Offset);
+                Add(ReferenceEquals(p, fw.Part) ? L.F("▸ {0} (открыт)", p.Name) : p.Name, text);
+            }
+            Add(L.T("Сохранение"), doc.SavesFilesystemOnly
+                ? L.T("только сама файловая система, в новый файл: эту прошивку пересобрать нельзя, файл прошивки не меняется")
+                : fw.Part.BehindImage
+                ? L.T("прошивка целиком: заменяется только корневая файловая система, заголовок uImage и ядро не меняются")
+                : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");

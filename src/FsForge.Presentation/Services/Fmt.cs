@@ -80,6 +80,21 @@ public static class Fmt
         _ => L.T("неизвестное содержимое"),
     };
 
+    /// <summary>"прошивка U-Boot uImage «OpenWrt Linux-6.6.73»".</summary>
+    public static string FirmwareKind(Core.Firmware.FirmwareImage image) => image switch
+    {
+        Core.Firmware.UImage { Name.Length: > 0 } u => L.F("прошивка {0} «{1}»", u.Kind, u.Name),
+        _ => L.F("прошивка {0}", image.Kind),
+    };
+
+    public static string FirmwarePartContent(Core.Firmware.FirmwarePart part) => part.Content switch
+    {
+        Core.Images.PartitionContent.Empty => L.T("пусто"),
+        Core.Images.PartitionContent.OutsideFile => L.T("за пределами файла"),
+        _ when part.ContentName.Length > 0 => part.ContentName,
+        _ => L.T("неизвестное содержимое"),
+    };
+
     public static string PartitionScheme(PartitionTable t) => t.Scheme == Core.Images.PartitionScheme.Gpt ? "GPT" : "MBR";
 
     public const string DateFormat = "yyyy-MM-dd HH:mm:ss";

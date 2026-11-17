@@ -477,6 +477,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             info = (android.Image.Kind == FsForge.Core.Android.AndroidImageKind.Super
                 ? L.F("super.img · {0} из {1} · ", android.Part.Name, android.Image.Parts.Count)
                 : L.F("{0} · ramdisk {1} · ", android.Image.Kind == FsForge.Core.Android.AndroidImageKind.VendorBoot ? "vendor_boot" : "boot", android.Part.Name)) + info;
+        if (_doc.Firmware is { } fw)
+            info = L.F("uImage · {0} из {1} · ", fw.Part.Name, fw.Image.Parts.Count) + info;
         if (_doc.Container is { } disk)
             info = L.F("образ диска {0} · раздел {1} из {2} · ", Fmt.PartitionScheme(disk.Table), disk.Partition.Number, disk.Table.Partitions.Count) + info;
         if (_doc.Archive is { } arc)
@@ -586,7 +588,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool ok = await RunBusyAsync(L.T("Открытие ") + Path.GetFileName(path), (p, ct) =>
             doc = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
-                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive)));
+                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive),
+                chooseFirmwarePart: image => AskFirmwarePart(path, image)));
         if (!ok || doc is null) return false;
 
         SetDocument(doc);
@@ -650,6 +653,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 var vm = new PartitionChoiceViewModel(Path.GetFileName(path), image);
                 done.SetResult(_dialogs.ShowDialog(vm) ? vm.AndroidResult : null);
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        });
+        return done.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>Lets the user pick the part of a firmware file (uImage) to open; works like <see cref="AskPartition"/>.</summary>
+    private FsForge.Core.Firmware.FirmwarePart? AskFirmwarePart(string path, FsForge.Core.Firmware.FirmwareImage image)
+    {
+        var done = new TaskCompletionSource<FsForge.Core.Firmware.FirmwarePart?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ui.Post(() =>
+        {
+            try
+            {
+                var vm = new PartitionChoiceViewModel(Path.GetFileName(path), image);
+                done.SetResult(_dialogs.ShowDialog(vm) ? vm.FirmwareResult : null);
             }
             catch (Exception ex)
             {
@@ -743,13 +765,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool disk = _doc.WritesContainer(vm.Result);
         bool ubi = _doc.WritesUbi(vm.Result);
         bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.SavesFilesystemOnly && _doc.Container is null
-                          && _doc.Ubi is null && _doc.Android is null && !ubi
+                          && _doc.Ubi is null && _doc.Android is null && _doc.Firmware is null && !ubi
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
         string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string title = ubi ? L.T("Сохранить образ UBI") : disk && _doc.Android is not null ? L.T("Сохранить образ Android")
+        bool firmware = _doc.WritesFirmware(vm.Result);
+        string title = firmware ? L.T("Сохранить прошивку") : ubi ? L.T("Сохранить образ UBI") : disk && _doc.Android is not null ? L.T("Сохранить образ Android")
             : disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ");
-        string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && !ubi);
+        string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && (!ubi || firmware));
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
     }
@@ -1192,7 +1215,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool ok = await RunBusyAsync(L.T("Чтение ") + Path.GetFileName(path), (p, ct) =>
             source = ImageDocument.Open(path, _settings.EffectiveTempDirectory, _settings.SearchEmbedded, p, ct,
                 choosePartition: table => AskPartition(path, table), chooseVolume: ubi => AskVolume(path, ubi),
-                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive)));
+                chooseAndroidPart: image => AskAndroidPart(path, image), chooseArchiveEntry: archive => AskArchiveEntry(path, archive),
+                chooseFirmwarePart: image => AskFirmwarePart(path, image)));
         if (!ok || source is null) return false;
 
         var clashing = source.Tree.Root.Children.Where(c => target.Find(c.Name) is not null).Select(c => c.Name).ToList();
