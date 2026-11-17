@@ -51,6 +51,10 @@ internal static class Program
         partition (system_a, vendor_a...) or vendor ramdisk. "convert" writes the whole Android image again with only
         that part replaced, unless the output name or container=0 says otherwise.
 
+        Broadcom TRX images (.trx) and Netgear .chk images holding one are opened at their root filesystem
+        (vol=rootfs, kernel, loader); the CRC-32 is checked. They are not rebuilt yet: the filesystem is saved
+        alone, under another name.
+
         U-Boot FIT images (.itb, image.ub) are opened the same way, at the image that holds a filesystem or
         ramdisk (vol=<image node name>, e.g. vol=ramdisk-1); hashes are checked. Saving writes the FIT image
         again with that image replaced: its hashes, size and the offsets of external data are recalculated.
@@ -293,6 +297,9 @@ internal static class Program
                                   $"{ui.DataSize} bytes of data, data CRC {(ui.DataCrcMatches ? "ok" : "wrong")}");
             if (fw.Image is FsForge.Core.Firmware.UImage { FwtoolChecksumsValid: { } fwOk } signed)
                 Console.WriteLine($"             OpenWrt metadata (fwtool): checksums {(fwOk ? "ok" : "wrong")}{(signed.FwtoolSigned ? ", signed" : "")}");
+            if (fw.Image is FsForge.Core.Firmware.TrxImage trx)
+                Console.WriteLine($"             TRX version {trx.Version}, flags 0x{trx.Flags:X4}, {trx.Length} bytes at 0x{trx.TrxOffset:X}, CRC " +
+                                  $"{(trx.CrcMatches ? $"ok ({trx.CrcScheme})" : "wrong")}{(trx.ChkBoard is { } board ? $", Netgear CHK board '{board}'" : "")}");
             if (fw.Image is FsForge.Core.Firmware.FitImage fit)
                 Console.WriteLine($"             default configuration '{fit.DefaultConfiguration}', {fit.HashesChecked} hash(es) checked, {fit.HashesWrong} wrong" +
                                   $"{(fit.ExternalData ? ", external data" : "")}{(fit.Signed ? ", signed" : "")}");

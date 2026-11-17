@@ -99,6 +99,7 @@ internal static partial class SelfTest
             AndroidTests();
             FirmwareTests();
             FitTests();
+            TrxTests();
             Test("corrupted images are rejected cleanly", Fuzz);
         }
         finally

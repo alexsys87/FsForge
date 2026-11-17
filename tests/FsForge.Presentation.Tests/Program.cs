@@ -1640,6 +1640,44 @@ internal static class Program
             vm.Dispose();
         });
 
+        await Test("TRX image: information, filesystem saved alone", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            byte[] squash = File.ReadAllBytes(MakeImage("trx.sqfs"));
+            // A TRX image (version 1): header, a kernel at 28, the SquashFS at 64 KiB; the CRC from the flags to the end.
+            byte[] trx = new byte[65536 + squash.Length];
+            new Random(5).NextBytes(trx.AsSpan(28, 30000));
+            squash.CopyTo(trx, 65536);
+            BitConverter.GetBytes(0x30524448u).CopyTo(trx, 0);
+            BitConverter.GetBytes((uint)trx.Length).CopyTo(trx, 4);
+            BitConverter.GetBytes((ushort)1).CopyTo(trx, 14);
+            BitConverter.GetBytes(28u).CopyTo(trx, 16);
+            BitConverter.GetBytes(65536u).CopyTo(trx, 20);
+            BitConverter.GetBytes(~FsForge.Core.Compression.Crc32.Compute(trx.AsSpan(12))).CopyTo(trx, 8);
+            string file = Path.Combine(_dir, "router.trx");
+            File.WriteAllBytes(file, trx);
+
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(file), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: true }
+                  && vm.DocumentInfo.StartsWith("TRX · rootfs из 2 · SquashFS"), "status line: " + vm.DocumentInfo);
+            bool infoShown = false;
+            d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Заголовок TRX" && r.Value.StartsWith("версия 1"))
+                                                                    && i.Rows.Any(r => r.Label == "Контрольная сумма данных" && r.Value == "совпадает")
+                                                                    && i.Rows.Any(r => r.Label == "▸ rootfs (открыт)" && r.Value.StartsWith("SquashFS"));
+            vm.ImageInfoCommand.Execute(null);
+            Check(infoShown, "image information of a TRX image");
+
+            // Ctrl+S asks where to put the filesystem: a TRX image is not rebuilt yet.
+            vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => o is SaveOptionsViewModel s && !s.HasContainer && !s.WritesDisk && s.Accept();
+            d.SavePicks.Enqueue(Path.Combine(_dir, "router-rootfs.squashfs"));
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            Check(File.ReadAllBytes(file).AsSpan().SequenceEqual(trx) && vm.Document is { Firmware: null } && vm.Document.Tree.Resolve("/etc/Banner") is null,
+                "the filesystem saved alone, the TRX image unchanged");
+            vm.Dispose();
+        });
+
         await Test("FAT boot partition of an SD card: open, edit config.txt, save in place", async () =>
         {
             var (vm, d, _, _) = NewVm();

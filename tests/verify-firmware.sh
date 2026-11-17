@@ -18,6 +18,10 @@
 #               filesystem: dtc must take the new tree, pylibfdt (python3-libfdt, U-Boot's own library; skipped
 #               without it) must find every hash right, dumpimage must take out the same kernel and the changed image,
 #               and GNU cpio / unsquashfs must see the change, also in the ramdisk of image.ub inside its uImage.
+#               Broadcom TRX images (version 1 with loader, kernel and the root filesystem at 64 KiB and the JFFS2
+#               marker; version 2; the zlib form of the CRC) and a Netgear CHK image holding one, made by a Python
+#               script after OpenWrt's trx.h with the SquashFS of mksquashfs, must read as that SquashFS; a changed
+#               byte must be reported by the CRC. (No reference tool for TRX is packaged.)
 #               With FWTOOL=<fwtool of an OpenWrt build, staging_dir/host/bin/fwtool> (or fwtool in PATH) the
 #               sysupgrade image also gets metadata and a signature block from fwtool -I / -S; after FsForge changes the
 #               root filesystem, fwtool -i and -s (which check the trailer checksums) must take out the same files.
@@ -75,6 +79,7 @@ PY
   else grep -q "Save under another name" fw/tar.err && ok "uImage: a tar archive is not written over the firmware" || bad "$(cat fw/tar.err)"; fi
 
   fw_fit
+  fw_trx
   echo "uImage rebuilt by FsForge"
   head -c 300000 /dev/urandom > fw/big.bin
   cp fw/sysupgrade.bin fw/w_sys.bin
@@ -250,5 +255,41 @@ PY
       [ $good = 1 ] && ok "FIT $f rebuilt at $v: tree, hashes, kernel kept, change seen by the reference tools" || bad "FIT $f $v after the rebuild: $(cat fw/fitcheck.out 2>/dev/null)"
     done
   done
+}
+
+fw_trx() {
+  echo "Broadcom TRX and Netgear CHK"
+  python3 - fw img/xz.sqfs <<'PY'
+import sys, struct, zlib, os
+d, root = sys.argv[1], open(sys.argv[2], 'rb').read()
+def trx(parts, version, aligns, marker=False, std=False):
+    hs = 28 if version == 1 else 32
+    body = bytearray(hs); offs = []
+    for p, a in zip(parts, aligns):
+        while len(body) % a: body.append(0)
+        offs.append(len(body)); body += p
+    if marker:
+        while len(body) % 65536: body.append(0xFF)
+        body += b'\xde\xad\xc0\xde'
+    while len(body) % 4: body.append(0)
+    slots = (hs - 16) // 4
+    struct.pack_into('<IIIHH' + 'I' * slots, body, 0, 0x30524448, len(body), 0, 0, version, *(offs + [0] * (slots - len(offs))))
+    c = zlib.crc32(bytes(body[12:]))
+    struct.pack_into('<I', body, 8, c if std else ~c & 0xffffffff)
+    return bytes(body)
+loader, kernel = os.urandom(3000), b'\x5d\x00\x00\x80\x00' + os.urandom(150000)
+open(d + '/v1.trx', 'wb').write(trx([loader, kernel, root], 1, [4, 1024, 65536], marker=True))
+open(d + '/v2.trx', 'wb').write(trx([kernel, root], 2, [4, 65536]))
+open(d + '/std.trx', 'wb').write(trx([kernel, root], 1, [4, 4096], std=True))
+t = trx([loader, kernel, root], 1, [4, 1024, 65536]); board = b'U12H139T00_NETGEAR'
+open(d + '/netgear.chk', 'wb').write(struct.pack('>II8x6I', 0x2A23245E, 40 + len(board), 0, 0, 0, 0, 0, 0) + board + t)
+b = bytearray(open(d + '/v1.trx', 'rb').read()); b[-100] ^= 1; open(d + '/bad.trx', 'wb').write(b)
+PY
+  local f
+  for f in v1.trx v2.trx std.trx netgear.chk; do cmpdump "TRX: $f" fw/$f tree.ref; done
+  $F info fw/netgear.chk 2>/dev/null | grep -q "CRC ok (fwtool), Netgear CHK board 'U12H139T00_NETGEAR'" && ok "TRX: CHK board and CRC" || bad "netgear.chk info: $($F info fw/netgear.chk 2>&1 | grep TRX)"
+  $F info fw/bad.trx > /dev/null 2> fw/bad-trx.err; grep -q "CRC-32 of the TRX image does not match" fw/bad-trx.err && ok "TRX: a changed byte is reported by the CRC" || bad "bad.trx: $(cat fw/bad-trx.err)"
+  if $F edit fw/v1.trx fw/v1.trx rm:/etc 2> fw/trx-same.err; then bad "a TRX image was saved over"
+  else grep -q "Save under another name" fw/trx-same.err && ok "TRX: saving over the image is refused" || bad "$(cat fw/trx-same.err)"; fi
 }
 
