@@ -294,13 +294,14 @@ FsForge открывает и сохраняет, но ядро x86 или ARM �
 | `The U-Boot uImage '<имя>' holds no filesystem, UBI image or cpio archive this program can read. It holds: …` | В образе только ядро (uImage ядра без корневой ФС за ним), дерево устройств или скрипт загрузки, либо ФС за ядром в неизвестном формате. | Откройте файл с корневой файловой системой (sysupgrade- или factory-образ целиком, `rootfs.squashfs`). |
 | `'<часть>' of the U-Boot uImage … holds kernel and cannot be opened.`, `… holds device tree …` | В `vol=` указана часть без файловой системы. | Выберите `rootfs`, `ramdisk` или `filesystem` (список — `fsforge-cli info`). |
 | `The U-Boot uImage … has no part '<имя>'. It holds: …` | Неверное имя или номер в `vol=`. | Возьмите имя из списка; номера — как в `mkimage -l` (с нуля). |
+| `'<часть>' of the U-Boot uImage … is not a UBI image, so there is no volume '<том>' in it to open.` | В `vol=<часть>:<том>` указана часть без UBI. | Укажите только часть (`vol=rootfs`). |
 | `The file is a firmware image and has no partition table, so there is no partition <N> to open; use the part name.` | Для uImage указан `part=`. | Используйте `vol=<имя части>`. |
 | `The list of images of the multi-file uImage is damaged: it has no end.` | Таблица размеров multi-file образа не завершена нулём в пределах данных. | Получите образ заново. |
 | `The <сжатие> data of the firmware part is damaged: …` | Сжатый ramdisk (например, ext2 в gzip) повреждён. | Получите образ заново; `dumpimage -T ramdisk -p 0 -o r.gz uInitrd` и `gzip -t r.gz` покажут, цел ли он. |
 | Предупреждение: `The CRC-32 of the uImage data does not match its header: the image was changed or damaged, and U-Boot would refuse to boot it.` | Данные изменены после `mkimage` или файл повреждён. | Образ открыт. Если файл скачан — скачайте заново; если правился вручную — пересоберите `mkimage`. |
 | Предупреждение: `The uImage header gives <N> bytes of data, but the file ends <M> bytes before that: it is truncated.` | Файл обрезан. | Открыто то, что есть; возьмите файл целиком. |
 | Предупреждение: `Image <N> of the multi-file uImage reaches beyond the data the header covers.` | Размеры в таблице multi-file образа больше размера данных из заголовка. | Образ, скорее всего, повреждён; результату не доверяйте. |
-| Предупреждение: `The <формат> was opened from '<часть>' of the U-Boot uImage … (offset 0x<…>). Rebuilding the firmware is not supported yet: saving writes the filesystem alone to a new file, and the firmware file stays as it is.` | Прошивка uImage пока только читается. | Сохраните ФС под новым именем и соберите прошивку средствами сборки (OpenWrt ImageBuilder, `mkimage`). |
+| Предупреждение: `The <формат> was opened from '<часть>' of the U-Boot uImage … (offset 0x<…>), but the firmware cannot be rebuilt around it: The firmware file is truncated… Saving writes the filesystem alone to a new file, and the firmware file stays as it is.` | Файл короче, чем указано в заголовке uImage: прошивку не пересобрать. | Сохраните ФС под новым именем; возьмите файл прошивки целиком. |
 
 ## 8. Чтение архивов tar
 
@@ -578,7 +579,12 @@ EROFS хранит всё, что есть в дереве: владельцев
 
 | Сообщение | Причина | Что делать |
 |---|---|---|
-| `The file is a firmware image (U-Boot uImage …), and rebuilding it is not supported yet: saving over it would replace the whole firmware with the filesystem alone. Save under another name.` | Попытка сохранить поверх файла прошивки (в `fsforge-cli edit fw.bin fw.bin …`). Прошивка пока не пересобирается, а одна файловая система вместо неё испортила бы файл. | Укажите другое имя выходного файла. |
+| `The file is a firmware image (U-Boot uImage …), and these options write the filesystem alone: saving over it would replace the whole firmware. Save under another name.` (или `… the archive alone …`) | Запись поверх файла прошивки одной файловой системы (`container=0`, имя `.squashfs`), архива tar или формата, который в эту часть не записывается (cpio вместо файловой системы и наоборот), или прошивки, которую нельзя пересобрать. | Сохраните под другим именем или выберите формат части. |
+| `The new content is too large for a uImage (4 GiB at most).` | Размер в заголовке uImage — 32 бита. | Уменьшите содержимое. |
+| `The firmware file is truncated: the uImage data reaches beyond its end.` | Файл короче, чем указано в заголовке. | Возьмите файл прошивки целиком. |
+| Предупреждение: `The firmware grew from <N> to <M>: make sure it still fits into the flash partition it is written to.` | Новая файловая система больше прежней. | Сравните с размером раздела `firmware` на устройстве (`cat /proc/mtd`); при нехватке места выберите более сильное сжатие (SquashFS xz) или удалите лишнее. |
+| Предупреждение: `The firmware ends with an OpenWrt metadata or signature block (fwtool). It was carried over unchanged…` | В конце sysupgrade-образа — метаданные `fwtool` (поддерживаемые устройства, версия) и, возможно, подпись; они относятся к старому образу. | Если `sysupgrade` отказывает, прошейте с `-F` или пересоберите метаданные в ImageBuilder. |
+| `The written file is not a U-Boot uImage with the part '<часть>'.`, `The CRC-32 of the data of the written uImage does not match its header.`, `'<часть>' of the firmware is missing or differs in the written image.`, `The content of '<часть>' differs from the source firmware.` | Проверка после записи нашла расхождение; новый файл отброшен, исходный не изменён. | Сообщите об ошибке, приложив образ. |
 
 ### Запись в сжатый файл или архив
 

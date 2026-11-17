@@ -176,8 +176,8 @@ public sealed class ImageDocument : IDisposable
     public AndroidContainer? Android { get; private init; }
 
     /// <summary>
-    /// The firmware file (U-Boot uImage, ...) the filesystem or ramdisk was opened from. The firmware is not
-    /// rebuilt yet: saving writes the filesystem alone.
+    /// The firmware file (U-Boot uImage, ...) the filesystem or ramdisk was opened from. Saving writes the whole
+    /// firmware again with only that part replaced, unless the options ask for the filesystem alone.
     /// </summary>
     public FirmwareContainer? Firmware { get; private init; }
 
@@ -210,7 +210,8 @@ public sealed class ImageDocument : IDisposable
     /// container with its own headers and checksums, an Android sparse image). Saving writes the
     /// filesystem alone (or the UBI image alone), so it must go to a new file.
     /// </summary>
-    public bool SavesFilesystemOnly => AndroidSparse && Android is null || (EmbeddedOffset > 0 && Container is null) || Firmware is not null;
+    public bool SavesFilesystemOnly => AndroidSparse && Android is null || (EmbeddedOffset > 0 && Container is null && Firmware is null)
+                                       || Firmware is not null && !Firmware.Image.CanRebuild(Firmware.Part, out _);
 
     public long FileSize { get; private init; }
 
@@ -512,15 +513,21 @@ public sealed class ImageDocument : IDisposable
             {
                 if (partition > 0) throw new FsException($"The file is a firmware image and has no partition table, so there is no partition {partition} to open; use the part name.");
                 FirmwareImage image = FirmwareImage.TryRead(src, ct)!;
-                FirmwarePart part = ChooseFirmwarePart(image, volume, chooseFirmwarePart, out bool volumeUsed);
+                // "rootfs:rootfs_data" names a part of the firmware and a volume of the UBI image it holds.
+                string? partWanted = volume, volumeWanted = null;
+                if (volume is not null && image.Find(volume) is null && volume.IndexOf(':') is var colon and > 0)
+                    (partWanted, volumeWanted) = (volume[..colon], volume[(colon + 1)..]);
+                FirmwarePart part = ChooseFirmwarePart(image, partWanted, chooseFirmwarePart, out bool volumeUsed);
                 firmware = new FirmwareContainer(image, part);
                 offset = part.Offset;
                 fs = image.Open(part);
                 if (part.Packed is { } partPacking) fs = unpackedPart = UnpackPart(fs, partPacking, tempDirectory, progress, ct);
                 if (part.Content == PartitionContent.Ubi)
                 {
-                    (fs, ubi) = OpenUbi(fs, volumeUsed ? null : volume, chooseVolume, ct);
+                    (fs, ubi) = OpenUbi(fs, volumeWanted ?? (volumeUsed ? null : volume), chooseVolume, ct);
                 }
+                else if (volumeWanted is not null)
+                    throw new FsException($"'{part.Name}' of the {image.Description} is not a UBI image, so there is no volume '{volumeWanted}' in it to open.");
                 else if (volume is not null && !volumeUsed)
                     throw new FsException($"The {image.Description} has no part '{volume}'. It holds: {string.Join("; ", image.Parts.Select(p => p.ToString()))}.");
             }
@@ -716,9 +723,10 @@ public sealed class ImageDocument : IDisposable
             if (firmware is not null)
             {
                 doc._warnings.AddRange(firmware.Image.Warnings);
-                doc._warnings.Add($"The {(ubi is not null ? "UBI image" : doc.FormatName)} was opened from '{firmware.Part.Name}' of the {firmware.Image.Description} " +
-                                  $"(offset 0x{firmware.Part.Offset:X}). Rebuilding the firmware is not supported yet: saving writes the " +
-                                  $"{(ubi is not null ? "UBI image" : "filesystem")} alone to a new file, and the firmware file stays as it is.");
+                if (!firmware.Image.CanRebuild(firmware.Part, out string why))
+                    doc._warnings.Add($"The {(ubi is not null ? "UBI image" : doc.FormatName)} was opened from '{firmware.Part.Name}' of the {firmware.Image.Description} " +
+                                      $"(offset 0x{firmware.Part.Offset:X}), but the firmware cannot be rebuilt around it: {why} Saving writes the " +
+                                      $"{(ubi is not null ? "UBI image" : "filesystem")} alone to a new file, and the firmware file stays as it is.");
             }
             else if (sparse && android is null)
                 doc._warnings.Add("The file is an Android sparse image. Saving writes an ordinary (raw) image of the filesystem.");
@@ -1127,15 +1135,29 @@ public sealed class ImageDocument : IDisposable
         return o;
     }
 
-    /// <summary>True when saving with these options writes the whole disk image or UBI image and not the filesystem alone.</summary>
+    /// <summary>True when saving with these options writes the whole disk image, UBI image or firmware and not the filesystem alone.</summary>
     public bool WritesContainer(SaveOptions options) =>
         options.KeepContainer && (
-            (Container is not null || Ubi is not null) && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
+            FirmwareTakes(options)
+            || (Container is not null || Ubi is not null) && options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2)
             && !(Ubi is not null && options.Format is ImageFormat.Fat or ImageFormat.F2fs)
             // A logical partition holds a filesystem image; a boot image holds a cpio ramdisk.
             || Android is not null && (Android.Image.Kind == AndroidImageKind.Super
                 ? options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Ubifs)
                 : options.Format == ImageFormat.Cpio));
+
+    /// <summary>True when saving with these options writes the firmware file again around the new content.</summary>
+    public bool WritesFirmware(SaveOptions options) => options.KeepContainer && FirmwareTakes(options);
+
+    /// <summary>The firmware can be rebuilt, and the format fits the part that was opened.</summary>
+    private bool FirmwareTakes(SaveOptions options) =>
+        Firmware is { } fw && fw.Image.CanRebuild(fw.Part, out _) && fw.Part.Content switch
+        {
+            PartitionContent.Cpio => options.Format == ImageFormat.Cpio,
+            PartitionContent.Ubi => options.Format is ImageFormat.Ubifs or ImageFormat.SquashFs or ImageFormat.Erofs or ImageFormat.Ext or ImageFormat.Cramfs or ImageFormat.Romfs,
+            PartitionContent.Ubifs => options.Format == ImageFormat.Ubifs,
+            _ => options.Format is not (ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Ubifs),
+        };
 
     /// <summary>True when saving with these options writes a UBI image: the one the document came from, or a new one.</summary>
     public bool WritesUbi(SaveOptions options) =>
@@ -1183,9 +1205,9 @@ public sealed class ImageDocument : IDisposable
 
         // Fail early, before the long write, when the target obviously cannot be replaced.
         if (Directory.Exists(path)) throw new FsException($"'{path}' is a folder.");
-        if (samePath && Firmware is not null)
-            throw new FsException($"The file is a firmware image ({Firmware.Image.Description}), and rebuilding it is not supported yet: " +
-                                  "saving over it would replace the whole firmware with the filesystem alone. Save under another name.");
+        if (samePath && Firmware is not null && !WritesFirmware(options))
+            throw new FsException($"The file is a firmware image ({Firmware.Image.Description}), and these options write the " +
+                                  $"{(options.Format is ImageFormat.Tar or ImageFormat.Cpio ? "archive" : "filesystem")} alone: saving over it would replace the whole firmware. Save under another name.");
         if (File.Exists(path))
         {
             if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
@@ -1195,6 +1217,7 @@ public sealed class ImageDocument : IDisposable
 
         DiskContainer? container = WritesContainer(options) ? Container : null;
         AndroidContainer? android = WritesContainer(options) ? Android : null;
+        FirmwareContainer? firmwareOut = WritesFirmware(options) ? Firmware : null;
         int partition = container?.Partition.Number ?? 0;
         bool ubiOut = WritesUbi(options);
         if (options.NewUbi && !ubiOut && Ubi is null && options.Format is ImageFormat.Ext or ImageFormat.Tar or ImageFormat.Cpio or ImageFormat.Jffs2 or ImageFormat.Fat or ImageFormat.Erofs
@@ -1202,6 +1225,7 @@ public sealed class ImageDocument : IDisposable
             throw new FsException("Only UBIFS and SquashFS can be wrapped into a UBI image.");
         // The volume to look into when the written UBI image is read back.
         string? volume = android is not null ? android.Part.Name
+            : firmwareOut is not null ? (Ubi is null ? firmwareOut.Part.Name : $"{firmwareOut.Part.Name}:{Ubi.Volume.Id}")
             : !ubiOut ? null : Ubi is not null && WritesContainer(options) ? Ubi.Volume.Id.ToString() : options.Ubi.VolumeId.ToString();
         // A tar archive carries its compression in its own options; an image gets it from the file name.
         ArchiveCompression outer = options.Format is ImageFormat.Tar or ImageFormat.Cpio ? ArchiveCompression.None : ArchiveCodec.ImageCompressionFromFileName(path);
@@ -1217,6 +1241,7 @@ public sealed class ImageDocument : IDisposable
             {
                 if (container is not null) WriteDisk(fs, container, options, warnings, progress, ct);
                 else if (android is not null) WriteAndroid(fs, android, options, warnings, progress, ct);
+                else if (firmwareOut is not null) WriteFirmware(fs, firmwareOut, ubiOut, options, warnings, progress, ct);
                 else if (ubiOut) WriteUbi(fs, options, warnings, progress, ct);
                 else warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
                 fs.Flush(flushToDisk: true);
@@ -1231,6 +1256,7 @@ public sealed class ImageDocument : IDisposable
                 if (container is not null) problems.AddRange(CompareSurroundings(container, check.Container, ct));
                 if (ubiOut && Ubi is not null && WritesContainer(options)) problems.AddRange(CompareVolumes(Ubi, check.Ubi, ct));
                 if (android is not null) problems.AddRange(CompareAndroid(android, check.Android, ct));
+                if (firmwareOut is not null) problems.AddRange(CompareFirmware(firmwareOut, check.Firmware, ct));
                 if (problems.Count > 0)
                 {
                     string list = string.Join(Environment.NewLine, problems.Take(10));
@@ -1348,6 +1374,78 @@ public sealed class ImageDocument : IDisposable
                 b.ReadExactly(offset, y.AsSpan(0, n));
                 if (x.AsSpan(0, n).SequenceEqual(y.AsSpan(0, n))) continue;
                 problems.Add($"The content of '{name}' differs from the source Android image.");
+                break;
+            }
+        }
+        return problems;
+    }
+
+    // ------------------------------------------------------------ firmware
+
+    /// <summary>
+    /// Writes the firmware again with the new filesystem, ramdisk or UBI image in the part that was open. A part
+    /// that was stored compressed (a gzipped ext2 initrd) is compressed the same way again.
+    /// </summary>
+    private void WriteFirmware(FileStream output, FirmwareContainer c, bool ubi, SaveOptions options, List<string> warnings,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        string tmp = NewTempFile(options.TempDirectory), packed = "";
+        try
+        {
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1 << 20))
+            {
+                if (ubi) WriteUbi(fs, options, warnings, progress, ct);
+                else warnings.AddRange(WriteTo(Tree, fs, options, progress, ct));
+            }
+            string content = tmp;
+            if (c.Part.Packed is { } compression)
+            {
+                packed = NewTempFile(options.TempDirectory);
+                var o = new TarOptions { Compression = compression, GzipLevel = 9, XzEffort = 1, ZstdLevel = 19, Lz4Level = 12, Threads = options.Tar.Threads };
+                using (var input = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20))
+                using (var file = new FileStream(packed, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+                using (Stream z = ArchiveCodec.OpenCompressor(file, o))
+                    input.CopyTo(z, 1 << 20);
+                content = packed;
+            }
+            using var data = new FileBlockSource(content);
+            c.Image.Write(output, c.Part, data, warnings, progress, ct);
+        }
+        finally
+        {
+            TryDelete(tmp);
+            if (packed.Length > 0) TryDelete(packed);
+        }
+    }
+
+    /// <summary>Checks that the written firmware is intact and that everything besides the rewritten part reads the same.</summary>
+    private static List<string> CompareFirmware(FirmwareContainer source, FirmwareContainer? written, CancellationToken ct)
+    {
+        var problems = new List<string>();
+        if (written is null || written.Image.Kind != source.Image.Kind)
+        {
+            problems.Add($"The written file is not a {source.Image.Kind} with the part '{source.Part.Name}'.");
+            return problems;
+        }
+        if (written.Image is UImage { DataCrcMatches: false })
+            problems.Add("The CRC-32 of the data of the written uImage does not match its header.");
+        var after = written.Image.FixedSections(written.Part).ToDictionary(s => s.Name, s => s.Data);
+        byte[] x = new byte[1 << 20], y = new byte[1 << 20];
+        foreach ((string name, IBlockSource a) in source.Image.FixedSections(source.Part))
+        {
+            if (!after.TryGetValue(name, out IBlockSource? b) || b.Length != a.Length)
+            {
+                problems.Add($"'{name}' of the firmware is missing or differs in the written image.");
+                continue;
+            }
+            for (long offset = 0; offset < a.Length; offset += x.Length)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(x.Length, a.Length - offset);
+                a.ReadExactly(offset, x.AsSpan(0, n));
+                b.ReadExactly(offset, y.AsSpan(0, n));
+                if (x.AsSpan(0, n).SequenceEqual(y.AsSpan(0, n))) continue;
+                problems.Add($"The content of '{name}' differs from the source firmware.");
                 break;
             }
         }

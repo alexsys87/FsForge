@@ -306,6 +306,10 @@ public sealed class SaveOptionsViewModel : DialogViewModel
             ContainerSummary = L.F("{0} — {1}. ", Path.GetFileName(doc.FilePath), Fmt.AndroidKind(android.Image)) +
                                L.F("Открыт {0}: {1}, {2}.", Fmt.AndroidPartName(android.Image, android.Part), Fmt.AndroidPartContent(android.Part), Fmt.Size(android.Part.Length));
 
+        if (doc.Firmware is { } fw)
+            ContainerSummary = L.F("{0} — {1}. ", Path.GetFileName(doc.FilePath), Fmt.FirmwareKind(fw.Image)) +
+                               L.F("Открыта часть {0}: {1}, {2}.", fw.Part.Name, Fmt.FirmwarePartContent(fw.Part), Fmt.Size(fw.Part.Length));
+
         if (doc.Container is { } disk)
         {
             PartitionInfo p = disk.Partition;
@@ -316,7 +320,19 @@ public sealed class SaveOptionsViewModel : DialogViewModel
 
     // ---- disk image the filesystem was opened from
     /// <summary>The document came from a partition of a disk image or from a volume of a UBI image.</summary>
-    public bool HasContainer => _doc.Container is not null || _doc.Ubi is not null || _doc.Android is not null;
+    public bool HasContainer => _doc.Container is not null || _doc.Ubi is not null || _doc.Android is not null || IsFirmwareContainer;
+
+    /// <summary>The chosen format fits the open part of the firmware (as <see cref="ImageDocument.WritesFirmware"/> decides it).</summary>
+    private bool FirmwareTakesFormat => _doc.Firmware?.Part.Content switch
+    {
+        Core.Images.PartitionContent.Cpio => IsCpio,
+        Core.Images.PartitionContent.Ubi => IsUbifs || IsSquash || IsErofs || IsExt || IsCramfs || IsRomfs,
+        Core.Images.PartitionContent.Ubifs => IsUbifs,
+        _ => !IsTar && !IsCpio && !IsUbifs,
+    };
+
+    /// <summary>The container is a firmware file (U-Boot uImage) that is rebuilt around the new content.</summary>
+    public bool IsFirmwareContainer => _doc.Firmware is not null && !_doc.SavesFilesystemOnly;
 
     /// <summary>The container is an Android image: super.img (logical partitions) or a boot image (ramdisk).</summary>
     public bool IsAndroidContainer => _doc.Android is not null;
@@ -326,9 +342,11 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     /// <summary>The container is a UBI image (volumes) and not a disk image (partitions).</summary>
     public bool IsUbiContainer => _doc.Ubi is not null;
 
-    public string ContainerTitle => IsUbiContainer ? L.T("Образ UBI") : IsAndroidContainer ? L.T("Образ Android") : L.T("Образ диска");
+    public string ContainerTitle => IsFirmwareContainer ? L.T("Прошивка") : IsUbiContainer ? L.T("Образ UBI") : IsAndroidContainer ? L.T("Образ Android") : L.T("Образ диска");
 
-    public string ContainerToggleText => IsAndroidContainer
+    public string ContainerToggleText => IsFirmwareContainer
+        ? L.T("Сохранить прошивку целиком: заголовок, ядро и остальные части остаются как были")
+        : IsAndroidContainer
         ? IsSuperContainer
             ? L.T("Сохранить super.img целиком: остальные логические разделы остаются как были")
             : L.T("Сохранить загрузочный образ целиком: ядро, DTB и остальное остаются как были")
@@ -356,7 +374,7 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     }
 
     /// <summary>The result is a disk image: the container is kept and the format can live in a partition.</summary>
-    public bool WritesDisk => HasContainer && _o.KeepContainer && (IsAndroidContainer
+    public bool WritesDisk => IsFirmwareContainer ? _o.KeepContainer && FirmwareTakesFormat : HasContainer && _o.KeepContainer && (IsAndroidContainer
         ? IsSuperContainer ? !IsTar && !IsCpio && !IsJffs2 && !IsUbifs : IsCpio
         : !IsTar && !IsCpio && !IsJffs2 && !((IsFat || IsF2fs) && IsUbiContainer));
 
@@ -364,6 +382,22 @@ public sealed class SaveOptionsViewModel : DialogViewModel
     {
         get
         {
+            if (IsFirmwareContainer && _doc.Firmware is { } fw)
+            {
+                if (!_o.KeepContainer)
+                    return fw.Part.Content == Core.Images.PartitionContent.Cpio
+                        ? L.T("Будет записан только архив ramdisk, без заголовка uImage.")
+                        : L.T("Будет записана только файловая система, без заголовка uImage и ядра — например, для сборки прошивки заново.");
+                if (!FirmwareTakesFormat)
+                    return fw.Part.Content == Core.Images.PartitionContent.Cpio
+                        ? L.T("В этой части прошивки — архив cpio; другой формат сохраняется отдельным файлом, прошивка при этом не меняется.")
+                        : L.T("Этот формат сохраняется отдельным файлом: в прошивку он не записывается.");
+                return L.F("Прошивка записывается заново: заменяется только часть {0}. ", fw.Part.Name) +
+                       (fw.Part.BehindImage
+                           ? L.T("Заголовок uImage и ядро не меняются; маркеры 0xdeadc0de за файловой системой ставятся на первые границы блоков стирания, как у OpenWrt. ")
+                           : L.T("Размер и контрольные суммы CRC-32 в заголовке uImage пересчитываются, остальные части переносятся без изменений. ")) +
+                       L.T("Если прошивка станет больше, проверьте, что она помещается в раздел флеш-памяти.");
+            }
             if (_doc.Android is { } android)
             {
                 string part = Fmt.AndroidPartName(android.Image, android.Part);

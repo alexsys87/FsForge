@@ -31,6 +31,9 @@ public sealed class FirmwarePart
     /// </summary>
     public ArchiveCompression? Packed { get; init; }
 
+    /// <summary>The part lies behind the image, outside what its header covers (OpenWrt's root filesystem behind the kernel).</summary>
+    public bool BehindImage { get; init; }
+
     /// <summary>The part holds a filesystem, a UBI image or a cpio archive this program can open.</summary>
     public bool IsReadable => Content is PartitionContent.SquashFs or PartitionContent.Ext or PartitionContent.Erofs
         or PartitionContent.Cramfs or PartitionContent.Romfs or PartitionContent.Fat or PartitionContent.F2fs
@@ -78,6 +81,16 @@ public abstract class FirmwareImage
     /// <summary>The stored bytes of a part (still compressed when <see cref="FirmwarePart.Packed"/> is set).</summary>
     public IBlockSource Open(FirmwarePart part) =>
         new SubBlockSource(Source, part.Offset, Math.Max(0, Math.Min(part.Length, Source.Length - part.Offset)), ownsInner: false);
+
+    /// <summary>True when the firmware can be written again around new content of <paramref name="part"/>; else the reason.</summary>
+    public abstract bool CanRebuild(FirmwarePart part, out string reason);
+
+    /// <summary>Writes the firmware again with <paramref name="data"/> as the new content of <paramref name="part"/>; everything else is kept.</summary>
+    public abstract void Write(Stream output, FirmwarePart part, IBlockSource data, List<string> warnings,
+        IProgress<ProgressInfo>? progress, CancellationToken ct);
+
+    /// <summary>What a rewrite of <paramref name="open"/> keeps as it was, to check that it survived.</summary>
+    public abstract IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open);
 
     /// <summary>True when the file starts with a firmware header this program understands.</summary>
     public static bool IsFirmware(IBlockSource source) => UImage.IsUImage(source);

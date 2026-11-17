@@ -25,7 +25,22 @@ public sealed class UImage : FirmwareImage
     /// <summary>How far behind the image a root filesystem is looked for.</summary>
     private const long TrailingScan = 256L << 20;
 
+    /// <summary>Erase blocks larger than this are not assumed when padding is kept aligned.</summary>
+    private const long MaxAlignment = 256 << 10;
+
     private UImage(IBlockSource source) : base(source) { }
+
+    /// <summary>The 64 bytes of the header as they are in the file.</summary>
+    private byte[] _header = Array.Empty<byte>();
+
+    /// <summary>End of the data the header covers.</summary>
+    private long _end;
+
+    /// <summary>The images inside the data (one, or those of a multi-file image), in their order.</summary>
+    private List<FirmwarePart> _inner = new();
+
+    /// <summary>The root filesystem found behind the image, outside what the header covers.</summary>
+    private FirmwarePart? _trailing;
 
     public string Name { get; private init; } = "";
     public byte Os { get; private init; }
@@ -90,6 +105,7 @@ public sealed class UImage : FirmwareImage
             Compression = h[31],
             Name = CString(h.AsSpan(32, 32)),
         };
+        image._header = h;
         image.ReadParts(ct);
         return image;
     }
@@ -106,20 +122,23 @@ public sealed class UImage : FirmwareImage
                 Warnings.Add("The CRC-32 of the uImage data does not match its header: the image was changed or damaged, and U-Boot would refuse to boot it.");
         }
 
+        _end = end;
         var parts = new List<FirmwarePart>();
         if (Type == TypeMulti) ReadMulti(parts, end);
         else parts.Add(MakePart(parts.Count, PartName(Type), HeaderSize, Math.Min(DataSize, Math.Max(0, Source.Length - HeaderSize)), Type));
+        _inner = parts.ToList();
 
         if (FindTrailing(end, ct) is { } rootfs)
         {
             (PartitionContent content, string contentName, var packed) = Identify(new SubBlockSource(Source, rootfs, Source.Length - rootfs, ownsInner: false));
             long gap = rootfs - end;
-            parts.Add(new FirmwarePart
+            _trailing = new FirmwarePart
             {
                 Index = parts.Count, Name = parts.Any(p => p.Name == "rootfs") ? "trailing" : "rootfs", Offset = rootfs, Length = Source.Length - rootfs,
-                Content = content, ContentName = contentName, Packed = packed,
+                Content = content, ContentName = contentName, Packed = packed, BehindImage = true,
                 Detail = gap == 0 ? "right after the uImage, outside its header" : $"{gap} bytes after the end of the uImage, outside its header",
-            });
+            };
+            parts.Add(_trailing);
         }
         Parts = parts;
     }
@@ -195,6 +214,292 @@ public sealed class UImage : FirmwareImage
         6 => "script",
         _ => TypeText(type),
     };
+
+    // ------------------------------------------------------------- writing
+
+    public override bool CanRebuild(FirmwarePart part, out string reason)
+    {
+        reason = "";
+        if (!Parts.Contains(part)) reason = "The part does not belong to this image.";
+        else if (_end > Source.Length) reason = "The firmware file is truncated: the uImage data reaches beyond its end.";
+        else if (part.Content == PartitionContent.Unknown) reason = $"'{part.Name}' holds nothing this program writes.";
+        return reason.Length == 0;
+    }
+
+    /// <summary>
+    /// Writes the firmware again with <paramref name="data"/> in place of <paramref name="part"/>. An image inside the
+    /// uImage gets a new size in the header (and in the list of a multi-file image), a new data CRC and a new header
+    /// CRC; whatever follows the data keeps its alignment. A root filesystem behind the image leaves the uImage as it
+    /// is; what follows the filesystem (OpenWrt's 0xdeadc0de markers, metadata) is moved so that it stays on the
+    /// same erase block boundaries.
+    /// </summary>
+    public override void Write(Stream output, FirmwarePart part, IBlockSource data, List<string> warnings,
+        IProgress<ProgressInfo>? progress, CancellationToken ct)
+    {
+        if (!CanRebuild(part, out string reason)) throw new FsException(reason);
+        var pieces = new List<IBlockSource>();
+        IBlockSource Slice(long from, long to) => new SubBlockSource(Source, from, to - from, ownsInner: false);
+
+        if (ReferenceEquals(part, _trailing))
+        {
+            pieces.Add(Slice(0, part.Offset));
+            pieces.Add(data);
+            long newEnd = part.Offset + data.Length;
+            Tail tail = TailOf(part);
+            if (tail.Markers.Count > 0)
+            {
+                // A marker on the first boundary of each of these sizes behind the new filesystem (one boundary can serve
+                // several sizes), padding in between.
+                long pos = newEnd;
+                foreach (long at in tail.Markers.Select(size => RoundUp(newEnd, size)).Distinct().Order())
+                {
+                    pieces.Add(Fill(at - pos, tail.Fill));
+                    pieces.Add(new MemoryBlockSource(new byte[] { 0xDE, 0xAD, 0xC0, 0xDE }));
+                    pos = at + 4;
+                }
+                pieces.Add(Slice(tail.Rest, Source.Length));
+            }
+            else if (tail.Start < Source.Length)
+            {
+                long at = Shifted(tail.Start, newEnd, tail.Align);
+                pieces.Add(Fill(at - newEnd, tail.Fill));
+                pieces.Add(Slice(tail.Start, Source.Length));
+            }
+            else if (tail.Align > 1)
+                pieces.Add(Fill(RoundUp(newEnd, tail.Align) - newEnd, tail.Fill));
+        }
+        else
+        {
+            // The data of the image: the new part in place of the old one, the others as they are.
+            var body = new List<IBlockSource>();
+            if (Type == TypeMulti)
+            {
+                byte[] table = new byte[4 * (_inner.Count + 1)];
+                for (int i = 0; i < _inner.Count; i++)
+                {
+                    long size = ReferenceEquals(_inner[i], part) ? data.Length : _inner[i].Length;
+                    if (size > uint.MaxValue) throw new FsException("The new content is too large for a uImage (4 GiB at most).");
+                    BinaryPrimitives.WriteUInt32BigEndian(table.AsSpan(4 * i), (uint)size);
+                }
+                body.Add(new MemoryBlockSource(table));
+                for (int i = 0; i < _inner.Count; i++)
+                {
+                    IBlockSource piece = ReferenceEquals(_inner[i], part) ? data : Open(_inner[i]);
+                    body.Add(piece);
+                    if (i < _inner.Count - 1) body.Add(Fill((4 - piece.Length % 4) % 4, 0));
+                }
+            }
+            else body.Add(data);
+            long dataLength = body.Sum(b => b.Length);
+            if (dataLength > uint.MaxValue) throw new FsException("The new content is too large for a uImage (4 GiB at most).");
+
+            byte[] header = (byte[])_header.Clone();
+            BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(12), (uint)dataLength);
+            BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(24), CrcOf(body, ct));
+            header.AsSpan(4, 4).Clear();
+            BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(4), Crc32.Compute(header));
+            pieces.Add(new MemoryBlockSource(header));
+            pieces.AddRange(body);
+
+            long newEnd = HeaderSize + dataLength;
+            if (_trailing is not null)
+            {
+                // The root filesystem behind the image stays on the same kind of boundary (an erase block).
+                long at = Shifted(_trailing.Offset, newEnd, Alignment(_trailing.Offset));
+                byte fill = _trailing.Offset > _end ? Source.ReadBytes(_end, 1)[0] : (byte)0xFF;
+                pieces.Add(Fill(at - newEnd, fill));
+                pieces.Add(Slice(_trailing.Offset, Source.Length));
+            }
+            else pieces.Add(Slice(_end, Source.Length));
+        }
+
+        long total = pieces.Sum(p => p.Length);
+        if (total > Source.Length)
+            warnings.Add($"The firmware grew from {DiskText.Size(Source.Length)} to {DiskText.Size(total)}: make sure it still fits into the flash partition it is written to.");
+        if (HasFwtoolTrailer())
+            warnings.Add("The firmware ends with an OpenWrt metadata or signature block (fwtool). It was carried over unchanged, but it was made for the old image: " +
+                         "its checksum or signature may no longer match, and sysupgrade may then refuse the file or need -F.");
+
+        byte[] buf = new byte[1 << 20];
+        long done = 0;
+        foreach (IBlockSource piece in pieces)
+        {
+            for (long o = 0; o < piece.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, piece.Length - o);
+                piece.ReadExactly(o, buf.AsSpan(0, n));
+                output.Write(buf, 0, n);
+                o += n;
+                done += n;
+                progress?.Report(new ProgressInfo("write", done, total));
+            }
+        }
+    }
+
+    /// <summary>
+    /// What the rewrite keeps as it was, to check the written image: the header fields that do not depend on the data,
+    /// the other parts, and what follows a root filesystem behind the image.
+    /// </summary>
+    public override IEnumerable<(string Name, IBlockSource Data)> FixedSections(FirmwarePart open)
+    {
+        byte[] fields = new byte[4 + 8 + 36];
+        _header.AsSpan(8, 4).CopyTo(fields);
+        _header.AsSpan(16, 8).CopyTo(fields.AsSpan(4));
+        _header.AsSpan(28, 36).CopyTo(fields.AsSpan(12));
+        yield return ("header", new MemoryBlockSource(fields));
+        foreach (FirmwarePart p in Parts)
+            if (p.Name != open.Name) yield return (p.Name, Open(p));
+        if (_trailing is not null && open.Name == _trailing.Name)
+        {
+            Tail tail = TailOf(_trailing);
+            // Behind a new filesystem one marker can serve more block sizes than before (an 8 KiB boundary may also be
+            // the first 16 KiB one), so only what follows the markers is compared.
+            if (tail.Markers.Count > 0)
+                yield return ("data after the padding markers", new SubBlockSource(Source, tail.Rest, Source.Length - tail.Rest, ownsInner: false));
+            else yield return ("data after " + _trailing.Name, new SubBlockSource(Source, tail.Start, Source.Length - tail.Start, ownsInner: false));
+        }
+    }
+
+    /// <summary>What follows a root filesystem behind the image.</summary>
+    /// <param name="Start">Where it starts, the padding behind the filesystem skipped (the end of the file when nothing follows).</param>
+    /// <param name="Align">The boundary it has to stay on when it is moved as a whole.</param>
+    /// <param name="Fill">The byte the padding is made of.</param>
+    /// <param name="Markers">
+    /// When it starts with OpenWrt's 0xdeadc0de markers: the erase block sizes (4 KiB to 256 KiB) whose first boundary
+    /// behind the filesystem holds one, smallest first. Empty when it does not start so.
+    /// </param>
+    /// <param name="Rest">Where the data behind the markers starts.</param>
+    private sealed record Tail(long Start, long Align, byte Fill, List<long> Markers, long Rest);
+
+    /// <summary>
+    /// What follows a root filesystem behind the image. Only the end of a SquashFS, EROFS, CramFS, romfs or ext
+    /// filesystem is known; any other one runs to the end of the file.
+    /// </summary>
+    private Tail TailOf(FirmwarePart part)
+    {
+        long eof = Source.Length;
+        long fsEnd = part.Packed is null ? part.Offset + FilesystemLength(part.Offset, part.Content) : eof;
+        long start = fsEnd;
+        byte[] buf = new byte[1 << 16];
+        while (start < eof)
+        {
+            int n = Source.Read(start, buf.AsSpan(0, (int)Math.Min(buf.Length, eof - start)));
+            if (n <= 0) break;
+            int i = buf.AsSpan(0, n).IndexOfAnyExcept((byte)0, (byte)0xFF);
+            if (i >= 0) { start += i; break; }
+            start += n;
+        }
+        byte fill = start > fsEnd ? Source.ReadBytes(start - 1, 1)[0] : (byte)0xFF;
+        if (start >= eof) return new Tail(eof, eof > fsEnd ? Alignment(eof) : 1, fill, new List<long>(), eof);
+
+        // OpenWrt's padjffs2 puts 0xdeadc0de at the first 4, 8 ... 256 KiB boundaries behind the filesystem, so that the
+        // kernel finds one at the start of the next erase block, whatever size the flash has. What matters is which
+        // of these boundaries hold a marker.
+        var found = new HashSet<long>();
+        long rest = start;
+        byte[] word = new byte[4];
+        for (long at = start; (at & 3) == 0 && at + 4 <= eof && at < fsEnd + 2 * MaxAlignment; at += 4)
+        {
+            Source.ReadExactly(at, word);
+            if (BinaryPrimitives.ReadUInt32BigEndian(word) == 0xDEADC0DE) { found.Add(at); rest = at + 4; }
+            else if (word.AsSpan().IndexOfAnyExcept((byte)0, (byte)0xFF) >= 0) break;
+        }
+        var markers = new List<long>();
+        for (long size = 4096; size <= MaxAlignment; size <<= 1)
+            if (found.Contains(RoundUp(fsEnd, size))) markers.Add(size);
+        if (markers.Count == 0) return new Tail(start, Alignment(start), fill, markers, start);
+        return new Tail(start, Math.Max(Alignment(start), markers.Max()), fill, markers, rest);
+    }
+
+    /// <summary>
+    /// How long the filesystem at <paramref name="at"/> is, as its superblock gives it (SquashFS, EROFS, CramFS, romfs,
+    /// ext2/3/4); anything else, or a size that makes no sense, runs to the end of the file.
+    /// </summary>
+    private long FilesystemLength(long at, PartitionContent content)
+    {
+        long rest = Source.Length - at;
+        long length = 0;
+        try
+        {
+            switch (content)
+            {
+                case PartitionContent.SquashFs:
+                    length = (long)Math.Min(BinaryPrimitives.ReadUInt64LittleEndian(Source.ReadBytes(at + 40, 8)), (ulong)long.MaxValue);
+                    break;
+                case PartitionContent.Erofs:
+                {
+                    byte[] sb = Source.ReadBytes(at + 1024, 40);
+                    length = sb[12] is >= 9 and <= 16 ? (long)BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(36)) << sb[12] : 0;
+                    break;
+                }
+                case PartitionContent.Cramfs:
+                {
+                    byte[] sb = Source.ReadBytes(at, 12);
+                    bool big = BinaryPrimitives.ReadUInt32BigEndian(sb) == 0x28CD3D45;
+                    uint flags = big ? BinaryPrimitives.ReadUInt32BigEndian(sb.AsSpan(8)) : BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(8));
+                    // Only the version 2 superblock (flag 1) records the size.
+                    if ((flags & 1) != 0) length = big ? BinaryPrimitives.ReadUInt32BigEndian(sb.AsSpan(4)) : BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(4));
+                    break;
+                }
+                case PartitionContent.Romfs:
+                    length = BinaryPrimitives.ReadUInt32BigEndian(Source.ReadBytes(at + 8, 4));
+                    break;
+                case PartitionContent.Ext:
+                {
+                    byte[] sb = Source.ReadBytes(at + 1024, 28);
+                    uint log = BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(24));
+                    if (log <= 6) length = (long)BinaryPrimitives.ReadUInt32LittleEndian(sb.AsSpan(4)) << (int)(10 + log);
+                    break;
+                }
+            }
+        }
+        catch (FsException)
+        {
+            length = 0;
+        }
+        return length > 0 && length <= rest ? length : rest;
+    }
+
+    /// <summary>The largest power of two (up to <see cref="MaxAlignment"/>) the offset is a multiple of.</summary>
+    private static long Alignment(long offset) => offset == 0 ? MaxAlignment : Math.Min(offset & -offset, MaxAlignment);
+
+    private static long RoundUp(long n, long align) => (n + align - 1) / align * align;
+
+    /// <summary>The first position at or after <paramref name="min"/> that lies on the same boundary as <paramref name="old"/>.</summary>
+    private static long Shifted(long old, long min, long align)
+    {
+        long delta = min - old;
+        long steps = delta <= 0 ? -(-delta / align) : (delta + align - 1) / align;
+        return old + steps * align;
+    }
+
+    private static IBlockSource Fill(long length, byte value)
+    {
+        byte[] b = new byte[length];
+        if (value != 0) b.AsSpan().Fill(value);
+        return new MemoryBlockSource(b);
+    }
+
+    private static uint CrcOf(IEnumerable<IBlockSource> pieces, CancellationToken ct)
+    {
+        byte[] buf = new byte[1 << 20];
+        uint crc = 0;
+        foreach (IBlockSource p in pieces)
+            for (long o = 0; o < p.Length;)
+            {
+                ct.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(buf.Length, p.Length - o);
+                p.ReadExactly(o, buf.AsSpan(0, n));
+                crc = Crc32.Update(crc, buf.AsSpan(0, n));
+                o += n;
+            }
+        return crc;
+    }
+
+    /// <summary>The file ends with a block of OpenWrt's fwtool (metadata or signature): the trailer magic "FWx0".</summary>
+    private bool HasFwtoolTrailer() =>
+        Source.Length >= _end + 16 && Source.ReadBytes(Source.Length - 16, 4).AsSpan().SequenceEqual("FWx0"u8);
 
     /// <summary>
     /// The start of a root filesystem behind the image, or null. OpenWrt puts SquashFS (or UBI, JFFS2) there,

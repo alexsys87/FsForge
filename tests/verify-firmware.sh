@@ -5,9 +5,11 @@
 #               read as the image itself: an OpenWrt-style sysupgrade image (an lzma kernel uImage padded to the
 #               erase block, the SquashFS behind it, the JFFS2 marker), a JFFS2 root behind the kernel, a filesystem
 #               uImage, a uInitrd with a GNU cpio archive in gzip, a gzipped ext2 initrd, and a multi-file image
-#               (kernel, ramdisk, device tree) whose parts are chosen with vol=. The firmware is not rebuilt yet:
-#               saving over it is refused and leaves the file as it was; saving under another name writes the
-#               filesystem alone.
+#               (kernel, ramdisk, device tree) whose parts are chosen with vol=. Each is then changed in place:
+#               the header must have the new size and correct CRC-32 checksums (checked with zlib), dumpimage must
+#               take the changed part out of it and the reference tool (unsquashfs, GNU cpio) unpack it with the change,
+#               the kernel must stay byte for byte, and OpenWrt's 0xdeadc0de marker must sit on the first erase block
+#               boundary behind the new SquashFS. The filesystem alone is only written under another name.
 
 fw_run() {
   if ! command -v mkimage >/dev/null; then echo "uImage: skipped (u-boot-tools with mkimage is not installed)"; return; fi
@@ -55,11 +57,68 @@ PY
     cmpdump "uImage: gzipped ext2 initrd" fw/ext2.uInitrd fw/ext2.ref
   fi
 
-  local sum; sum=$(sha256sum < fw/sysupgrade.bin)
-  if $F edit fw/sysupgrade.bin fw/sysupgrade.bin rm:/etc 2> fw/same.err; then bad "the firmware was saved over"
-  else [ "$(sha256sum < fw/sysupgrade.bin)" = "$sum" ] && grep -q "Save under another name" fw/same.err && ok "uImage: saving over the firmware is refused, the file is unchanged" \
-    || bad "save over the firmware: $(cat fw/same.err)"; fi
   if $F convert fw/sysupgrade.bin fw/rootfs.sqfs > /dev/null 2> fw/alone.err && command -v unsquashfs >/dev/null && unsquashfs -n -d fw/un fw/rootfs.sqfs > /dev/null 2>&1; then
     python3 scan.py fw/un | cmp -s - tree.ref && ok "uImage: the filesystem saved alone, unpacked by unsquashfs" || bad "the filesystem saved alone differs"
   else bad "save the filesystem alone: $(cat fw/alone.err)"; fi
+  if $F convert fw/sysupgrade.bin fw/sysupgrade.bin format=tar 2> fw/tar.err; then bad "a tar archive was written over the firmware"
+  else grep -q "Save under another name" fw/tar.err && ok "uImage: a tar archive is not written over the firmware" || bad "$(cat fw/tar.err)"; fi
+
+  echo "uImage rebuilt by FsForge"
+  head -c 300000 /dev/urandom > fw/big.bin
+  cp fw/sysupgrade.bin fw/w_sys.bin
+  if $F edit fw/w_sys.bin fw/w_sys.bin "add:/:fw/big.bin" > /dev/null 2> fw/w_sys.err; then
+    fw_check fw/w_sys.bin kernel=fw/kernel.uImage && ok "sysupgrade: header, kernel and the marker behind the grown SquashFS" || bad "sysupgrade layout: $(cat fw/check.out)"
+    python3 - fw/w_sys.bin fw/w_root.sqfs <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read(); at = d.index(b'hsqs')
+open(sys.argv[2], 'wb').write(d[at:])
+PY
+    rm -rf fw/un2; unsquashfs -n -d fw/un2 fw/w_root.sqfs > /dev/null 2>&1 && cmp -s fw/un2/big.bin fw/big.bin && [ -e fw/un2/etc ] \
+      && ok "sysupgrade: unsquashfs unpacks the new root filesystem" || bad "unsquashfs on the rebuilt sysupgrade image"
+  else bad "edit sysupgrade: $(cat fw/w_sys.err)"; fi
+
+  if [ -e fw/uInitrd ]; then
+    cp fw/uInitrd fw/w_initrd; echo added > fw/added.txt
+    if $F edit fw/w_initrd fw/w_initrd "add:/:fw/added.txt" > /dev/null 2> fw/w_initrd.err; then
+      fw_check fw/w_initrd && ok "uInitrd: new size and checksums" || bad "uInitrd header: $(cat fw/check.out)"
+      rm -f fw/x.gz; dumpimage -T ramdisk -p 0 -o fw/x.gz fw/w_initrd > /dev/null 2>&1
+      gzip -dc fw/x.gz 2>/dev/null | cpio -t 2>/dev/null | grep -qx "added.txt" && ok "uInitrd: dumpimage + GNU cpio see the added file" || bad "uInitrd: the added file is not in the archive dumpimage takes out"
+    else bad "edit uInitrd: $(cat fw/w_initrd.err)"; fi
+    cp fw/multi.uImage fw/w_multi.uImage
+    if $F edit fw/w_multi.uImage fw/w_multi.uImage "add:/:fw/added.txt" > /dev/null 2> fw/w_multi.err; then
+      fw_check fw/w_multi.uImage && ok "multi-file: new size and checksums" || bad "multi-file header: $(cat fw/check.out)"
+      rm -f fw/k.bin fw/r.gz fw/d.dtb
+      dumpimage -T multi -p 0 -o fw/k.bin fw/w_multi.uImage > /dev/null 2>&1; dumpimage -T multi -p 1 -o fw/r.gz fw/w_multi.uImage > /dev/null 2>&1
+      dumpimage -T multi -p 2 -o fw/d.dtb fw/w_multi.uImage > /dev/null 2>&1
+      cmp -s fw/k.bin fw/kernel.bin && cmp -s fw/d.dtb fw/board.dtb && gzip -dc fw/r.gz 2>/dev/null | cpio -t 2>/dev/null | grep -qx "added.txt" \
+        && ok "multi-file: dumpimage takes out the same kernel and device tree and the changed ramdisk" || bad "multi-file parts after the rebuild"
+    else bad "edit multi-file: $(cat fw/w_multi.err)"; fi
+  fi
+  if [ -e fw/ext2.uInitrd ]; then
+    cp fw/ext2.uInitrd fw/w_ext2.uInitrd
+    if $F edit fw/w_ext2.uInitrd fw/w_ext2.uInitrd "add:/:fw/added.txt" > /dev/null 2> fw/w_ext2.err; then
+      rm -f fw/e.gz fw/e.img; dumpimage -T ramdisk -p 0 -o fw/e.gz fw/w_ext2.uInitrd > /dev/null 2>&1; gzip -dc fw/e.gz > fw/e.img 2>/dev/null
+      fw_check fw/w_ext2.uInitrd && e2fsck -fn fw/e.img > fw/e2fsck.out 2>&1 && debugfs -R "cat /added.txt" fw/e.img 2>/dev/null | grep -q added \
+        && ok "ext2 initrd: gzipped again, e2fsck clean, the added file is there" || bad "ext2 initrd after the rebuild: $(tail -2 fw/e2fsck.out)"
+    else bad "edit ext2 initrd: $(cat fw/w_ext2.err)"; fi
+  fi
+}
+
+fw_check() { # file [kernel=<uImage the file must start with, padded>] : header and data CRC with zlib; the marker behind a SquashFS
+  python3 - "$@" > fw/check.out 2>&1 <<'PY'
+import sys, struct, zlib
+d = open(sys.argv[1], 'rb').read()
+h = bytearray(d[:64]); hcrc, size, dcrc = struct.unpack('>I', h[4:8])[0], struct.unpack('>I', h[12:16])[0], struct.unpack('>I', h[24:28])[0]
+h[4:8] = bytes(4)
+assert zlib.crc32(bytes(h)) == hcrc, 'header CRC'
+assert 64 + size <= len(d) and zlib.crc32(d[64:64 + size]) == dcrc, 'data CRC'
+for a in sys.argv[2:]:
+    if a.startswith('kernel='):
+        k = open(a[7:], 'rb').read()
+        assert d[:len(k)] == k, 'kernel changed'
+        at = d.index(b'hsqs', len(k))
+        end = at + struct.unpack('<Q', d[at + 40:at + 48])[0]
+        m = (end + 65535) // 65536 * 65536
+        assert d[m:m + 4] == b'\xde\xad\xc0\xde', 'no 0xdeadc0de at 0x%x' % m
+PY
 }

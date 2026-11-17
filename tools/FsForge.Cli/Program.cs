@@ -53,8 +53,11 @@ internal static class Program
 
         U-Boot uImage files (uImage, uInitrd, OpenWrt sysupgrade images with the root filesystem behind the
         kernel) are opened at the filesystem or ramdisk they hold; add vol=<name or number> to pick another part
-        (rootfs, ramdisk, filesystem, or the number of the image as mkimage -l counts them). The firmware is not rebuilt yet: saving writes the filesystem
-        alone, and only under another name.
+        (rootfs, ramdisk, filesystem, or the number of the image as mkimage -l counts them; rootfs:<volume> for a
+        UBI image behind the kernel). "edit" and "convert" write the whole firmware again with only that part
+        replaced: sizes and CRC-32 checksums in the header are recalculated, and OpenWrt's 0xdeadc0de markers are put
+        on the erase block boundaries behind the new root filesystem. container=0 or a filesystem name (.squashfs...)
+        writes the filesystem alone.
 
         A UBI image (ubinize output, a flash dump without out-of-band data) is opened at the volume that holds
         the most data; add vol=<name or number> to any command to pick another one. "convert" writes the whole

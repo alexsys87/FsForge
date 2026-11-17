@@ -765,13 +765,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         bool disk = _doc.WritesContainer(vm.Result);
         bool ubi = _doc.WritesUbi(vm.Result);
         bool sameFormat = _doc.FilePath is not null && vm.Result.Format == _doc.Format && !_doc.SavesFilesystemOnly && _doc.Container is null
-                          && _doc.Ubi is null && _doc.Android is null && !ubi
+                          && _doc.Ubi is null && _doc.Android is null && _doc.Firmware is null && !ubi
                           && (vm.Result.Format != ImageFormat.Tar || vm.Result.Tar.Compression == _doc.Tar?.Compression);
         string suggested = disk || sameFormat ? Path.GetFileName(_doc.FilePath!) : baseName + vm.Extension;
         string? dir = NullIfEmpty(_settings.LastSaveDirectory) ?? (_doc.FilePath is null ? null : Path.GetDirectoryName(_doc.FilePath));
-        string title = ubi ? L.T("Сохранить образ UBI") : disk && _doc.Android is not null ? L.T("Сохранить образ Android")
+        bool firmware = _doc.WritesFirmware(vm.Result);
+        string title = firmware ? L.T("Сохранить прошивку") : ubi ? L.T("Сохранить образ UBI") : disk && _doc.Android is not null ? L.T("Сохранить образ Android")
             : disk ? L.T("Сохранить образ диска") : L.T("Сохранить образ");
-        string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && !ubi);
+        string? path = _dialogs.PickSaveFile(title, suggested, ubi ? ImageFormat.Ubifs : vm.Result.Format, vm.Extension, dir, disk && (!ubi || firmware));
         if (path is null) return false;
         return await SaveCoreAsync(path, vm.Result);
     }

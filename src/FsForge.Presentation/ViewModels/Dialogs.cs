@@ -923,7 +923,11 @@ public sealed class ImageInfoViewModel : DialogViewModel
                 string text = L.F("{0}, {1}, смещение 0x{2:X}", Fmt.FirmwarePartContent(p), Fmt.Size(p.Length), p.Offset);
                 Add(ReferenceEquals(p, fw.Part) ? L.F("▸ {0} (открыт)", p.Name) : p.Name, text);
             }
-            Add(L.T("Сохранение"), L.T("только сама файловая система, в новый файл: пересборка прошивки пока не поддерживается, файл прошивки не меняется"));
+            Add(L.T("Сохранение"), doc.SavesFilesystemOnly
+                ? L.T("только сама файловая система, в новый файл: эту прошивку пересобрать нельзя, файл прошивки не меняется")
+                : fw.Part.BehindImage
+                ? L.T("прошивка целиком: заменяется только корневая файловая система, заголовок uImage и ядро не меняются")
+                : L.T("прошивка целиком: заменяется только открытая часть, размер и CRC-32 в заголовке uImage пересчитываются"));
         }
         else if (doc.EmbeddedOffset > 0) Add(L.T("Смещение ФС в файле"), $"0x{doc.EmbeddedOffset:X}");
         if (doc.AndroidSparse) Add(L.T("Контейнер"), "Android sparse image");

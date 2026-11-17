@@ -1461,7 +1461,7 @@ internal static class Program
             vm.Dispose();
         });
 
-        await Test("U-Boot uImage: choice of part, information, never saved over the firmware", async () =>
+        await Test("U-Boot uImage: choice of part, information, rebuilt on save, filesystem saved alone", async () =>
         {
             var (vm, d, _, _) = NewVm();
             // A multi-file uImage: a kernel, an uncompressed cpio ramdisk and a SquashFS, each padded to 4 bytes.
@@ -1502,7 +1502,7 @@ internal static class Program
                 return c.Accept();
             };
             Check(await vm.OpenPathAsync(fw), "open failed: " + string.Join("; ", d.Messages));
-            Check(asked == 1 && vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: true }
+            Check(asked == 1 && vm.Document is { Format: ImageFormat.SquashFs, Firmware.Part.Name: "rootfs", SavesFilesystemOnly: false }
                   && vm.DocumentInfo.StartsWith("uImage · rootfs из 3 · SquashFS"), "status line: " + vm.DocumentInfo);
             bool infoShown = false;
             d.OnDialog = o => infoShown = o is ImageInfoViewModel i && i.Rows.Any(r => r.Label == "Прошивка" && r.Value.Contains("board firmware"))
@@ -1513,20 +1513,36 @@ internal static class Program
             vm.ImageInfoCommand.Execute(null);
             Check(infoShown, "image information of a uImage");
 
-            // Ctrl+S asks where to put the filesystem; the firmware file stays as it was.
+            // Ctrl+S writes the firmware again: the kernel and the ramdisk stay, the header gets new sizes and checksums.
             vm.Document!.Tree.Remove(vm.Document.Tree.Resolve("/etc/Banner")!);
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
+            byte[] rebuilt = File.ReadAllBytes(fw);
+            uint size = (uint)(rebuilt[12] << 24 | rebuilt[13] << 16 | rebuilt[14] << 8 | rebuilt[15]);
+            byte[] head = rebuilt[..64];
+            uint hcrc = (uint)(head[4] << 24 | head[5] << 16 | head[6] << 8 | head[7]);
+            head[4] = head[5] = head[6] = head[7] = 0;
+            Check(FsForge.Core.Compression.Crc32.Compute(head) == hcrc && size == rebuilt.Length - 64
+                  && rebuilt.AsSpan(64 + 16, 10001).SequenceEqual(original.AsSpan(64 + 16, 10001)) && !rebuilt.AsSpan().SequenceEqual(original), "the firmware was not rebuilt");
+            Check(vm.Document is { Firmware.Part.Name: "rootfs" } && vm.Document.Tree.Resolve("/etc/Banner") is null && !vm.IsModified, "the rebuilt firmware reopened");
+
+            // "Save as" offers the whole firmware or the filesystem alone.
             d.OnDialog = o =>
             {
                 var s = (SaveOptionsViewModel)o;
-                Check(!s.HasContainer && !s.WritesDisk, "save dialog of a firmware part");
+                Check(s.HasContainer && s.IsFirmwareContainer && s.WritesDisk && s.ContainerTitle == "Прошивка" && s.ContainerSummary.Contains("Открыта часть rootfs")
+                      && s.ContainerNote.Contains("Размер и контрольные суммы"), "save dialog of a firmware part: " + s.ContainerNote);
+                s.Format = SaveFormat.Tar;
+                Check(!s.WritesDisk && s.ContainerNote.Contains("отдельным файлом"), "tar into the firmware: " + s.ContainerNote);
+                s.Format = SaveFormat.SquashFs;
+                s.KeepContainer = false;
+                Check(!s.WritesDisk && s.ContainerNote.Contains("только файловая система"), "the filesystem alone: " + s.ContainerNote);
                 return s.Accept();
             };
             d.SavePicks.Enqueue(Path.Combine(_dir, "board-rootfs.squashfs"));
-            Check(await vm.SaveAsync(), "save failed: " + string.Join("; ", d.Messages));
-            Check(d.LastSuggestedName != "board.uImage" && !d.LastSaveWasDisk, "suggested name: " + d.LastSuggestedName);
-            Check(File.ReadAllBytes(fw).AsSpan().SequenceEqual(original), "the firmware file was changed");
-            using (ImageDocument saved = ImageDocument.Open(Path.Combine(_dir, "board-rootfs.squashfs"), _dir))
-                Check(saved.Firmware is null && saved.Tree.Resolve("/etc/Banner") is null && saved.Tree.Resolve("/etc/passwd") is not null, "the filesystem saved alone");
+            Check(await vm.SaveAsAsync(), "save as failed: " + string.Join("; ", d.Messages));
+            Check(!d.LastSaveWasDisk && File.ReadAllBytes(fw).AsSpan().SequenceEqual(rebuilt), "the firmware file was changed by saving the filesystem alone");
+            Check(vm.Document is { Firmware: null, Format: ImageFormat.SquashFs } && vm.Document.Tree.Resolve("/etc/passwd") is not null, "the filesystem saved alone");
             vm.Dispose();
         });
 
