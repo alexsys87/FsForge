@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using FsForge.Core;
+using FsForge.Core.Images;
 using FsForge.Presentation.Mvvm;
 using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
@@ -211,4 +212,55 @@ public sealed record RecentItem(string Path)
     /// <summary>The path as menu text: underscores are doubled so that they are not taken for access keys.</summary>
     public string MenuText => Path.Replace("_", "__");
     public override string ToString() => Path;
+}
+
+/// <summary>
+/// One place of the opened file a filesystem can be opened from (a partition, a UBI volume, a part of an
+/// Android image or a firmware file), as shown in the partition switcher and in the choice dialog.
+/// </summary>
+public sealed class PartItem
+{
+    public PartItem(ImagePart part)
+    {
+        Part = part;
+        (Name, Content, Details) = Describe(part);
+    }
+
+    public ImagePart Part { get; }
+    public string Name { get; }
+    public string Content { get; }
+    public string Details { get; }
+    public bool CanOpen => Part.CanOpen;
+    public bool IsCurrent => Part.IsCurrent;
+
+    /// <summary>The line in the switcher: "Раздел 2 · SquashFS".</summary>
+    public string Text => $"{Name} · {Content}";
+
+    public string ToolTip => Details + (CanOpen ? "" : Environment.NewLine + L.T("Здесь нет файловой системы, которую можно открыть."));
+
+    public override string ToString() => Text;
+
+    private static (string Name, string Content, string Details) Describe(ImagePart part)
+    {
+        if (part.Partition is { } p) return (L.F("Раздел {0}", p.Number), Fmt.PartitionContent(p), PartitionDetails(p));
+        if (part.FirmwarePart is { } f && part.Volume is { } fv)
+            return (L.F("{0}: том {1}", f.Name, Fmt.VolumeName(fv)), Fmt.VolumeContent(fv), VolumeDetails(fv));
+        if (part.FirmwarePart is { } fp) return (fp.Name, Fmt.FirmwarePartContent(fp), FirmwarePartDetails(fp));
+        if (part.Volume is { } v) return (L.F("Том {0}", Fmt.VolumeName(v)), Fmt.VolumeContent(v), VolumeDetails(v));
+        if (part.AndroidPart is { } a) return (a.Name, Fmt.AndroidPartContent(a), AndroidPartDetails(a));
+        return (part.Key, "", "");
+    }
+
+    internal static string PartitionDetails(PartitionInfo p) =>
+        L.F("{0} · {1} · смещение 0x{2:X}", Fmt.Size(p.Length), p.TypeName, p.Offset) + (p.Bootable ? L.T(" · загрузочный") : "");
+
+    internal static string VolumeDetails(FsForge.Core.Ubifs.UbiVolumeInfo v) =>
+        L.F("{0} · {1}", Fmt.Size(v.Length), v.IsStatic ? L.T("статический") : L.T("динамический")) +
+        (v.AutoResize ? L.T(" · занимает всё свободное место (autoresize)") : "");
+
+    internal static string AndroidPartDetails(FsForge.Core.Android.AndroidPart p) =>
+        Fmt.Size(p.Length) + (p.Detail.Length > 0 ? " · " + p.Detail : "");
+
+    internal static string FirmwarePartDetails(FsForge.Core.Firmware.FirmwarePart p) =>
+        L.F("{0} · смещение 0x{1:X}", Fmt.Size(p.Length), p.Offset);
 }

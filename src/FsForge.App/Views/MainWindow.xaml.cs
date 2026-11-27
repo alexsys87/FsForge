@@ -355,6 +355,12 @@ public partial class MainWindow
             _vm.OpenRecentCommand.Execute(item);
     }
 
+    private void OnPartClick(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is System.Windows.Controls.MenuItem { DataContext: PartItem item } && _vm.SwitchPartCommand.CanExecute(item))
+            _vm.SwitchPartCommand.Execute(item);
+    }
+
     private void OnRecentButtonClick(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { DataContext: RecentItem item })

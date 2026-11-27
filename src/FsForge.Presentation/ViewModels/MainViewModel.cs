@@ -65,6 +65,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SaveCommand = Async(() => SaveAsync(), () => Ready && (IsModified || _doc!.FilePath is null));
         SaveAsCommand = Async(() => SaveAsAsync(), () => Ready);
         CloseCommand = Async(() => CloseAsync(), () => Ready);
+        SwitchPartCommand = AsyncP(p => p is PartItem item ? SwitchPartAsync(item) : Task.CompletedTask,
+            p => Ready && p is PartItem { CanOpen: true, IsCurrent: false });
         AddFilesCommand = Async(AddFilesAsync, () => Ready);
         AddFolderCommand = Async(AddFolderAsync, () => Ready);
         ImportArchiveCommand = Async(ImportArchiveAsync, () => Ready);
@@ -141,6 +143,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public AsyncRelayCommand SaveCommand { get; }
     public AsyncRelayCommand SaveAsCommand { get; }
     public AsyncRelayCommand CloseCommand { get; }
+    public AsyncRelayCommand SwitchPartCommand { get; }
     public AsyncRelayCommand AddFilesCommand { get; }
     public AsyncRelayCommand AddFolderCommand { get; }
     public AsyncRelayCommand ImportArchiveCommand { get; }
@@ -186,6 +189,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<TreeItem> TreeRoots { get; } = new();
     public ObservableCollection<Crumb> Breadcrumbs { get; } = new();
     public ObservableCollection<RecentItem> RecentFiles { get; } = new();
+
+    /// <summary>
+    /// The partitions (UBI volumes, parts of an Android image or a firmware file) of the opened file; empty when
+    /// it has no choice. Another one is opened in place of the current one without closing the file.
+    /// </summary>
+    public ObservableCollection<PartItem> Parts { get; } = new();
+
+    /// <summary>The file has several partitions (volumes, parts) to switch between.</summary>
+    public bool HasParts => Parts.Count > 0;
+
+    /// <summary>The open entry of <see cref="Parts"/>. Setting another one opens it (asking about unsaved changes first).</summary>
+    public PartItem? CurrentPart
+    {
+        get => Parts.FirstOrDefault(p => p.IsCurrent);
+        set
+        {
+            if (value is null || value.IsCurrent) return;
+            _ = SwitchPartAsync(value);
+        }
+    }
     public bool HasRecentFiles => RecentFiles.Count > 0;
 
     /// <summary>The view should select these rows (after a refresh, a paste or an import).</summary>
@@ -498,6 +521,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (!_doc.IsDisposed) _doc.Dispose();
         }
         _spool = null;                              // owned by the tree of the previous document
+        // Files opened in an external program belong to the previous image; a reopened one (after a save) keeps them.
+        if (restorePath is null) _edits.Clear();
         _clipboard = new List<FsNode>();
         _selection = new List<NodeItem>();
         _back.Clear();
@@ -534,6 +559,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _currentPath = "";
             OnPropertyChanged(nameof(CurrentPath));
         }
+        RefreshParts();
         IsModified = doc?.IsModified ?? false;
         OnPropertyChanged(nameof(HasDocument));
         OnPropertyChanged(nameof(NoDocument));
@@ -700,6 +726,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
         });
         return done.Task.GetAwaiter().GetResult();
+    }
+
+    private void RefreshParts()
+    {
+        Parts.Clear();
+        if (_doc is not null)
+            foreach (ImagePart part in _doc.Parts)
+                Parts.Add(new PartItem(part));
+        OnPropertyChanged(nameof(HasParts));
+        OnPropertyChanged(nameof(CurrentPart));
+    }
+
+    /// <summary>
+    /// Opens another partition (volume, part) of the same file in place of the current one. The file stays
+    /// open: a compressed image is not unpacked again. Unsaved changes are offered to be saved first, because
+    /// only one partition is edited at a time.
+    /// </summary>
+    public async Task<bool> SwitchPartAsync(PartItem item)
+    {
+        try
+        {
+            if (_doc is null || IsBusy || item.IsCurrent || !item.CanOpen) return false;
+            string key = item.Part.Key;
+            if (!await ConfirmDiscardAsync()) return false;
+
+            // Saving replaces the document with the one read back from the saved file (or with an image of
+            // another kind, after "Save as"): the partition is looked up again there.
+            ImageDocument? source = _doc;
+            ImagePart? part = source?.Parts.FirstOrDefault(p => p.Key == key);
+            if (source is null || part is null || !part.CanOpen || IsBusy) return false;
+            if (part.IsCurrent) return true;
+
+            string fileName = Path.GetFileName(source.FilePath!);
+            var target = new PartItem(part);
+            ImageDocument? doc = null;
+            bool ok = await RunBusyAsync(L.T("Открытие ") + target.Name, (p, ct) =>
+                doc = source.OpenPart(part, _settings.EffectiveTempDirectory, p, ct, chooseVolume: ubi => AskVolume(fileName, ubi)));
+            if (!ok || doc is null) return false;
+            if (!ReferenceEquals(source, _doc))
+            {
+                doc.Dispose();                      // the image was closed meanwhile
+                return false;
+            }
+
+            SetDocument(doc);
+            if (doc.Warnings.Count > 0 && _settings.ShowWarningsAfterOpen)
+                ShowInfo(L.F("Образ открыт с предупреждениями: {0}", doc.Warnings.Count), doc.Warnings[0], MessageKind.Warning, doc.Warnings, L.T("Предупреждения при открытии"));
+            return true;
+        }
+        finally
+        {
+            // A switcher showing the refused choice goes back to the open partition.
+            _ui.Post(() => OnPropertyChanged(nameof(CurrentPart)));
+        }
     }
 
     private async Task NewImageAsync()

@@ -888,6 +888,14 @@ internal static class Program
             Check(image.OpenVolume(image.Volumes[0]).ReadBytes(0, kernel.Length).AsSpan().SequenceEqual(kernel) && image.Volumes[0].IsStatic, "the kernel volume changed");
             Check(image.Volumes[2] is { Name: "rootfs_data", IsReadable: true }, "the data volume: " + image.Volumes[2]);
 
+            // Another volume without closing the file; the kernel volume holds no filesystem.
+            Check(vm.Parts.Count == 3 && vm.Parts[0] is { Text: "Том «kernel» (0) · неизвестное содержимое", CanOpen: false } && vm.CurrentPart is { Text: "Том «rootfs» (1) · UBIFS" }
+                  && vm.Parts[2] is { Name: "Том «rootfs_data» (2)", CanOpen: true }, "UBI parts: " + string.Join("; ", vm.Parts.Select(p => p.Text)));
+            Check(await vm.SwitchPartAsync(vm.Parts[2]) && vm.Document is { Ubi.Volume.Name: "rootfs_data" } && vm.DocumentInfo.StartsWith("образ UBI · том «rootfs_data» (2) из 3"),
+                "switch to rootfs_data: " + vm.DocumentInfo + " " + string.Join("; ", d.Messages));
+            Check(await vm.SwitchPartAsync(vm.Parts[1]) && vm.Document is { Ubi.Volume.Name: "rootfs" } && vm.Document.Tree.Resolve("/etc/Banner") is null, "back to rootfs");
+            vm.CurrentPath = "/etc";
+
             // Save as: the dialog explains the UBI image; the filesystem alone and a tar archive are separate files.
             d.OnDialog = o =>
             {
@@ -1453,6 +1461,93 @@ internal static class Program
             d.SavePicks.Enqueue(Path.Combine(_dir, "from-f2fs.ext4"));
             Check(await vm.SaveAsAsync(), "save as ext4 failed: " + string.Join("; ", d.Messages));
             Check(vm.Document!.Format == ImageFormat.Ext && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
+        await Test("switching partitions without closing the file: disk image, super.img", async () =>
+        {
+            var (vm, d, _, _) = NewVm();
+            string disk = MakeDisk("switch.img.gz", out long rootOffset);
+            int TempFiles() => Directory.GetFiles(_dir, "fsforge-*.img").Length;
+            int tempBefore = TempFiles();
+
+            // A file with one partition has nothing to switch to.
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog: " + o.GetType().Name);
+            Check(await vm.OpenPathAsync(MakeImage("plain-switch.sqfs")), "open plain image");
+            Check(!vm.HasParts && vm.Parts.Count == 0 && vm.CurrentPart is null, "a plain image lists parts");
+
+            d.OnDialog = o => o is PartitionChoiceViewModel c && (c.Selected = c.Rows[1]) is not null && c.Accept();
+            Check(await vm.OpenPathAsync(disk), "open failed: " + string.Join("; ", d.Messages));
+            Check(vm.HasParts && vm.Parts.Count == 2 && vm.CurrentPart is { Part.PartitionNumber: 2, Text: "Раздел 2 · SquashFS" }, "parts: " + string.Join("; ", vm.Parts.Select(p => p.Text)));
+            Check(vm.Parts[0] is { Text: "Раздел 1 · ext2 «boot»", CanOpen: true, IsCurrent: false } && vm.Parts[0].Details.Contains("смещение 0x100000"), "boot row: " + vm.Parts[0].Text + " / " + vm.Parts[0].Details);
+            Check(!vm.SwitchPartCommand.CanExecute(vm.Parts[1]) && vm.SwitchPartCommand.CanExecute(vm.Parts[0]), "switch command state");
+            int tempOpen = TempFiles();
+            Check(tempOpen == tempBefore + 1, "the gzipped disk is unpacked once: " + (tempOpen - tempBefore));
+
+            // Switch to the boot partition: no dialog, no second unpacking, the status line follows.
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog on switch: " + o.GetType().Name);
+            vm.CurrentPath = "/etc";
+            Check(await vm.SwitchPartAsync(vm.Parts[0]), "switch failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.Ext, Container.Partition.Number: 1, FilePath: not null } && vm.Document.FilePath.EndsWith("switch.img.gz"), "partition 1 is not open");
+            Check(vm.CurrentPath == "/" && vm.Items.Any(i => i.Name == "uImage") && vm.CurrentPart is { Part.PartitionNumber: 1 }, "view after the switch: " + vm.CurrentPath);
+            Check(vm.DocumentInfo.StartsWith("образ диска MBR · раздел 1 из 2 · ext2"), "status line: " + vm.DocumentInfo);
+            Check(TempFiles() == tempOpen, "switching unpacked the file again");
+
+            // Unsaved changes: "Cancel" stays, "Save" writes the whole disk and then switches.
+            Select(vm, "uImage");
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            await vm.DeleteCommand.ExecuteAsync();
+            Check(vm.IsModified, "the deletion did not modify the image");
+            d.Answers.Enqueue(DialogAnswer.Cancel);
+            Check(!await vm.SwitchPartAsync(vm.Parts[1]) && vm.Document!.Container!.Partition.Number == 1 && vm.IsModified, "cancel switched anyway");
+            Check(d.Asked[^1] == "Несохранённые изменения", "not asked about the changes: " + d.Asked[^1]);
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            Check(await vm.SwitchPartAsync(vm.Parts[1]), "save and switch failed: " + string.Join("; ", d.Messages));
+            Check(vm.Document is { Format: ImageFormat.SquashFs, Container.Partition.Number: 2, IsModified: false } && vm.Items.Any(i => i.Name == "etc"), "partition 2 after saving");
+            Check(vm.Document!.OuterCompression == ArchiveCompression.Gzip && Gunzip(disk).Length >= rootOffset, "the disk is still gzipped");
+            Check(await vm.SwitchPartAsync(vm.Parts[0]) && !vm.Items.Any(i => i.Name == "uImage"), "the saved change of partition 1 is missing");
+
+            // The switcher setter goes the same way; a part that cannot be opened is refused.
+            vm.CurrentPart = vm.Parts[1];
+            for (int i = 0; i < 200 && (vm.IsBusy || vm.Document!.Container!.Partition.Number != 2); i++) await Task.Delay(20);
+            Check(vm.Document!.Container!.Partition.Number == 2 && !vm.IsBusy, "the switcher did not open partition 2");
+
+            // Both documents share the unpacked file; the last one closes (and deletes) it.
+            using (ImageDocument first = ImageDocument.Open(disk, _dir, partition: 1))
+            {
+                Check(first.Parts.Count == 2 && first.Parts[0].IsCurrent && first.CanOpenOtherPart, "parts of a disk document");
+                ImageDocument second = first.OpenPart(first.Parts[1], _dir);
+                first.Dispose();
+                FsNode file = second.Tree.Resolve("/etc/passwd") ?? throw new InvalidOperationException("no /etc/passwd in partition 2");
+                using (var reader = new StreamReader(file.Inode.Data!.OpenRead()))
+                    Check(reader.ReadToEnd().StartsWith("root:x:0:0"), "partition 2 is unreadable after the first document was closed");
+                Check(second.Parts[1].IsCurrent, "the second document marks partition 2");
+                second.Dispose();
+            }
+            vm.Dispose();
+            Check(TempFiles() == tempBefore, "the unpacked disk was not deleted: " + (TempFiles() - tempBefore));
+
+            // super.img: an empty logical partition is listed but cannot be opened.
+            (vm, d, _, _) = NewVm();
+            byte[] system;
+            using (ImageDocument source = ImageDocument.Open(MakeImage("sw.sqfs"), _dir))
+            {
+                var ms = new MemoryStream();
+                ImageDocument.WriteTo(source.Tree, ms, new SaveOptions { Format = ImageFormat.Ext, Ext = new FsForge.Core.Ext.ExtOptions { SizeBytes = 4 << 20, Journal = false } });
+                system = ms.ToArray();
+            }
+            byte[] vendor = File.ReadAllBytes(MakeImage("sw-vendor.sqfs"));
+            Array.Resize(ref vendor, (vendor.Length + 4095) / 4096 * 4096);
+            string super = Path.Combine(_dir, "switch-super.img");
+            File.WriteAllBytes(super, BuildSuper(32 << 20, new[] { ("system_a", 2048L, system), ("vendor_a", 16L << 11, vendor), ("system_b", 0L, Array.Empty<byte>()) }));
+            d.OnDialog = o => o is PartitionChoiceViewModel c && c.Accept();
+            Check(await vm.OpenPathAsync(super), "open super failed: " + string.Join("; ", d.Messages));
+            Check(vm.Parts.Select(p => p.Text).SequenceEqual(new[] { "system_a · ext4", "vendor_a · SquashFS", "system_b · пусто" }), "super parts: " + string.Join("; ", vm.Parts.Select(p => p.Text)));
+            Check(vm.CurrentPart?.Name == "system_a" && !vm.Parts[2].CanOpen && !vm.SwitchPartCommand.CanExecute(vm.Parts[2]), "empty partition state");
+            Check(!await vm.SwitchPartAsync(vm.Parts[2]) && vm.Document!.Android!.Part.Name == "system_a", "an empty partition was opened");
+            d.OnDialog = o => throw new InvalidOperationException("unexpected dialog on switch: " + o.GetType().Name);
+            Check(await vm.SwitchPartAsync(vm.Parts[1]) && vm.Document is { Format: ImageFormat.SquashFs, Android.Part.Name: "vendor_a" }, "switch to vendor_a: " + string.Join("; ", d.Messages));
+            Check(vm.DocumentInfo.StartsWith("super.img · vendor_a из 3 · SquashFS"), "status line: " + vm.DocumentInfo);
             vm.Dispose();
         });
 
