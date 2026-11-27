@@ -94,6 +94,21 @@
                     Command="{Binding CloseCommand}"
                     Header="{l:Tr '_Закрыть образ'}"
                     InputGestureText="Ctrl+W" />
+                <!--  Another partition (UBI volume, part) of the same file, without closing it  -->
+                <MenuItem
+                    Click="OnPartClick"
+                    DisplayMemberPath="Text"
+                    Header="{l:Tr '_Раздел образа'}"
+                    ItemsSource="{Binding Parts}"
+                    Visibility="{Binding HasParts, Converter={StaticResource BoolToVisibility}}">
+                    <MenuItem.ItemContainerStyle>
+                        <Style BasedOn="{StaticResource {x:Type MenuItem}}" TargetType="{x:Type MenuItem}">
+                            <Setter Property="IsChecked" Value="{Binding IsCurrent, Mode=OneWay}" />
+                            <Setter Property="IsEnabled" Value="{Binding CanOpen}" />
+                            <Setter Property="ToolTip" Value="{Binding ToolTip}" />
+                        </Style>
+                    </MenuItem.ItemContainerStyle>
+                </MenuItem>
                 <Separator />
                 <MenuItem
                     Command="{Binding ImageInfoCommand}"
@@ -286,6 +301,7 @@
             Visibility="{Binding HasDocument, Converter={StaticResource BoolToVisibility}}">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
@@ -313,10 +329,38 @@
                     ToolTip="{l:Tr 'Обновить (F5)'}" />
             </StackPanel>
 
+            <!--
+                Partition switcher: shown when the file has several partitions (UBI volumes, parts of an
+                Android image or a firmware file). Choosing another one opens it in place of the current one.
+            -->
+            <ComboBox
+                x:Name="PartSwitcher"
+                Grid.Column="1"
+                MinWidth="190"
+                MaxWidth="340"
+                Margin="0,0,8,0"
+                VerticalAlignment="Center"
+                ItemsSource="{Binding Parts}"
+                SelectedItem="{Binding CurrentPart, Mode=TwoWay}"
+                ToolTip="{l:Tr 'Раздел образа. Выберите другой, чтобы открыть его, не закрывая файл'}"
+                Visibility="{Binding HasParts, Converter={StaticResource BoolToVisibility}}">
+                <ComboBox.ItemContainerStyle>
+                    <Style BasedOn="{StaticResource {x:Type ComboBoxItem}}" TargetType="{x:Type ComboBoxItem}">
+                        <Setter Property="IsEnabled" Value="{Binding CanOpen}" />
+                        <Setter Property="ToolTip" Value="{Binding ToolTip}" />
+                    </Style>
+                </ComboBox.ItemContainerStyle>
+                <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Text}" TextTrimming="CharacterEllipsis" />
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
+
             <!--  The breadcrumb is shown normally; a click on the free area or Ctrl+L swaps in the text box.  -->
             <Border
                 x:Name="AddressArea"
-                Grid.Column="1"
+                Grid.Column="2"
                 Padding="8,0"
                 Background="{DynamicResource ControlFillColorDefaultBrush}"
                 BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
@@ -350,7 +394,7 @@
 
             <ui:TextBox
                 x:Name="SearchBox"
-                Grid.Column="2"
+                Grid.Column="3"
                 Width="250"
                 Margin="8,0,0,0"
                 ClearButtonEnabled="True"

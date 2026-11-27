@@ -589,8 +589,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
                   L.T("Файловые системы, которые можно редактировать, есть в нескольких разделах. Какой из них открыть?");
         foreach (PartitionInfo p in table.Partitions)
         {
-            string details = L.F("{0} · {1} · смещение 0x{2:X}", Fmt.Size(p.Length), p.TypeName, p.Offset) + (p.Bootable ? L.T(" · загрузочный") : "");
-            Rows.Add(new Row(p, L.F("Раздел {0}", p.Number), Fmt.PartitionContent(p), details, p.IsEditable));
+            Rows.Add(new Row(p, L.F("Раздел {0}", p.Number), Fmt.PartitionContent(p), PartItem.PartitionDetails(p), p.IsEditable));
         }
         PartitionInfo? preferred = table.PickDefault();
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Partition, preferred));
@@ -605,9 +604,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
                   L.T("Файловые системы, которые можно открыть, есть в нескольких томах. Какой из них открыть?");
         foreach (UbiVolumeInfo v in ubi.Volumes)
         {
-            string details = L.F("{0} · {1}", Fmt.Size(v.Length), v.IsStatic ? L.T("статический") : L.T("динамический")) +
-                             (v.AutoResize ? L.T(" · занимает всё свободное место (autoresize)") : "");
-            Rows.Add(new Row(null, L.F("Том {0}", Fmt.VolumeName(v)), Fmt.VolumeContent(v), details, v.IsReadable, v));
+            Rows.Add(new Row(null, L.F("Том {0}", Fmt.VolumeName(v)), Fmt.VolumeContent(v), PartItem.VolumeDetails(v), v.IsReadable, v));
         }
         UbiVolumeInfo? preferred = ubi.PickDefault();
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.Volume, preferred));
@@ -623,7 +620,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
                   (super ? L.T("Файловые системы есть в нескольких логических разделах. Какой из них открыть?")
                          : L.T("В образе несколько ramdisk. Какой из них открыть?"));
         foreach (Core.Android.AndroidPart p in image.Parts)
-            Rows.Add(new Row(null, p.Name, Fmt.AndroidPartContent(p), Fmt.Size(p.Length) + (p.Detail.Length > 0 ? " · " + p.Detail : ""), p.IsReadable,
+            Rows.Add(new Row(null, p.Name, Fmt.AndroidPartContent(p), PartItem.AndroidPartDetails(p), p.IsReadable,
                 AndroidPart: p));
         Core.Android.AndroidPart? preferred = image.PickDefault();
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.AndroidPart, preferred));
@@ -638,7 +635,7 @@ public sealed class PartitionChoiceViewModel : DialogViewModel
         Summary = L.F("«{0}» — {1}. ", fileName, Fmt.FirmwareKind(image)) +
                   L.T("Файловые системы или архивы есть в нескольких частях прошивки. Какую из них открыть?");
         foreach (Core.Firmware.FirmwarePart p in image.Parts)
-            Rows.Add(new Row(null, p.Name, Fmt.FirmwarePartContent(p), L.F("{0} · смещение 0x{1:X}", Fmt.Size(p.Length), p.Offset), p.IsReadable,
+            Rows.Add(new Row(null, p.Name, Fmt.FirmwarePartContent(p), PartItem.FirmwarePartDetails(p), p.IsReadable,
                 FirmwarePart: p));
         Core.Firmware.FirmwarePart? preferred = image.PickDefault();
         _selected = Rows.FirstOrDefault(r => ReferenceEquals(r.FirmwarePart, preferred));
