@@ -5,6 +5,7 @@ using FsForge.App.Views;
 using FsForge.Presentation.Mvvm;
 using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
+using FsForge.Presentation.Updates;
 using FsForge.Presentation.ViewModels;
 
 namespace FsForge.App;
@@ -13,6 +14,9 @@ namespace FsForge.App;
 public partial class App : Application
 {
     private MainViewModel? _viewModel;
+
+    /// <summary>For the GitHub release checks; one for the whole process, as HttpClient is meant to be used.</summary>
+    private static readonly System.Net.Http.HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -30,8 +34,9 @@ public partial class App : Application
 
         MainWindow? window = null;
         var dialogs = new DialogService(() => window, () => window?.SnackbarHost);
-        _viewModel = new MainViewModel(dialogs, new ShellService(), new UiDispatcher(Dispatcher), store, settings);
+        _viewModel = new MainViewModel(dialogs, new ShellService(), new UiDispatcher(Dispatcher), store, settings, UpdateService.ForThisProcess(Http));
         window = new MainWindow(_viewModel);
+        _viewModel.ExitRequested += () => window.Close();
         MainWindow = window;
         window.Show();
 
@@ -41,6 +46,9 @@ public partial class App : Application
             string path = e.Args[0];
             window.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, async () => await _viewModel.OpenPathAsync(path));
         }
+
+        // A new release on GitHub is announced once the window is up (silent when offline or turned off).
+        window.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, async () => await _viewModel.CheckForUpdatesOnStartupAsync());
     }
 
     protected override void OnExit(ExitEventArgs e)

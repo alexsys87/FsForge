@@ -1,0 +1,95 @@
+name: release
+
+# A tag "v1.2.3" (or "v1.2.3-beta.1" for a pre-release) publishes a GitHub release with the files the
+# program updates itself from (Tools → Check for updates):
+#   FsForge-netN-win-x64.msi              installer of the single exe (Program Files\FsForge-netN)
+#   FsForge-netN-win-x64-standalone.zip   the single exe
+#   FsForge-netN-win-x64.zip              the framework-dependent folder
+#   SHA256SUMS.txt                        checksums the updater verifies downloads against
+# The version of the program is the number of the tag, so a copy built from it is not offered itself.
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Release .NET ${{ matrix.dotnet }} / Windows x64
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        dotnet: ['8', '10']
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Version from the tag
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?$') { throw "The tag '$tag' is not v<major>.<minor>.<patch>[-suffix]." }
+          "VERSION=$($Matches[1])" >> $env:GITHUB_ENV
+
+      - name: Core self-test
+        run: dotnet run --project tools/FsForge.Cli -c Release -f net${{ matrix.dotnet }}.0 -p:Version=$env:VERSION -- selftest
+
+      - name: Publish framework-dependent and standalone
+        run: |
+          $n = '${{ matrix.dotnet }}'
+          dotnet publish src/FsForge.App -c Release -f "net$n.0-windows" -r win-x64 --self-contained false -p:Version=$env:VERSION -o publish/framework-dependent
+          dotnet publish src/FsForge.App -f "net$n.0-windows" -p:PublishProfile=win-x64-standalone -p:Version=$env:VERSION -o publish/standalone
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path publish/framework-dependent/* -DestinationPath "release/FsForge-net$n-win-x64.zip"
+          Compress-Archive -Path publish/standalone/FsForge.exe -DestinationPath "release/FsForge-net$n-win-x64-standalone.zip"
+
+      - name: Install WiX and standard installer UI
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add --global WixToolset.UI.wixext/5.0.2
+
+      - name: Build and test the MSI
+        run: |
+          $n = '${{ matrix.dotnet }}'
+          ./installer/Build-Msi.ps1 -PublishDirectory publish/standalone -DotNetMajor $n -ProductVersion $env:VERSION -WixPath wix -OutputPath "release/FsForge-net$n-win-x64.msi"
+          ./installer/Test-Msi.ps1 -MsiPath "release/FsForge-net$n-win-x64.msi" -PublishDirectory publish/standalone -InstallDirectory "$env:RUNNER_TEMP/FsForge-MSI-net$n" -LogDirectory artifacts/msi-logs
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-net${{ matrix.dotnet }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-net*
+          path: release
+          merge-multiple: true
+
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          sha256sum FsForge-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "FsForge ${TAG#v}" --generate-notes $prerelease FsForge-* SHA256SUMS.txt

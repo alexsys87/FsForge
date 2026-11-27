@@ -5,6 +5,7 @@ using FsForge.Core.SquashFs;
 using FsForge.Core.Tar;
 using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
+using FsForge.Presentation.Updates;
 using FsForge.Presentation.ViewModels;
 
 namespace FsForge.Presentation.Tests;
@@ -45,6 +46,27 @@ internal sealed class FakeDialogs : IDialogService
     }
 
     public void Notify(string title, string message, MessageKind kind = MessageKind.Info) => Notifications.Add($"{kind}: {title}: {message}");
+}
+
+/// <summary>Stand-in for GitHub: answers requests by URL and counts them.</summary>
+internal sealed class FakeGitHub : HttpMessageHandler
+{
+    public readonly Dictionary<string, Func<HttpResponseMessage>> Routes = new();
+    public readonly List<string> Requests = new();
+
+    public void Json(string url, string json) =>
+        Routes[url] = () => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+
+    public void Bytes(string url, byte[] data) =>
+        Routes[url] = () => new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(data) };
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        string url = request.RequestUri!.ToString();
+        lock (Requests) Requests.Add(url);
+        if (!request.Headers.UserAgent.ToString().StartsWith("FsForge/")) throw new InvalidOperationException("no User-Agent: " + request.Headers.UserAgent);
+        return Task.FromResult(Routes.TryGetValue(url, out var answer) ? answer() : new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+    }
 }
 
 internal sealed class FakeShell : IShellService
@@ -1461,6 +1483,109 @@ internal static class Program
             d.SavePicks.Enqueue(Path.Combine(_dir, "from-f2fs.ext4"));
             Check(await vm.SaveAsAsync(), "save as ext4 failed: " + string.Join("; ", d.Messages));
             Check(vm.Document!.Format == ImageFormat.Ext && vm.Document.Tree.Resolve("/bin/ash") is not null, "converted image");
+            vm.Dispose();
+        });
+
+        await Test("updates from GitHub: check, download with SHA-256, install, errors, startup check", async () =>
+        {
+            Check(GitHubUpdater.TryParseVersion("v0.3.0-beta.2", out Version tagVersion) && tagVersion == new Version(0, 3, 0), "version from a tag");
+            Check(!GitHubUpdater.TryParseVersion("latest", out _), "a tag without a version");
+            string h = new string('c', 64);
+            Check(GitHubUpdater.FindChecksum($"{h}  FsForge-net10-win-x64.msi\n", "FsForge-net10-win-x64.msi") == h, "checksum list");
+
+            const string api = "https://api.github.com/repos/alexsys87/FsForge/releases?per_page=30";
+            const string msiName = "FsForge-net10-win-x64.msi";
+            byte[] msi = new byte[300000];
+            new Random(5).NextBytes(msi);
+            string digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(msi)).ToLowerInvariant();
+            string Asset(string name, long size, string? sha) =>
+                $$"""{"name":"{{name}}","size":{{size}},"state":"uploaded","browser_download_url":"https://github.com/alexsys87/FsForge/releases/download/x/{{name}}"{{(sha is null ? "" : $",\"digest\":\"sha256:{sha}\"")}}}""";
+            string Release(string tag, bool pre, bool draft, params string[] assets) =>
+                $$"""{"tag_name":"{{tag}}","name":"FsForge {{tag}}","html_url":"https://github.com/alexsys87/FsForge/releases/tag/{{tag}}","draft":{{(draft ? "true" : "false")}},"prerelease":{{(pre ? "true" : "false")}},"published_at":"2026-11-01T10:00:00Z","assets":[{{string.Join(",", assets)}}]}""";
+            string releases = "[" + string.Join(",",
+                Release("v0.4.0", false, true, Asset(msiName, msi.Length, digest)),
+                Release("v0.3.0-rc.1", true, false, Asset("FsForge-net10-win-x64.zip", 10, null)),
+                Release("v0.2.0", false, false, Asset(msiName, msi.Length, digest), Asset("FsForge-net10-win-x64.zip", 10, null)),
+                Release("v0.1.0", false, false)) + "]";
+
+            var github = new FakeGitHub();
+            github.Json(api, releases);
+            github.Bytes("https://github.com/alexsys87/FsForge/releases/download/x/" + msiName, msi);
+            var http = new HttpClient(github);
+            string folder = Path.Combine(_dir, "updates");
+            (MainViewModel, FakeDialogs, FakeShell) Make(Version current, bool installer = true)
+            {
+                var dialogs = new FakeDialogs();
+                var shell = new FakeShell();
+                var store = new SettingsStore(Path.Combine(_dir, "settings-upd-" + Guid.NewGuid().ToString("N")[..6] + ".json"));
+                var updates = new UpdateService(http, current, installer ? msiName : "FsForge-net10-win-x64-standalone.zip", installer, folder);
+                return (new MainViewModel(dialogs, shell, new ImmediateDispatcher(), store, new AppSettings { TempDirectory = _dir }, updates), dialogs, shell);
+            }
+
+            // A newer stable release with the installer: download, verify, start it, close the program.
+            var (vm, d, sh) = Make(new Version(0, 1, 0, 0));
+            Check(vm.CheckForUpdatesCommand.CanExecute(null), "the command is off");
+            d.Answers.Enqueue(DialogAnswer.Primary);        // download
+            d.Answers.Enqueue(DialogAnswer.Primary);        // install
+            bool exit = false;
+            vm.ExitRequested += () => exit = true;
+            Check(await vm.CheckForUpdatesAsync(), "update failed: " + string.Join("; ", d.Messages));
+            string target = Path.Combine(folder, msiName);
+            Check(d.Asked.SequenceEqual(new[] { "Доступна новая версия", "Обновление загружено" }), "questions: " + string.Join("; ", d.Asked));
+            Check(File.Exists(target) && File.ReadAllBytes(target).AsSpan().SequenceEqual(msi) && !File.Exists(target + ".part"), "the installer was not saved");
+            Check(sh.Files.SequenceEqual(new[] { target }) && exit, "the installer was not started or the program not closed");
+            Check(vm.Settings.LastUpdateCheck is not null, "the check time was not remembered");
+            vm.Dispose();
+
+            // Up to date; "Later" keeps the program; the menu command is off without a service.
+            (vm, d, _) = Make(new Version(0, 2, 0, 0));
+            Check(!await vm.CheckForUpdatesAsync() && d.Messages.Count == 1 && d.Messages[0].Contains("Установлена последняя версия FsForge: 0.2.0"), "up to date: " + string.Join("; ", d.Messages));
+            vm.Dispose();
+            var (plain, _, _, _) = NewVm();
+            Check(!plain.CheckForUpdatesCommand.CanExecute(null), "the command works without an update service");
+            plain.Dispose();
+
+            // Pre-releases only when asked for; a release without a file for this build offers its page.
+            (vm, d, sh) = Make(new Version(0, 2, 0, 0));
+            vm.Settings.IncludePrereleaseUpdates = true;
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            Check(!await vm.CheckForUpdatesAsync() && d.Asked.Count == 1 && sh.Files.SequenceEqual(new[] { "https://github.com/alexsys87/FsForge/releases/tag/v0.3.0-rc.1" }), "pre-release without the file: " + string.Join("; ", sh.Files));
+            vm.Dispose();
+
+            // A wrong checksum: nothing is kept, the error is shown.
+            github.Json(api, releases.Replace(digest, new string('0', 64)));
+            (vm, d, sh) = Make(new Version(0, 1, 0, 0), installer: false);
+            github.Json(api, releases.Replace(digest, new string('0', 64)).Replace("FsForge-net10-win-x64.msi", "FsForge-net10-win-x64-standalone.zip"));
+            github.Bytes("https://github.com/alexsys87/FsForge/releases/download/x/FsForge-net10-win-x64-standalone.zip", msi);
+            d.Answers.Enqueue(DialogAnswer.Primary);
+            Check(!await vm.CheckForUpdatesAsync(), "a damaged download was accepted");
+            Check(d.Messages.Count == 1 && d.Messages[0].Contains("does not match the published checksum") && !File.Exists(Path.Combine(folder, "FsForge-net10-win-x64-standalone.zip"))
+                  && !Directory.GetFiles(folder, "*.part").Any(), "checksum error: " + string.Join("; ", d.Messages));
+            vm.Dispose();
+
+            // The request limit of the GitHub API.
+            github.Routes[api] = () =>
+            {
+                var r = new HttpResponseMessage(System.Net.HttpStatusCode.Forbidden);
+                r.Headers.Add("X-RateLimit-Remaining", "0");
+                return r;
+            };
+            (vm, d, _) = Make(new Version(0, 1, 0, 0));
+            Check(!await vm.CheckForUpdatesAsync() && d.Messages.Count == 1 && d.Messages[0].StartsWith("Error: Проверка обновлений — ошибка: The GitHub API request limit is exhausted"), "rate limit: " + string.Join("; ", d.Messages));
+
+            // At startup: silent on failure, a notification for a new version, then not again for hours.
+            await vm.CheckForUpdatesOnStartupAsync();
+            Check(d.Messages.Count == 1 && d.Notifications.Count == 0 && vm.Settings.LastUpdateCheck is null, "a failed startup check is not silent");
+            github.Json(api, releases);
+            int before = github.Requests.Count;
+            await vm.CheckForUpdatesOnStartupAsync();
+            Check(d.Notifications.Count == 1 && d.Notifications[0].Contains("Доступна новая версия FsForge") && d.Notifications[0].Contains("v0.2.0"), "startup notification: " + string.Join("; ", d.Notifications));
+            await vm.CheckForUpdatesOnStartupAsync();
+            Check(github.Requests.Count == before + 1, "the startup check asked GitHub again");
+            vm.Settings.LastUpdateCheck = null;
+            vm.Settings.CheckForUpdates = false;
+            await vm.CheckForUpdatesOnStartupAsync();
+            Check(github.Requests.Count == before + 1, "the startup check ignores the setting");
             vm.Dispose();
         });
 

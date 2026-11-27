@@ -1341,6 +1341,12 @@
                     <HeaderedContentControl Header="{l:Tr 'Показывать предупреждения после открытия'}" Style="{StaticResource Row}">
                         <ui:ToggleSwitch IsChecked="{Binding Settings.ShowWarningsAfterOpen}" />
                     </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Проверять обновления на GitHub при запуске'}" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.CheckForUpdates}" />
+                    </HeaderedContentControl>
+                    <HeaderedContentControl Header="{l:Tr 'Предлагать предварительные версии'}" Style="{StaticResource Row}">
+                        <ui:ToggleSwitch IsChecked="{Binding Settings.IncludePrereleaseUpdates}" />
+                    </HeaderedContentControl>
                     <HeaderedContentControl Header="{l:Tr 'Сколько недавних файлов помнить'}" Style="{StaticResource Row}">
                         <StackPanel Orientation="Horizontal">
                             <ui:Button
