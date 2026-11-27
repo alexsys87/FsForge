@@ -9,6 +9,7 @@ using FsForge.Core.Tar;
 using FsForge.Presentation.Mvvm;
 using FsForge.Presentation.Services;
 using FsForge.Presentation.Settings;
+using FsForge.Presentation.Updates;
 
 namespace FsForge.Presentation.ViewModels;
 
@@ -24,6 +25,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly IShellService _shell;
     private readonly IUiDispatcher _ui;
     private readonly SettingsStore _store;
+    private readonly UpdateService? _updates;
     private readonly List<ICommand> _commands = new();
     private readonly Stack<string> _back = new(), _forward = new();
     private readonly List<EditSession> _edits = new();
@@ -50,8 +52,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private sealed record EditSession(string ImagePath, string HostPath, long Length, DateTime LastWriteUtc);
 
-    public MainViewModel(IDialogService dialogs, IShellService shell, IUiDispatcher ui, SettingsStore store, AppSettings settings)
+    /// <param name="updates">Checks GitHub for new releases; null turns the update commands off.</param>
+    public MainViewModel(IDialogService dialogs, IShellService shell, IUiDispatcher ui, SettingsStore store, AppSettings settings, UpdateService? updates = null)
     {
+        _updates = updates;
         _dialogs = dialogs;
         _shell = shell;
         _ui = ui;
@@ -99,6 +103,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CancelCommand = Sync(() => _cts?.Cancel(), () => IsBusy);
         ClearSearchCommand = Sync(() => SearchText = "", () => true);
         AboutCommand = Async(ShowAboutAsync, () => true);
+        CheckForUpdatesCommand = Async(() => CheckForUpdatesAsync(), () => !IsBusy && _updates is not null);
 
         RefreshRecent();
         UpdateStatus();
@@ -175,6 +180,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand CancelCommand { get; }
     public RelayCommand ClearSearchCommand { get; }
     public AsyncRelayCommand AboutCommand { get; }
+    public AsyncRelayCommand CheckForUpdatesCommand { get; }
+
+    /// <summary>The program should close (the installer of an update was started). Unsaved changes were already dealt with.</summary>
+    public event Action? ExitRequested;
 
     // ---------------------------------------------------------------- state
 
@@ -380,13 +389,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "copy" => L.T("Копирование остальных разделов"),
             "compress" => L.T("Сжатие образа"),
             "done" => L.T("Завершение"),
+            "download" => L.T("Загрузка"),
             _ => p.Stage,
         };
         if (p.Total > 0)
         {
             BusyIndeterminate = false;
             BusyPercent = 100.0 * p.Fraction;
-            string amount = p.Stage is "data" or "verify" or "extract" or "unpack" or "copy" or "compress" ? L.F("{0} из {1}", Fmt.Size(p.Done), Fmt.Size(p.Total)) : L.F("{0} из {1}", p.Done, p.Total);
+            string amount = p.Stage is "data" or "verify" or "extract" or "unpack" or "copy" or "compress" or "download" ? L.F("{0} из {1}", Fmt.Size(p.Done), Fmt.Size(p.Total)) : L.F("{0} из {1}", p.Done, p.Total);
             BusyDetail = $"{stage}: {amount}" + (string.IsNullOrEmpty(p.Item) ? "" : "  ·  " + Shorten(p.Item!));
         }
         else
@@ -1444,6 +1454,155 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             L.T("Чтение и запись файловых систем выполняются собственным кодом на C#: без WSL и без утилит Linux.") + Environment.NewLine +
             L.T("Интерфейс: WPF и библиотека WPF-UI (Fluent).") + Environment.NewLine + Environment.NewLine +
             L.T("Настройки: ") + _store.FilePath);
+    }
+
+    // -------------------------------------------------------------- updates
+
+    /// <summary>How often the silent check at startup asks GitHub.</summary>
+    private static readonly TimeSpan AutomaticUpdateCheckInterval = TimeSpan.FromHours(20);
+
+    /// <summary>
+    /// The check at startup: only when turned on in the settings and not done in the last hours; silent on
+    /// failure and when there is nothing new. A new version is announced with a short notification.
+    /// </summary>
+    public async Task CheckForUpdatesOnStartupAsync()
+    {
+        if (_updates is null || !_settings.CheckForUpdates) return;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (_settings.LastUpdateCheck is { } last && last <= now && now - last < AutomaticUpdateCheckInterval) return;
+        try
+        {
+            UpdateCheckResult check = await Task.Run(() => _updates.CheckAsync(_settings.IncludePrereleaseUpdates));
+            _settings.LastUpdateCheck = DateTimeOffset.UtcNow;
+            SaveSettings();
+            if (check.IsNewerVersionAvailable)
+                _dialogs.Notify(L.T("Доступна новая версия FsForge"),
+                    L.F("Версия {0}. Скачать её: Сервис → Проверить обновления.", ReleaseText(check.Latest!)), MessageKind.Info);
+        }
+        catch (Exception ex) when (ex is GitHubUpdateException or HttpRequestException or IOException or OperationCanceledException)
+        {
+            // No network or no answer: the next start tries again.
+        }
+    }
+
+    /// <summary>
+    /// "Check for updates": asks GitHub for the newest release and offers to download its file for this
+    /// build; a downloaded installer can be started right away.
+    /// </summary>
+    public async Task<bool> CheckForUpdatesAsync()
+    {
+        if (_updates is null || IsBusy) return false;
+        UpdateService updates = _updates;
+        UpdateCheckResult? check = null;
+        bool ok = await RunBusyAsync(L.T("Проверка обновлений"), (p, ct) =>
+            check = Wait(updates.CheckAsync(_settings.IncludePrereleaseUpdates, ct)));
+        if (!ok || check is null) return false;
+        _settings.LastUpdateCheck = DateTimeOffset.UtcNow;
+        SaveSettings();
+
+        string current = UpdateService.Format(updates.CurrentVersion);
+        if (!check.IsNewerVersionAvailable)
+        {
+            await _dialogs.ShowMessageAsync(L.T("Обновления"), check.Latest is null
+                ? L.F("На GitHub пока нет опубликованных версий FsForge. Установлена версия {0}.", current)
+                : L.F("Установлена последняя версия FsForge: {0}.", current), MessageKind.Success);
+            return false;
+        }
+
+        GitHubRelease release = check.Latest!;
+        if (check.Asset is null)
+        {
+            DialogAnswer page = await _dialogs.AskAsync(L.T("Доступна новая версия"),
+                L.F("Вышла версия FsForge {0} (установлена {1}), но в ней нет файла {2} для этой сборки программы. Открыть страницу выпуска?",
+                    ReleaseText(release), current, updates.AssetName), L.T("Открыть страницу"));
+            if (page == DialogAnswer.Primary) OpenUrl(release.HtmlUrl);
+            return false;
+        }
+
+        DialogAnswer a = await _dialogs.AskAsync(L.T("Доступна новая версия"),
+            L.F("Доступна версия FsForge {0} (установлена {1}).", ReleaseText(release), current) + Environment.NewLine +
+            L.F("Файл {0}, {1}, будет загружен в папку {2} и проверен по SHA-256.", check.Asset.Name, Fmt.Size(check.Asset.Size), updates.DownloadFolder),
+            L.T("Скачать"), L.T("Страница выпуска"));
+        if (a == DialogAnswer.Secondary) OpenUrl(release.HtmlUrl);
+        if (a != DialogAnswer.Primary) return false;
+        return await DownloadUpdateAsync(check);
+    }
+
+    private async Task<bool> DownloadUpdateAsync(UpdateCheckResult check)
+    {
+        UpdateService updates = _updates!;
+        DownloadedUpdate? file = null;
+        bool ok = await RunBusyAsync(L.F("Загрузка FsForge {0}", ReleaseText(check.Latest!)), (p, ct) =>
+        {
+            var progress = new DownloadProgress(p, check.Asset!.Name);
+            file = Wait(updates.DownloadAsync(check, progress, ct));
+        });
+        if (!ok || file is null) return false;
+
+        if (!updates.IsInstaller)
+        {
+            DialogAnswer show = await _dialogs.AskAsync(L.T("Обновление загружено"),
+                L.F("{0} загружен, контрольная сумма SHA-256 совпала. Распакуйте архив вместо текущей копии программы, закрыв её.", file.FilePath),
+                L.T("Показать в папке"), cancel: L.T("Закрыть"));
+            if (show == DialogAnswer.Primary) _shell.OpenFolder(Path.GetDirectoryName(file.FilePath)!);
+            return true;
+        }
+
+        DialogAnswer install = await _dialogs.AskAsync(L.T("Обновление загружено"),
+            L.F("{0} загружен, контрольная сумма SHA-256 совпала. Установить сейчас? FsForge закроется, чтобы установщик мог заменить программу.", file.FilePath),
+            L.T("Установить"), L.T("Показать в папке"), L.T("Позже"));
+        if (install == DialogAnswer.Secondary) _shell.OpenFolder(Path.GetDirectoryName(file.FilePath)!);
+        if (install != DialogAnswer.Primary) return true;
+        if (!await ConfirmDiscardAsync()) return true;
+        try
+        {
+            _shell.OpenFile(file.FilePath, null);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            await _dialogs.ShowMessageAsync(L.T("Не удалось запустить установщик"), ex.Message, MessageKind.Error);
+            return true;
+        }
+        SetDocument(null);                          // the changes were saved or dropped above
+        ExitRequested?.Invoke();
+        return true;
+    }
+
+    /// <summary>Waits for a GitHub call on the worker thread; its failures become ordinary error messages.</summary>
+    private static T Wait<T>(Task<T> task)
+    {
+        try
+        {
+            return task.GetAwaiter().GetResult();
+        }
+        catch (GitHubUpdateException ex)
+        {
+            throw new FsException(ex.Message, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new FsException(ex.Message, ex);
+        }
+    }
+
+    private static string ReleaseText(GitHubRelease r) => r.IsPrerelease ? L.F("{0} (предварительная)", r.TagName) : r.TagName;
+
+    private void OpenUrl(Uri url)
+    {
+        try
+        {
+            _shell.OpenFile(url.ToString(), null);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            _dialogs.Notify(L.T("Не удалось открыть страницу"), url.ToString(), MessageKind.Warning);
+        }
+    }
+
+    /// <summary>Download progress shown in the busy overlay.</summary>
+    private sealed class DownloadProgress(IProgress<ProgressInfo> target, string name) : IProgress<UpdateDownloadProgress>
+    {
+        public void Report(UpdateDownloadProgress p) => target.Report(new ProgressInfo("download", p.BytesReceived, p.TotalBytes ?? 0, name));
     }
 
     // -------------------------------------------------------------- editing

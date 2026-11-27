@@ -218,6 +218,10 @@
                     Header="{l:Tr '_Настройки…'}"
                     Icon="{ui:SymbolIcon Settings24}"
                     InputGestureText="Ctrl+," />
+                <MenuItem
+                    Command="{Binding CheckForUpdatesCommand}"
+                    Header="{l:Tr 'Проверить _обновления…'}"
+                    Icon="{ui:SymbolIcon ArrowSync24}" />
                 <MenuItem Command="{Binding AboutCommand}" Header="{l:Tr '_О программе'}" />
             </MenuItem>
         </Menu>

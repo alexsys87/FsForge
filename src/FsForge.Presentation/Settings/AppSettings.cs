@@ -90,6 +90,16 @@ public sealed class AppSettings
     public bool SearchEmbedded { get; set; } = true;
     public bool ShowWarningsAfterOpen { get; set; } = true;
 
+    // ---- updates
+    /// <summary>Look for a new release on GitHub when the program starts (at most once a day, silently).</summary>
+    public bool CheckForUpdates { get; set; } = true;
+
+    /// <summary>Also offer releases marked as pre-release.</summary>
+    public bool IncludePrereleaseUpdates { get; set; }
+
+    /// <summary>When the last check for updates succeeded.</summary>
+    public DateTimeOffset? LastUpdateCheck { get; set; }
+
     // ---- saving
     public VerifyLevel Verify { get; set; } = VerifyLevel.Structure;
     public bool KeepBackup { get; set; } = true;
